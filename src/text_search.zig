@@ -849,8 +849,14 @@ fn buildViewAllocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "search view ownership is safe across every allocation failure" {
+    // SafeAllocator remapping depends on the fill state of its shared buckets.
+    // Refuse resizing so each probe exercises the same allocation sequence,
+    // including the allocation fallback used by ArrayList.toOwnedSlice.
+    var allocation_only = std.testing.FailingAllocator.init(std.testing.allocator, .{
+        .resize_fail_index = 0,
+    });
     try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
+        allocation_only.allocator(),
         buildViewAllocationProbe,
         .{},
     );
