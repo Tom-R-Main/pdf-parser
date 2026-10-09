@@ -111,16 +111,16 @@ def resolve_command_path(repo_root: Path, value: str) -> Path:
 
 def ensure_releasefast(repo_root: Path, parser_command: Path) -> None:
     proc = subprocess.run(
-        ["zig", "build", "-Doptimize=ReleaseFast", "--summary", "all"],
+        ["zig", "build", "-Doptimize=fast", "--summary", "all"],
         cwd=repo_root,
         text=True,
         capture_output=True,
         check=False,
     )
     if proc.returncode != 0:
-        raise SystemExit(proc.stderr.strip() or proc.stdout.strip() or "ReleaseFast build failed")
+        raise SystemExit(proc.stderr.strip() or proc.stdout.strip() or "fast build failed")
     if not parser_command.exists():
-        raise SystemExit(f"ReleaseFast build completed but {parser_command} was not found")
+        raise SystemExit(f"fast build completed but {parser_command} was not found")
 
 
 def load_entries(manifest_path: Path, repo_root: Path) -> list[Entry]:

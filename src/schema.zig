@@ -2403,7 +2403,7 @@ fn sourceMaskName(mask: u32) []const u8 {
 }
 
 fn hasSource(mask: u32, source: layout.SourceKind) bool {
-    return (mask & (@as(u32, 1) << @as(u5, @intCast(@intFromEnum(source))))) != 0;
+    return (mask & (@as(u32, 1) << @as(u5, @intCast(@backingInt(source))))) != 0;
 }
 
 fn countSourceBits(mask: u32) u8 {

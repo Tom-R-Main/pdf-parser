@@ -27,7 +27,7 @@ pub const EvidenceKind = enum(u4) {
     repeated_callout,
 
     pub fn mask(self: EvidenceKind) EvidenceMask {
-        return @as(EvidenceMask, 1) << @intFromEnum(self);
+        return @as(EvidenceMask, 1) << @backingInt(self);
     }
 };
 
@@ -1234,7 +1234,7 @@ fn softEdgeLessThan(_: void, left: GraphEdge, right: GraphEdge) bool {
     if (left_priority != right_priority) return left_priority < right_priority;
     if (left.source != right.source) return left.source < right.source;
     if (left.target != right.target) return left.target < right.target;
-    return @intFromEnum(left.relation) < @intFromEnum(right.relation);
+    return @backingInt(left.relation) < @backingInt(right.relation);
 }
 
 fn evidencePriority(mask: EvidenceMask) u8 {

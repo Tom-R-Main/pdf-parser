@@ -1091,10 +1091,10 @@ fn writeRecordCommon(writer: anytype, record_type: []const u8, ctx: RenderContex
 
 fn writeMetrics(writer: anytype, metrics: Metrics) !void {
     try writer.writeByte('{');
-    inline for (std.meta.fields(MetricName), 0..) |field, index| {
+    inline for (@typeInfo(MetricName).@"enum".field_names, 0..) |name, index| {
         if (index > 0) try writer.writeByte(',');
-        try writer.print("\"{s}\":", .{field.name});
-        try writeOptionalFloat(writer, metricValue(metrics, @field(MetricName, field.name)));
+        try writer.print("\"{s}\":", .{name});
+        try writeOptionalFloat(writer, metricValue(metrics, @field(MetricName, name)));
     }
     try writer.writeByte('}');
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Zig 0.16 runtime helpers shared by CLI tools, tests, and FFI entrypoints.
+/// Zig 0.17 runtime helpers shared by CLI tools, tests, and FFI entrypoints.
 pub const File = std.Io.File;
 /// Large JSONL extraction streams are hundreds of MB on benchmark documents.
 pub const large_output_buffer_size = 256 * 1024;
@@ -9,8 +9,8 @@ pub const large_output_buffer_size = 256 * 1024;
 var current_io: ?std.Io = null;
 var capture_input_sequence = std.atomic.Value(u64).init(0);
 
-pub fn debugAllocator() std.heap.DebugAllocator(.{}) {
-    return .init;
+pub fn debugAllocator() std.heap.SafeAllocator {
+    return .init(std.heap.page_allocator, .{});
 }
 
 pub fn setIo(io_value: std.Io) void {
@@ -25,7 +25,7 @@ pub fn current() std.Io {
     return currentIo();
 }
 
-/// Build a Zig 0.16 entrypoint that supplies an allocator and argv to `main_fn`.
+/// Build a Zig 0.17 entrypoint that supplies an allocator and argv to `main_fn`.
 pub fn MainWithArgs(comptime main_fn: anytype) type {
     return struct {
         pub fn main(init: std.process.Init) !void {
@@ -232,7 +232,7 @@ pub fn runCaptureWithInput(
 ) !std.process.RunResult {
     const input_limit = 1024 * 1024;
     if (input.len > input_limit) return error.InputTooLong;
-    const temp_dir: []const u8 = if (builtin.os.tag == .windows) "." else "/tmp";
+    const temp_dir: []const u8 = if (builtin.target.os.tag == .windows) "." else "/tmp";
     const sequence = capture_input_sequence.fetchAdd(1, .monotonic);
     const filename = try std.fmt.allocPrint(allocator, "pdf-parser-specialist-stdin-{x}-{x}.tmp", .{ nanoTimestamp(), sequence });
     defer allocator.free(filename);
@@ -254,7 +254,7 @@ pub fn runCaptureWithInput(
 
     const read_file = try openFilePath(path);
     defer read_file.close(currentIo());
-    if (builtin.os.tag != .windows) {
+    if (builtin.target.os.tag != .windows) {
         // POSIX children only need the open handle. Remove the directory entry
         // before spawning; keep deferred cleanup armed unless unlink succeeds.
         try deleteFilePathChecked(path);
@@ -324,7 +324,7 @@ fn deleteFilePathChecked(path: []const u8) !void {
 }
 
 fn privateFilePermissions() std.Io.File.Permissions {
-    return if (builtin.os.tag == .windows)
+    return if (builtin.target.os.tag == .windows)
         .default_file
     else
         .fromMode(0o600);

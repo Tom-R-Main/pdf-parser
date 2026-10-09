@@ -1,12 +1,12 @@
 # Benchmarks
 
 Scripts for measuring pdf-parser correctness, throughput, memory, and external
-tool comparisons. Build ReleaseFast artifacts before using timings for parser
+tool comparisons. Build fast artifacts before using timings for parser
 decisions.
 
 ## Requirements
 
-- Build pdf-parser first: `zig build -Doptimize=ReleaseFast`
+- Build pdf-parser first: `zig build -Doptimize=fast`
 - Install MuPDF: `brew install mupdf` (macOS) or `apt install mupdf-tools` (Linux)
 - Python 3 with tqdm: `pip install tqdm`
 
@@ -74,7 +74,7 @@ python3 verapdf_bench.py
 ### Results
 
 Do not treat checked-in prose as the benchmark source of truth. Generate fresh
-ReleaseFast scorecards and profile JSONL on the machine and corpus being used
+fast scorecards and profile JSONL on the machine and corpus being used
 for the decision.
 
 ## Accuracy Benchmark

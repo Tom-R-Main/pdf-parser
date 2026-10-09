@@ -10,9 +10,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 // Detect available SIMD
-const has_avx2 = builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
-const has_sse42 = builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .sse4_2);
-const has_neon = builtin.cpu.arch == .aarch64;
+const has_avx2 = builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx2);
+const has_sse42 = builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .sse4_2);
+const has_neon = builtin.target.cpu.arch == .aarch64;
 
 /// Vector type for SIMD operations
 const Vec = if (has_avx2)
@@ -61,7 +61,7 @@ pub fn skipWhitespace(data: []const u8, start: usize) usize {
             @as(@Vector(vec_len, bool), is_nul);
 
         // Find first non-whitespace
-        const mask = ~@as(std.meta.Int(.unsigned, vec_len), @bitCast(is_ws));
+        const mask = ~@as(@Int(.unsigned, vec_len), @bitCast(is_ws));
         if (mask != 0) {
             return i + @ctz(mask);
         }
@@ -107,7 +107,7 @@ pub fn findDelimiter(data: []const u8, start: usize) ?usize {
         found = found | (chunk == ws_mask_lf);
         found = found | (chunk == ws_mask_cr);
 
-        const mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(found));
+        const mask = @as(@Int(.unsigned, vec_len), @bitCast(found));
         if (mask != 0) {
             return i + @ctz(mask);
         }
@@ -145,7 +145,7 @@ pub fn findStreamKeyword(data: []const u8, start: usize) ?usize {
     while (i + vec_len <= data.len) {
         const chunk: Vec = data[i..][0..vec_len].*;
         const is_s = chunk == s_mask;
-        const mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(is_s));
+        const mask = @as(@Int(.unsigned, vec_len), @bitCast(is_s));
 
         if (mask != 0) {
             // Found 's' - check if it's "stream"
@@ -184,7 +184,7 @@ pub fn findEndstreamKeyword(data: []const u8, start: usize) ?usize {
     while (i + vec_len <= data.len) {
         const chunk: Vec = data[i..][0..vec_len].*;
         const is_e = chunk == e_mask;
-        const mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(is_e));
+        const mask = @as(@Int(.unsigned, vec_len), @bitCast(is_e));
 
         if (mask != 0) {
             var bit_pos: usize = 0;
@@ -333,7 +333,7 @@ pub fn findStringEnd(data: []const u8, start: usize) ?usize {
             @as(@Vector(vec_len, bool), is_close) |
             @as(@Vector(vec_len, bool), is_escape);
 
-        const mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(interesting));
+        const mask = @as(@Int(.unsigned, vec_len), @bitCast(interesting));
 
         if (mask == 0) {
             // No interesting characters - skip entire chunk
@@ -381,7 +381,7 @@ pub fn findHexStringEnd(data: []const u8, start: usize) ?usize {
     while (i + vec_len <= data.len) {
         const chunk: Vec = data[i..][0..vec_len].*;
         const is_close = chunk == close_mask;
-        const mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(is_close));
+        const mask = @as(@Int(.unsigned, vec_len), @bitCast(is_close));
 
         if (mask != 0) {
             return i + @ctz(mask);
@@ -416,7 +416,7 @@ pub fn findSubstring(data: []const u8, needle: []const u8) ?usize {
     while (i + vec_len <= data.len) {
         const chunk: Vec = data[i..][0..vec_len].*;
         const matches = chunk == first_mask;
-        var mask = @as(std.meta.Int(.unsigned, vec_len), @bitCast(matches));
+        var mask = @as(@Int(.unsigned, vec_len), @bitCast(matches));
 
         while (mask != 0) {
             const offset = @ctz(mask);
@@ -474,6 +474,26 @@ pub const SubstringIterator = struct {
 // ============================================================================
 // TESTS
 // ============================================================================
+
+test "SIMD masks preserve the offset of every vector lane" {
+    for (0..2 * vec_len) |index| {
+        var whitespace: [2 * vec_len]u8 = @splat(' ');
+        whitespace[index] = 'x';
+        try std.testing.expectEqual(index, skipWhitespace(&whitespace, 0));
+
+        var delimiter_data: [2 * vec_len]u8 = @splat('a');
+        delimiter_data[index] = '/';
+        try std.testing.expectEqual(index, findDelimiter(&delimiter_data, 0).?);
+
+        var hex: [2 * vec_len]u8 = @splat('a');
+        hex[index] = '>';
+        try std.testing.expectEqual(index, findHexStringEnd(&hex, 0).?);
+
+        var text: [2 * vec_len]u8 = @splat('a');
+        text[index] = 'x';
+        try std.testing.expectEqual(index, findSubstring(&text, "x").?);
+    }
+}
 
 test "skipWhitespace" {
     const data = "   \t\n\r  hello";

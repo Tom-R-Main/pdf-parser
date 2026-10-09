@@ -70,25 +70,25 @@ def main() -> int:
     parser.add_argument(
         "--pdf-parser-eval-command",
         default="zig-out/bin/pdf-parser-eval",
-        help="ReleaseFast pdf-parser-eval binary used by the pdf-parser lane",
+        help="fast pdf-parser-eval binary used by the pdf-parser lane",
     )
     parser.add_argument(
         "--pdf-parser-runner",
         choices=("binary", "zig-build"),
         default="binary",
-        help="Use the ReleaseFast eval binary, or the legacy 'zig build eval' runner",
+        help="Use the fast eval binary, or the legacy 'zig build eval' runner",
     )
     parser.add_argument(
         "--ensure-releasefast",
         dest="ensure_releasefast",
         action="store_true",
-        help="Build ReleaseFast binaries once before running the pdf-parser binary lane",
+        help="Build fast binaries once before running the pdf-parser binary lane",
     )
     parser.add_argument(
         "--no-ensure-releasefast",
         dest="ensure_releasefast",
         action="store_false",
-        help="Do not build ReleaseFast binaries even if the eval binary is missing",
+        help="Do not build fast binaries even if the eval binary is missing",
     )
     parser.set_defaults(ensure_releasefast=True)
     args = parser.parse_args()
@@ -140,15 +140,15 @@ def ensure_pdf_parser_eval_binary(repo_root: Path, config: PdfParserConfig) -> N
         if config.eval_command.exists():
             return
         raise SystemExit(f"Missing pdf-parser eval binary: {config.eval_command}")
-    cmd = ["zig", "build", "-Doptimize=ReleaseFast", "--summary", "all"]
+    cmd = ["zig", "build", "-Doptimize=fast", "--summary", "all"]
     proc = subprocess.run(cmd, cwd=repo_root, text=True, capture_output=True, check=False)
     if proc.returncode != 0:
         raise SystemExit(
-            "ReleaseFast build failed while preparing comparator:\n"
+            "fast build failed while preparing comparator:\n"
             + (proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}")
         )
     if not config.eval_command.exists():
-        raise SystemExit(f"ReleaseFast build completed but {config.eval_command} was not found")
+        raise SystemExit(f"fast build completed but {config.eval_command} was not found")
 
 
 def load_manifest(path: Path, repo_root: Path) -> list[Entry]:

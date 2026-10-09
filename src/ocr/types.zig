@@ -58,7 +58,7 @@ pub const PageSegMode = enum(u8) {
     raw_line = 13,
 
     pub fn tesseractNumber(self: PageSegMode) u8 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

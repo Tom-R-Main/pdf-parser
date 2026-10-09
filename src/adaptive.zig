@@ -1517,7 +1517,7 @@ fn spanSubsumesOcr(represented: layout.TextSpan, ocr_span: layout.TextSpan) bool
 
     const needle = std.mem.trim(u8, ocr_span.text, " \t\r\n");
     if (needle.len == 0 or represented.text.len < needle.len) return false;
-    const offset = std.ascii.indexOfIgnoreCase(represented.text, needle) orelse return false;
+    const offset = std.ascii.findIgnoreCase(represented.text, needle) orelse return false;
     const before_ok = offset == 0 or std.ascii.isWhitespace(represented.text[offset - 1]);
     const after = offset + needle.len;
     const after_ok = after == represented.text.len or std.ascii.isWhitespace(represented.text[after]);
@@ -1988,7 +1988,7 @@ fn stableFont(font: layout.FontMetadata) layout.FontMetadata {
 }
 
 pub fn reasonBit(reason: RouteReason) RouteReasonMask {
-    return @as(RouteReasonMask, 1) << @intFromEnum(reason);
+    return @as(RouteReasonMask, 1) << @backingInt(reason);
 }
 
 pub fn hasReason(mask: RouteReasonMask, reason: RouteReason) bool {

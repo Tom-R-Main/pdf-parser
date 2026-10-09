@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const zpdf = @import("root.zig");
 const testpdf = @import("testpdf.zig");
 
-const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
+const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 const pdf_parser_abi_version_value: u32 = 2;
 
 pub const ZpdfDocument = opaque {};
@@ -51,12 +51,12 @@ fn beginLegacyOutput(out_len: *usize) void {
 }
 
 export fn zpdf_last_error() c_int {
-    return @intFromEnum(zpdf_last_error_value);
+    return @backingInt(zpdf_last_error_value);
 }
 
 pub const PdfParserAdaptiveOptions = extern struct {
     abi_version: u32 = pdf_parser_abi_version_value,
-    format: c_int = @intFromEnum(PdfParserAdaptiveFormat.artifact_jsonl),
+    format: c_int = @backingInt(PdfParserAdaptiveFormat.artifact_jsonl),
     input_path: ?[*:0]const u8 = null,
     document_id: ?[*:0]const u8 = null,
     source_id: ?[*:0]const u8 = null,
@@ -72,7 +72,7 @@ pub const PdfParserAdaptiveOptions = extern struct {
 };
 
 pub const PdfParserAdaptiveResult = extern struct {
-    status: c_int = @intFromEnum(PdfParserStatus.ok),
+    status: c_int = @backingInt(PdfParserStatus.ok),
     output: ?[*]u8 = null,
     output_len: usize = 0,
     error_message: ?[*]u8 = null,
@@ -213,7 +213,7 @@ export fn pdf_parser_result_clear(result: ?*PdfParserAdaptiveResult) void {
 }
 
 export fn pdf_parser_extract_adaptive_file(options: ?*const PdfParserAdaptiveOptions, result: ?*PdfParserAdaptiveResult) c_int {
-    const out = result orelse return @intFromEnum(PdfParserStatus.invalid_argument);
+    const out = result orelse return @backingInt(PdfParserStatus.invalid_argument);
     pdf_parser_result_clear(out);
     const opts = options orelse {
         return setCError(out, .invalid_argument, "missing options");
@@ -249,7 +249,7 @@ export fn pdf_parser_extract_adaptive_memory(
     data_len: usize,
     result: ?*PdfParserAdaptiveResult,
 ) c_int {
-    const out = result orelse return @intFromEnum(PdfParserStatus.invalid_argument);
+    const out = result orelse return @backingInt(PdfParserStatus.invalid_argument);
     pdf_parser_result_clear(out);
     const opts = options orelse {
         return setCError(out, .invalid_argument, "missing options");
@@ -294,7 +294,7 @@ fn extractAdaptiveDocumentToC(doc: *zpdf.Document, opts: *const PdfParserAdaptiv
         return setCErrorFmt(out, .extract_error, "alloc failed: {s}", .{@errorName(err)});
     };
     out.* = .{
-        .status = @intFromEnum(PdfParserStatus.ok),
+        .status = @backingInt(PdfParserStatus.ok),
         .output = owned.ptr,
         .output_len = owned.len,
         .schema_version = zpdf.schema.schema_version.ptr,
@@ -322,9 +322,9 @@ fn adapterOptionsFromC(opts: *const PdfParserAdaptiveOptions) zpdf.AdaptiveAdapt
 
 fn formatFromC(format: c_int) zpdf.AdaptiveAdapterFormat {
     return switch (format) {
-        @intFromEnum(PdfParserAdaptiveFormat.json) => .json,
-        @intFromEnum(PdfParserAdaptiveFormat.stream_jsonl) => .stream_jsonl,
-        @intFromEnum(PdfParserAdaptiveFormat.trace_json) => .trace_json,
+        @backingInt(PdfParserAdaptiveFormat.json) => .json,
+        @backingInt(PdfParserAdaptiveFormat.stream_jsonl) => .stream_jsonl,
+        @backingInt(PdfParserAdaptiveFormat.trace_json) => .trace_json,
         else => .artifact_jsonl,
     };
 }
@@ -378,14 +378,14 @@ fn optionalCStr(value: ?[*:0]const u8) ?[]const u8 {
 fn setCError(out: *PdfParserAdaptiveResult, status: PdfParserStatus, message: []const u8) c_int {
     const copy = c_allocator.dupe(u8, message) catch {
         out.* = .{
-            .status = @intFromEnum(status),
+            .status = @backingInt(status),
             .schema_version = zpdf.schema.schema_version.ptr,
             .schema_version_len = zpdf.schema.schema_version.len,
         };
         return out.status;
     };
     out.* = .{
-        .status = @intFromEnum(status),
+        .status = @backingInt(status),
         .error_message = copy.ptr,
         .error_len = copy.len,
         .schema_version = zpdf.schema.schema_version.ptr,
@@ -454,7 +454,7 @@ fn buildCTextSpans(allocator: std.mem.Allocator, spans: []const zpdf.TextSpan) !
             .text_len = text_copy.len,
             .font_size = span.font_size,
             .page_index = span.page_index,
-            .source_kind = @intFromEnum(span.source),
+            .source_kind = @backingInt(span.source),
             .confidence = span.confidence,
             .block_id = optionalU32ToC(span.block_id),
             .line_id = optionalU32ToC(span.line_id),
@@ -1032,13 +1032,11 @@ export fn zpdf_free_form_fields(ptr: ?[*]CFormField, count: usize) void {
 }
 
 test "public header exposes adaptive C ABI constants" {
-    const c = @cImport({
-        @cInclude("pdf_parser.h");
-    });
+    const c = @import("pdf_parser_c");
 
     try std.testing.expectEqual(@as(c_uint, pdf_parser_abi_version_value), c.PDF_PARSER_ABI_VERSION);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(PdfParserAdaptiveFormat.artifact_jsonl)), c.PDF_PARSER_FORMAT_ARTIFACT_JSONL);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(ZpdfLegacyError.page_not_found)), c.ZPDF_ERROR_PAGE_NOT_FOUND);
+    try std.testing.expectEqual(@as(c_int, @backingInt(PdfParserAdaptiveFormat.artifact_jsonl)), c.PDF_PARSER_FORMAT_ARTIFACT_JSONL);
+    try std.testing.expectEqual(@as(c_int, @backingInt(ZpdfLegacyError.page_not_found)), c.ZPDF_ERROR_PAGE_NOT_FOUND);
     try std.testing.expect(@sizeOf(c.PdfParserAdaptiveOptions) > 0);
     try std.testing.expect(@sizeOf(c.PdfParserAdaptiveResult) > 0);
 }
@@ -1048,7 +1046,7 @@ test "legacy C ABI distinguishes invalid handles, invalid pages, and success" {
     try std.testing.expect(zpdf_extract_page(null, 0, &out_len) == null);
     try std.testing.expectEqual(@as(usize, 0), out_len);
     try std.testing.expectEqual(
-        @as(c_int, @intFromEnum(ZpdfLegacyError.invalid_handle)),
+        @as(c_int, @backingInt(ZpdfLegacyError.invalid_handle)),
         zpdf_last_error(),
     );
 
@@ -1061,7 +1059,7 @@ test "legacy C ABI distinguishes invalid handles, invalid pages, and success" {
     try std.testing.expect(zpdf_extract_page(handle, 999999, &out_len) == null);
     try std.testing.expectEqual(@as(usize, 0), out_len);
     try std.testing.expectEqual(
-        @as(c_int, @intFromEnum(ZpdfLegacyError.page_not_found)),
+        @as(c_int, @backingInt(ZpdfLegacyError.page_not_found)),
         zpdf_last_error(),
     );
 
@@ -1069,7 +1067,7 @@ test "legacy C ABI distinguishes invalid handles, invalid pages, and success" {
     defer zpdf_free_buffer(output, out_len);
     try std.testing.expect(out_len > 0);
     try std.testing.expectEqual(
-        @as(c_int, @intFromEnum(ZpdfLegacyError.none)),
+        @as(c_int, @backingInt(ZpdfLegacyError.none)),
         zpdf_last_error(),
     );
 }
@@ -1084,7 +1082,7 @@ test "legacy bounds ABI zeros count and reports invalid pages" {
     try std.testing.expect(zpdf_extract_bounds(handle, -1, &out_count) == null);
     try std.testing.expectEqual(@as(usize, 0), out_count);
     try std.testing.expectEqual(
-        @as(c_int, @intFromEnum(ZpdfLegacyError.page_not_found)),
+        @as(c_int, @backingInt(ZpdfLegacyError.page_not_found)),
         zpdf_last_error(),
     );
 }
@@ -1096,7 +1094,7 @@ test "adaptive memory C ABI emits artifact JSONL and frees buffers" {
     var result: PdfParserAdaptiveResult = .{};
     const options = PdfParserAdaptiveOptions{
         .abi_version = pdf_parser_abi_version_value,
-        .format = @intFromEnum(PdfParserAdaptiveFormat.artifact_jsonl),
+        .format = @backingInt(PdfParserAdaptiveFormat.artifact_jsonl),
         .document_id = "abi-memory",
         .source_id = "external-abi-memory",
         .permissive = 1,
@@ -1105,7 +1103,7 @@ test "adaptive memory C ABI emits artifact JSONL and frees buffers" {
     const status = pdf_parser_extract_adaptive_memory(&options, pdf_data.ptr, pdf_data.len, &result);
     defer pdf_parser_result_clear(&result);
 
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(PdfParserStatus.ok)), status);
+    try std.testing.expectEqual(@as(c_int, @backingInt(PdfParserStatus.ok)), status);
     try std.testing.expect(result.output != null);
     const output = result.output.?[0..result.output_len];
     const newline = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
@@ -1122,7 +1120,7 @@ test "adaptive C ABI reports invalid memory input" {
     const status = pdf_parser_extract_adaptive_memory(&options, null, 0, &result);
     defer pdf_parser_result_clear(&result);
 
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(PdfParserStatus.invalid_argument)), status);
+    try std.testing.expectEqual(@as(c_int, @backingInt(PdfParserStatus.invalid_argument)), status);
     try std.testing.expect(result.error_message != null);
     try std.testing.expect(std.mem.indexOf(u8, result.error_message.?[0..result.error_len], "missing data") != null);
 }

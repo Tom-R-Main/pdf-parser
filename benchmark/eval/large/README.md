@@ -33,13 +33,13 @@ The encrypted derivative uses the known benchmark password
 `benchmark-password`. This is not a secret; it exists only to exercise
 known-password parsing and should not be reused for private files.
 
-After building ReleaseFast, gate the encrypted derivative against its source
+After building in fast mode, gate the encrypted derivative against its source
 twin. The check requires equal normalized readable text, page count, raw-recall
 text, and non-empty encrypted output, so successful authentication cannot hide
 a degraded extraction result:
 
 ```sh
-zig build -Doptimize=ReleaseFast --summary all
+zig build -Doptimize=fast --summary all
 python3 benchmark/eval/encrypted_twin_quality.py \
   --output benchmark/eval/outputs/encrypted-twin-quality.json
 ```

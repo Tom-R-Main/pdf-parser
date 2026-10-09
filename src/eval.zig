@@ -235,7 +235,7 @@ pub fn latencyFromSamples(
 }
 
 pub fn currentPeakRssMb() ?f64 {
-    return switch (builtin.os.tag) {
+    return switch (builtin.target.os.tag) {
         .linux => blk: {
             const usage = std.posix.getrusage(std.posix.rusage.SELF);
             break :blk @as(f64, @floatFromInt(usage.maxrss)) / 1024.0;

@@ -5,7 +5,7 @@ const std = @import("std");
 const encoding = @import("encoding.zig");
 const runtime = @import("runtime.zig");
 
-pub const mapping_source_count = @typeInfo(encoding.MappingSource).@"enum".fields.len;
+pub const mapping_source_count = @typeInfo(encoding.MappingSource).@"enum".field_names.len;
 
 pub const FontReport = struct {
     font_object: ?u32 = null,
@@ -26,7 +26,7 @@ pub const FontReport = struct {
     mapping_counts: [mapping_source_count]usize = @splat(0),
 
     pub fn count(self: FontReport, source: encoding.MappingSource) usize {
-        return self.mapping_counts[@intFromEnum(source)];
+        return self.mapping_counts[@backingInt(source)];
     }
 
     pub fn toUnicodeGlyphCoverage(self: FontReport) f64 {
@@ -212,9 +212,9 @@ pub fn renderJson(writer: anytype, document_id: []const u8, report: Report) !voi
             font.type3_d1_bboxes,
             font.glyph_count,
         });
-        inline for (@typeInfo(encoding.MappingSource).@"enum".fields, 0..) |field, source_index| {
+        inline for (@typeInfo(encoding.MappingSource).@"enum".field_names, 0..) |name, source_index| {
             if (source_index > 0) try writer.writeByte(',');
-            try writer.print("\"{s}\":{}", .{ field.name, font.mapping_counts[source_index] });
+            try writer.print("\"{s}\":{}", .{ name, font.mapping_counts[source_index] });
         }
         try writer.writeAll("}}");
     }
@@ -257,7 +257,7 @@ test "diagnostic JSON includes per-font mapping provenance" {
         .embedded_font_type = "Type1C",
         .glyph_count = 8,
     };
-    font.mapping_counts[@intFromEnum(encoding.MappingSource.glyph_name)] = 8;
+    font.mapping_counts[@backingInt(encoding.MappingSource.glyph_name)] = 8;
     try renderJson(runtime.arrayListWriter(&output, std.testing.allocator), "fixture.pdf", .{
         .document_page_count = 1,
         .selected_page_count = 1,

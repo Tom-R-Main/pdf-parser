@@ -52,7 +52,7 @@ class BuildPyWithZig(build_py):
             _, source = configured
         elif (repo_root / "build.zig").is_file():
             subprocess.run(
-                ["zig", "build", "shared", "-Doptimize=ReleaseFast", "--summary", "all"],
+                ["zig", "build", "shared", "-Doptimize=fast", "--summary", "all"],
                 cwd=repo_root,
                 check=True,
             )

@@ -45,12 +45,12 @@ hard-document accuracy work are active development areas.
 
 ## Benchmarking And Optimization
 
-Performance claims should be generated from ReleaseFast artifacts and checked
+Performance claims should be generated from fast artifacts and checked
 against byte-stable output, not copied from one-off local timings. Build the
 optimized parser once, then profile the extraction lanes separately:
 
 ```bash
-zig build -Doptimize=ReleaseFast --summary all
+zig build -Doptimize=fast --summary all
 .venv/bin/python benchmark/eval/profile_lanes.py \
   --manifest benchmark/eval/large/manifest.tsv \
   --lanes native-text,adaptive-artifact-jsonl,adaptive-stream-jsonl,ocr-routed \
@@ -249,17 +249,29 @@ turns comparator and profiler JSONL into grouped JSON/Markdown reports and
 records whether manifest PDFs are locally present. It also ranks measured
 optimization candidates and next actions, so the next slice is chosen from
 evidence instead of hunches. `benchmark/eval/run_baseline.py --large` runs the
-whole ReleaseFast baseline workflow and skips large profiling until the ignored
+whole fast baseline workflow and skips large profiling until the ignored
 cache is populated.
 
 ## Requirements
 
-- Zig 0.16.0
+- Zig 0.17.0
 - Optional: `tesseract` and `pdftoppm` for OCR eval routes
 - Optional: Python virtualenv with Pillow for render-oracle checks, plus
   PyMuPDF, pypdfium2, and pdfplumber for cross-parser comparison
 
 ## Building
+
+Select the Zig 0.17.0 toolchain before building and check `zig version`. If the
+compiler is installed in this checkout's ignored toolchain directory, select it
+for the current shell:
+
+```bash
+export PATH="$PWD/.zig-cache/toolchains/zig-aarch64-macos-0.17.0:$PATH"
+zig version
+```
+
+Use the appropriate toolchain directory for your platform. This changes only the
+current shell's compiler selection.
 
 ```bash
 zig build              # Build library and CLI
@@ -587,7 +599,7 @@ with zpdf.Document.open_memory_unsafe(open("file.pdf", "rb").read()) as doc:
 
 Build the shared library first:
 ```bash
-zig build -Doptimize=ReleaseFast
+zig build -Doptimize=fast
 PYTHONPATH=python python3 examples/basic.py
 ```
 

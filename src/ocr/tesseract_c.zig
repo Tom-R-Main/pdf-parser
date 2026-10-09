@@ -10,10 +10,7 @@ const types = @import("types.zig");
 const options = @import("ocr_options");
 
 const enabled = if (options.enable_tesseract_c) struct {
-    const c = @cImport({
-        @cInclude("tesseract/capi.h");
-        @cInclude("leptonica/allheaders.h");
-    });
+    const c = @import("tesseract_c");
 } else struct {};
 
 pub const required_c_api = [_][]const u8{
@@ -84,9 +81,9 @@ fn recognizeRegionEnabled(
 
     if (input.pixel_width == 0 or input.pixel_height == 0) return error.EmptyImage;
 
-    const image_path_z = try allocator.dupeZ(u8, input.image_path);
+    const image_path_z = try allocator.dupeSentinel(u8, input.image_path, 0);
     defer allocator.free(image_path_z);
-    const lang_z = try allocator.dupeZ(u8, config.lang);
+    const lang_z = try allocator.dupeSentinel(u8, config.lang, 0);
     defer allocator.free(lang_z);
 
     const api = c.TessBaseAPICreate() orelse return error.TesseractUnavailable;

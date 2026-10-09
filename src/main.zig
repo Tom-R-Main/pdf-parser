@@ -1559,9 +1559,9 @@ fn parseOcrPsm(value: []const u8) ?zpdf.OcrPageSegMode {
         return std.enums.fromInt(zpdf.OcrPageSegMode, number);
     } else |_| {}
 
-    inline for (@typeInfo(zpdf.OcrPageSegMode).@"enum".fields) |field| {
-        if (std.mem.eql(u8, value, field.name) or equalHyphenatedName(value, field.name)) {
-            return @enumFromInt(field.value);
+    inline for (@typeInfo(zpdf.OcrPageSegMode).@"enum".field_names) |name| {
+        if (std.mem.eql(u8, value, name) or equalHyphenatedName(value, name)) {
+            return @field(zpdf.OcrPageSegMode, name);
         }
     }
     if (std.mem.eql(u8, value, "single-block")) return .single_block;
@@ -2642,7 +2642,7 @@ fn extractAllTextReadingOrderParallel(doc: *zpdf.Document, allocator: std.mem.Al
     }.run;
 
     // Spawn threads
-    var threads: [8]?Thread = [_]?Thread{null} ** 8;
+    var threads: [8]?Thread = @splat(null);
     const pages_per_thread = (num_pages + num_threads - 1) / num_threads;
 
     for (0..num_threads) |i| {

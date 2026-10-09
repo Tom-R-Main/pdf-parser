@@ -329,7 +329,7 @@ class BenchmarkHygieneTests(unittest.TestCase):
             finally:
                 compare.subprocess.run = original_run
 
-        self.assertEqual([["zig", "build", "-Doptimize=ReleaseFast", "--summary", "all"]], calls)
+        self.assertEqual([["zig", "build", "-Doptimize=fast", "--summary", "all"]], calls)
 
     def test_profile_ensure_releasefast_rebuilds_even_when_binary_exists(self) -> None:
         calls: list[list[str]] = []
@@ -349,7 +349,7 @@ class BenchmarkHygieneTests(unittest.TestCase):
             finally:
                 profile_lanes.subprocess.run = original_run
 
-        self.assertEqual([["zig", "build", "-Doptimize=ReleaseFast", "--summary", "all"]], calls)
+        self.assertEqual([["zig", "build", "-Doptimize=fast", "--summary", "all"]], calls)
 
     def test_compare_uses_releasefast_eval_binary_by_default(self) -> None:
         entry = compare.Entry(

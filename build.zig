@@ -20,11 +20,24 @@ pub fn build(b: *std.Build) void {
     ) orelse "/opt/homebrew/lib";
     const ocr_options = b.addOptions();
     ocr_options.addOption(bool, "enable_tesseract_c", enable_tesseract_c);
+    const tesseract_c = if (enable_tesseract_c) blk: {
+        const translated = b.addTranslateC(.{
+            .root_source_file = b.path("src/ocr/tesseract_headers.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        translated.addSystemIncludePath(.{ .cwd_relative = tesseract_include });
+        translated.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+        translated.addSystemIncludePath(.{ .cwd_relative = "/usr/local/include" });
+        translated.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+        break :blk translated.createModule();
+    } else null;
     const ocr_build = OcrBuildOptions{
         .options = ocr_options,
         .enable_tesseract_c = enable_tesseract_c,
         .tesseract_include = tesseract_include,
         .tesseract_lib = tesseract_lib,
+        .tesseract_c = tesseract_c,
     };
 
     // Main library
@@ -59,7 +72,7 @@ pub fn build(b: *std.Build) void {
         .root_module = parserModule(b, "src/wapi.zig", b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
             .os_tag = .freestanding,
-        }), .ReleaseSmall, ocr_build),
+        }), .small, ocr_build),
     });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
@@ -80,9 +93,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the pdf-parser CLI");
     run_step.dependOn(&run_cmd.step);
@@ -199,6 +210,13 @@ pub fn build(b: *std.Build) void {
     const capi_unit_tests = b.addTest(.{
         .root_module = parserModule(b, "src/capi.zig", target, optimize, ocr_build),
     });
+    const public_header = b.addTranslateC(.{
+        .root_source_file = b.path("include/pdf_parser.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = false,
+    });
+    capi_unit_tests.root_module.addImport("pdf_parser_c", public_header.createModule());
 
     const run_capi_unit_tests = b.addRunArtifact(capi_unit_tests);
 
@@ -281,9 +299,7 @@ pub fn build(b: *std.Build) void {
         .root_module = parserModule(b, "src/eval_corpus_writer.zig", target, optimize, ocr_build),
     });
     const eval_corpus_cmd = b.addRunArtifact(eval_corpus_exe);
-    if (b.args) |args| {
-        eval_corpus_cmd.addArgs(args);
-    }
+    eval_corpus_cmd.addPassthruArgs();
 
     const eval_corpus_step = b.step("eval-corpus", "Generate tiny evaluation corpus fixtures");
     eval_corpus_step.dependOn(&eval_corpus_cmd.step);
@@ -296,9 +312,7 @@ pub fn build(b: *std.Build) void {
 
     const eval_cmd = b.addRunArtifact(eval_exe);
     eval_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        eval_cmd.addArgs(args);
-    }
+    eval_cmd.addPassthruArgs();
 
     const eval_step = b.step("eval", "Run per-document evaluation and emit JSONL");
     eval_step.dependOn(&eval_cmd.step);
@@ -314,9 +328,7 @@ pub fn build(b: *std.Build) void {
         "--tools",
         "pdf-parser:native",
     });
-    if (b.args) |args| {
-        benchmark_eval_cmd.addArgs(args);
-    }
+    benchmark_eval_cmd.addPassthruArgs();
 
     const benchmark_eval_step = b.step("benchmark-eval", "Run corpus benchmark scorecard");
     benchmark_eval_step.dependOn(&benchmark_eval_cmd.step);
@@ -388,15 +400,13 @@ pub fn build(b: *std.Build) void {
     // Benchmark
     const bench = b.addExecutable(.{
         .name = "bench",
-        .root_module = parserModule(b, "src/bench.zig", target, .ReleaseFast, ocr_build),
+        .root_module = parserModule(b, "src/bench.zig", target, .fast, ocr_build),
     });
 
     const bench_cmd = b.addRunArtifact(bench);
     bench_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        bench_cmd.addArgs(args);
-    }
+    bench_cmd.addPassthruArgs();
 
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&bench_cmd.step);
@@ -408,9 +418,7 @@ pub fn build(b: *std.Build) void {
         .root_module = parserModule(b, "src/simd_bench.zig", target, optimize, ocr_build),
     });
     const simd_bench_cmd = b.addRunArtifact(simd_bench);
-    if (b.args) |args| {
-        simd_bench_cmd.addArgs(args);
-    }
+    simd_bench_cmd.addPassthruArgs();
 
     const simd_bench_step = b.step("simd-bench", "Benchmark scalar, std, and existing SIMD substring search");
     simd_bench_step.dependOn(&simd_bench_cmd.step);
@@ -426,13 +434,14 @@ const OcrBuildOptions = struct {
     enable_tesseract_c: bool,
     tesseract_include: []const u8,
     tesseract_lib: []const u8,
+    tesseract_c: ?*std.Build.Module,
 };
 
 fn parserModule(
     b: *std.Build,
     root_source_file: []const u8,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     ocr_build: OcrBuildOptions,
 ) *std.Build.Module {
     const module = b.createModule(.{
@@ -444,6 +453,7 @@ fn parserModule(
     module.addOptions("ocr_options", ocr_build.options);
 
     if (ocr_build.enable_tesseract_c) {
+        module.addImport("tesseract_c", ocr_build.tesseract_c.?);
         module.link_libc = true;
         module.addSystemIncludePath(.{ .cwd_relative = ocr_build.tesseract_include });
         module.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });

@@ -59,7 +59,7 @@ def run_cli(argv: list[str] | None = None) -> int:
     commands: list[list[str]] = []
 
     if not args.skip_releasefast:
-        commands.append(["zig", "build", "-Doptimize=ReleaseFast", "--summary", "all"])
+        commands.append(["zig", "build", "-Doptimize=fast", "--summary", "all"])
 
     if not args.skip_compare:
         commands.append(

@@ -5,7 +5,7 @@ Repository-specific guidance for work in `/Users/thomasmain/projects/pdf-parser`
 ## Project Posture
 
 - This is a capable pre-1.0 Zig PDF parser, not an alpha toy. Treat public claims conservatively, but assume the core architecture is real and worth preserving.
-- Target Zig is `0.16.0`; check `.zig-version`, `build.zig`, nearby code, and `zig version` before changing Zig APIs.
+- Target Zig is `0.17.0`; check `.zig-version`, `build.zig`, nearby code, and `zig version` before changing Zig APIs.
 - The default integration surface is deterministic CLI/JSONL: `pdf-parser extract-adaptive --input ... --format artifact-jsonl|stream-jsonl`.
 - Keep Siftable useful, but keep the parser neutral. Do not add Siftable-specific tables, enums, paths, or assumptions inside parser code.
 
@@ -22,7 +22,7 @@ Repository-specific guidance for work in `/Users/thomasmain/projects/pdf-parser`
 
 ## Implementation Rules
 
-- Match the existing Zig 0.16 style: explicit allocators, explicit writers, `errdefer` for partial initialization, and clear ownership of allocated buffers.
+- Match the existing Zig 0.17 style: explicit allocators, explicit writers, `errdefer` for partial initialization, and clear ownership of allocated buffers.
 - Use `apply_patch` for manual edits. Avoid broad formatting churn unless it is part of the requested task.
 - Keep changes small and reviewable. Do not rewrite unrelated parser layers while fixing one capability.
 - Avoid destructive git or filesystem operations unless the user explicitly asks. Build caches such as `.zig-cache` and `zig-out` may be removed only when cleanup is requested.
@@ -60,10 +60,10 @@ zig build eval -- --adaptive --ocr-executable tesseract --ocr-rasterizer pdftopp
 pdf-parser benchmark --manifest benchmark/eval/corpus/manifest.tsv --tools pdf-parser:adaptive --output /tmp/pdf-parser-scorecard.json
 ```
 
-For performance claims, use ReleaseFast and benchmark tooling. Do not claim speedups from Debug builds or one-off timings:
+For performance claims, use fast mode and benchmark tooling. Do not claim speedups from debug builds or one-off timings:
 
 ```sh
-zig build -Doptimize=ReleaseFast --summary all
+zig build -Doptimize=fast --summary all
 .venv/bin/python benchmark/eval/profile_lanes.py --manifest benchmark/eval/corpus/manifest.tsv --lanes native-text,adaptive-artifact-jsonl --output /tmp/pdf-parser-profile.jsonl
 ```
 
@@ -72,7 +72,7 @@ zig build -Doptimize=ReleaseFast --summary all
 - The checked-in corpus under `benchmark/eval/corpus` is for small deterministic correctness tests.
 - Large public or private performance PDFs belong under ignored `benchmark/eval/raw_cache/large`.
 - Commit manifests, metadata, scripts, and small/redacted fixtures when appropriate; do not commit bulky raw downloads.
-- Keep external tool comparisons explicit and neutral. Use ReleaseFast comparator paths when measuring `pdf-parser`.
+- Keep external tool comparisons explicit and neutral. Use fast comparator paths when measuring `pdf-parser`.
 - If a synthetic fixture passes too easily, add a harder real-world or derived fixture before tuning behavior around it.
 
 ## Git Hygiene

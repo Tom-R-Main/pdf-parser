@@ -48,7 +48,7 @@ fn mainInner(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
-    if (builtin.mode != .ReleaseFast) {
+    if (builtin.optimize != .fast) {
         try writeRefusal(stdout, config);
         return;
     }
@@ -209,18 +209,18 @@ fn percentile(sorted_samples: []const u64, percent: usize) u64 {
 }
 
 fn resolvedVectorWidth() usize {
-    const has_avx2 = builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
-    const has_sse42 = builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .sse4_2);
-    const has_neon = builtin.cpu.arch == .aarch64;
+    const has_avx2 = builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx2);
+    const has_sse42 = builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .sse4_2);
+    const has_neon = builtin.target.cpu.arch == .aarch64;
     return if (has_avx2) 32 else if (has_sse42 or has_neon) 16 else 8;
 }
 
 fn hasAvx2() bool {
-    return builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .avx2);
+    return builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .avx2);
 }
 
 fn hasSse42() bool {
-    return builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .sse4_2);
+    return builtin.target.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.target.cpu.features, .sse4_2);
 }
 
 fn verdict(result: BenchResult) ?[]const u8 {
@@ -247,17 +247,27 @@ fn verdict(result: BenchResult) ?[]const u8 {
     return winner;
 }
 
+// Preserve the mode labels in the version 1.0.0 benchmark JSON contract.
+fn jsonOptimizeModeName() []const u8 {
+    return switch (builtin.optimize) {
+        .debug => "Debug",
+        .safe => "ReleaseSafe",
+        .fast => "ReleaseFast",
+        .small => "ReleaseSmall",
+    };
+}
+
 fn writeRefusal(writer: anytype, config: Config) !void {
     if (config.format == .json) {
         try writer.print(
             "{{\"schema_version\":\"1.0.0\",\"zig_version\":\"{s}\",\"optimize_mode\":\"{s}\",\"architecture\":\"{s}\",\"target_features\":{{\"avx2\":{},\"sse4_2\":{},\"neon\":{}}},\"resolved_vector_width_bytes\":{},\"buffer_distribution\":{{\"sizes_bytes\":[32,64,128,256,512,1024,4096],\"needle\":\"EI\",\"match_position\":\"end\",\"false_first_byte_stride\":47}},\"warmup_count\":{},\"repeat_count\":{},\"batch_iterations\":{},\"operations_per_sample\":{},\"verdict\":null,\"refusal_reason\":\"benchmark verdicts require ReleaseFast\"}}\n",
             .{
                 builtin.zig_version_string,
-                @tagName(builtin.mode),
-                @tagName(builtin.cpu.arch),
+                jsonOptimizeModeName(),
+                @tagName(builtin.target.cpu.arch),
                 hasAvx2(),
                 hasSse42(),
-                builtin.cpu.arch == .aarch64,
+                builtin.target.cpu.arch == .aarch64,
                 resolvedVectorWidth(),
                 config.warmup_count,
                 config.repeat_count,
@@ -266,7 +276,7 @@ fn writeRefusal(writer: anytype, config: Config) !void {
             },
         );
     } else {
-        try writer.print("Refusing benchmark verdict in {s}; rerun with -Doptimize=ReleaseFast.\n", .{@tagName(builtin.mode)});
+        try writer.print("Refusing benchmark verdict in {s}; rerun with -Doptimize=fast.\n", .{@tagName(builtin.optimize)});
     }
 }
 
@@ -276,11 +286,11 @@ fn writeJson(writer: anytype, config: Config, result: BenchResult) !void {
         "{{\"schema_version\":\"1.0.0\",\"zig_version\":\"{s}\",\"optimize_mode\":\"{s}\",\"architecture\":\"{s}\",\"target_features\":{{\"avx2\":{},\"sse4_2\":{},\"neon\":{}}},\"resolved_vector_width_bytes\":{},\"buffer_distribution\":{{\"sizes_bytes\":[32,64,128,256,512,1024,4096],\"needle\":\"EI\",\"match_position\":\"end\",\"false_first_byte_stride\":47}},\"warmup_count\":{},\"repeat_count\":{},\"batch_iterations\":{},\"operations_per_sample\":{},\"arms\":{{\"scalar\":{{\"median_ns\":{},\"mad_ns\":{},\"min_ns\":{},\"max_ns\":{}}},\"std_mem\":{{\"median_ns\":{},\"mad_ns\":{},\"min_ns\":{},\"max_ns\":{}}},\"existing_simd\":{{\"median_ns\":{},\"mad_ns\":{},\"min_ns\":{},\"max_ns\":{}}}}},\"checksum\":{},\"verdict\":",
         .{
             builtin.zig_version_string,
-            @tagName(builtin.mode),
-            @tagName(builtin.cpu.arch),
+            jsonOptimizeModeName(),
+            @tagName(builtin.target.cpu.arch),
             hasAvx2(),
             hasSse42(),
-            builtin.cpu.arch == .aarch64,
+            builtin.target.cpu.arch == .aarch64,
             resolvedVectorWidth(),
             config.warmup_count,
             config.repeat_count,
@@ -316,8 +326,8 @@ fn writeText(writer: anytype, config: Config, result: BenchResult) !void {
             "existing SIMD: median {} ns, MAD {} ns\n",
         .{
             builtin.zig_version_string,
-            @tagName(builtin.mode),
-            @tagName(builtin.cpu.arch),
+            @tagName(builtin.optimize),
+            @tagName(builtin.target.cpu.arch),
             resolvedVectorWidth(),
             config.warmup_count,
             config.repeat_count,
@@ -335,6 +345,21 @@ fn writeText(writer: anytype, config: Config, result: BenchResult) !void {
     } else {
         try writer.writeAll("verdict: no clear winner\n");
     }
+}
+
+test "benchmark JSON retains version 1.0.0 optimization labels" {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try writeRefusal(runtime.arrayListWriter(&output, std.testing.allocator), .{ .format = .json });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("1.0.0", parsed.value.object.get("schema_version").?.string);
+    const mode = parsed.value.object.get("optimize_mode").?.string;
+    const valid_modes = [_][]const u8{ "Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall" };
+    for (valid_modes) |valid_mode| {
+        if (std.mem.eql(u8, mode, valid_mode)) return;
+    }
+    return error.TestUnexpectedResult;
 }
 
 test "benchmark arms agree across deterministic buffers" {

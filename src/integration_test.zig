@@ -201,7 +201,7 @@ test "adaptive extraction returns native spans routes traces and chunks" {
 }
 
 test "adaptive OCR route invokes rasterizer and Tesseract adapter into fresh OCR spans" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -325,7 +325,7 @@ test "adaptive OCR records explicit not invoked outcome when disabled" {
 }
 
 test "adaptive OCR records unavailable rasterizer instead of empty" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});
@@ -369,7 +369,7 @@ test "adaptive OCR records unavailable rasterizer instead of empty" {
 }
 
 test "bounded OCR fallback records both attempts and selects higher quality result" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});

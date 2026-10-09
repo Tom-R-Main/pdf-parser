@@ -12,7 +12,7 @@ var wasm_allocator = std.heap.wasm_allocator;
 
 // Document handle storage (simple slot-based system)
 const MAX_DOCUMENTS = 16;
-var documents: [MAX_DOCUMENTS]?*zpdf.Document = [_]?*zpdf.Document{null} ** MAX_DOCUMENTS;
+var documents: [MAX_DOCUMENTS]?*zpdf.Document = @splat(null);
 
 fn findFreeSlot() ?usize {
     for (documents, 0..) |doc, i| {
@@ -226,7 +226,7 @@ fn buildTextSpans(allocator: std.mem.Allocator, spans: []const zpdf.TextSpan) ![
             .text_len = text_copy.len,
             .font_size = span.font_size,
             .page_index = span.page_index,
-            .source_kind = @intFromEnum(span.source),
+            .source_kind = @backingInt(span.source),
             .confidence = span.confidence,
             .block_id = optionalU32ToC(span.block_id),
             .line_id = optionalU32ToC(span.line_id),

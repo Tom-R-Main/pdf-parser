@@ -17,7 +17,7 @@ try:
 except ImportError:
     HAS_ZPDF = False
     print("Warning: zpdf Python bindings not available")
-    print("Build with: zig build -Doptimize=ReleaseFast")
+    print("Build with: zig build -Doptimize=fast")
 
 try:
     import fitz  # PyMuPDF

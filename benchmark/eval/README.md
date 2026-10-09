@@ -137,7 +137,7 @@ python3 benchmark/eval/generate_cmap_resources.py \
 ```
 
 CI repeats this check from sparse checkouts of the pinned Adobe revisions and
-enforces a 3,250,000-byte budget for the ReleaseSmall WASM artifact.
+enforces a 3,250,000-byte budget for the small WASM artifact.
 
 Render-oracle sidecars live under
 `benchmark/eval/ground_truth/render_oracle/`. They keep visual expectations out
@@ -603,8 +603,8 @@ python3 benchmark/eval/compare.py --ensure-releasefast
 It reports CER, WER, token F1, latency, and RSS for `pdf-parser`, PyMuPDF,
 `pypdfium2`, `pdfplumber`, and a named Tesseract lane. The `pdf-parser` lane
 uses `zig-out/bin/pdf-parser-eval` by default. With `--ensure-releasefast`
-enabled, it runs `zig build -Doptimize=ReleaseFast` before measuring even when
-the binary already exists; this avoids accidentally timing a Debug binary after
+enabled, it runs `zig build -Doptimize=fast` before measuring even when
+the binary already exists; this avoids accidentally timing a debug binary after
 a normal `zig build`. Its `latency_ms` is parser reported latency, while
 `wall_ms` captures subprocess overhead. Use
 `--pdf-parser-runner zig-build` only for legacy compatibility. Python baselines
@@ -662,8 +662,8 @@ Profile extraction surfaces before tuning parser internals:
 The profiler writes one JSONL record per document/lane/repeat with wall time,
 peak RSS when `/usr/bin/time` exposes it, input SHA256, output byte count, and
 stream parser latency when the lane emits a `document_finished` record. Its
-default `--ensure-releasefast` mode also rebuilds ReleaseFast before measuring,
-so profiler output stays comparable after local Debug builds. Use the tiny
+default `--ensure-releasefast` mode also rebuilds in fast mode before measuring,
+so profiler output stays comparable after local debug builds. Use the tiny
 checked-in manifest for CI smoke tests and the large manifest after populating
 `raw_cache/large`. Adaptive JSONL lanes pass `--no-ocr` by default so structured
 rendering and OCR subprocess overhead stay separate; add
@@ -692,7 +692,7 @@ For the full baseline workflow, use the wrapper:
 .venv/bin/python benchmark/eval/run_baseline.py --large
 ```
 
-It builds ReleaseFast, runs the tiny comparator, profiles tiny native/adaptive
+It builds in fast mode, runs the tiny comparator, profiles tiny native/adaptive
 lanes, profiles the OCR lane when `tesseract` and `pdftoppm` are present, and
 writes the grouped JSON/Markdown report. `--large` profiles
 `benchmark/eval/large/manifest.tsv` only when every referenced PDF exists. The
@@ -718,7 +718,7 @@ The JSON report groups accuracy by parser/category and performance by
 lane/category, records whether manifest PDFs are locally present, ranks measured
 optimization candidates, and emits next-action commands for missing corpus or
 before/after tuning work. The Markdown table is intended for quick triage and
-PR notes; keep public claims conservative unless they cite these ReleaseFast
+PR notes; keep public claims conservative unless they cite these fast
 artifacts. Files written under `benchmark/eval/outputs/` are ignored local run
 artifacts; commit scripts, manifests, and docs, not machine-specific timings.
 
@@ -726,16 +726,20 @@ For isolated substring-search evidence, compare the scalar loop, Zig standard
 library, and existing SIMD implementation in-process:
 
 ```sh
-zig build simd-bench -Doptimize=ReleaseFast -- \
+zig build simd-bench -Doptimize=fast -- \
   --warmup 100 --repeat 1000 --format json
 ```
 
 The command reports its Zig version, optimization mode, architecture, resolved
 vector width, buffer distribution, iteration counts, medians, and median
-absolute deviations. It emits no verdict outside ReleaseFast. A kernel result
+absolute deviations. It emits no verdict outside fast mode. A kernel result
 is only isolated evidence; pair it with corpus exposure before changing parser
 code, and accept “no qualifying target” when representative workloads do not
 reach that kernel at vector-sized lengths.
+
+The version 1.0.0 JSON retains `Debug`, `ReleaseSafe`, `ReleaseFast`, and
+`ReleaseSmall` in `optimize_mode` for compatibility with earlier reports.
+These labels correspond to Zig 0.17's `debug`, `safe`, `fast`, and `small` modes.
 
 Install optional baselines in your own environment when you want strict
 side-by-side numbers:

@@ -245,7 +245,7 @@ pub fn parseAndAuthenticate(
         .v = v,
         .r = r,
         .length_bits = length_bits,
-        .key = [_]u8{0} ** 32,
+        .key = @splat(0),
         .key_len = length_bits / 8,
         .stream_method = methods.stream,
         .string_method = methods.string,
@@ -613,7 +613,7 @@ fn aesCbcDecryptAlloc(allocator: std.mem.Allocator, key: []const u8, data: []con
 fn aesCbcDecryptNoPadding(key: []const u8, cipher: []const u8) ![32]u8 {
     if (cipher.len != 32) return EncryptionError.InvalidCiphertext;
     var out: [32]u8 = cipher[0..32].*;
-    const zero_iv = [_]u8{0} ** 16;
+    const zero_iv: [16]u8 = @splat(0);
     aesCbcCryptInPlace(key, &zero_iv, out[0..], .decrypt);
     return out;
 }
@@ -747,9 +747,10 @@ test "RC4 test vector" {
 }
 
 test "AES-CBC decrypt strips PKCS7" {
-    const key = [_]u8{0} ** 16;
-    const iv = [_]u8{0} ** 16;
-    var block = [_]u8{ 0x41, 0x42, 0x43 } ++ [_]u8{13} ** 13;
+    const key: [16]u8 = @splat(0);
+    const iv: [16]u8 = @splat(0);
+    var block: [16]u8 = @splat(13);
+    @memcpy(block[0..3], "ABC");
     aes128CbcCryptInPlace(&key, &iv, &block, .encrypt);
     var encoded: [32]u8 = undefined;
     @memcpy(encoded[0..16], &iv);

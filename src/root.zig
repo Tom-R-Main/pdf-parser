@@ -12,9 +12,9 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
-const native_os = builtin.os.tag;
+const native_os = builtin.target.os.tag;
 
-const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
+const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 const is_windows = native_os == .windows;
 
 // Internal modules
@@ -750,7 +750,7 @@ pub const Document = struct {
                     if (self.font_cache.getPtr(key)) |font| {
                         const font_report = try ensureFontReport(allocator, &font_reports, resource_name, font);
                         font_report.glyph_count += 1;
-                        font_report.mapping_counts[@intFromEnum(glyph.mapping_source)] += 1;
+                        font_report.mapping_counts[@backingInt(glyph.mapping_source)] += 1;
                     }
                 }
             }
@@ -2755,7 +2755,7 @@ pub const Document = struct {
         if (a.normalized_page_offset != b.normalized_page_offset) {
             return a.normalized_page_offset < b.normalized_page_offset;
         }
-        return @intFromEnum(a.match.source_kind) < @intFromEnum(b.match.source_kind);
+        return @backingInt(a.match.source_kind) < @backingInt(b.match.source_kind);
     }
 
     fn preferSearchCandidate(candidate: *const SearchCandidate, current: *const SearchCandidate) bool {
@@ -3031,7 +3031,7 @@ pub const Document = struct {
 
         const filename = try std.fmt.allocPrint(allocator, "pdf-parser-formula-crop-{x}-{x}", .{ page_idx, runtime.nanoTimestamp() });
         defer allocator.free(filename);
-        const temp_dir: []const u8 = if (builtin.os.tag == .windows) "." else "/tmp";
+        const temp_dir: []const u8 = if (builtin.target.os.tag == .windows) "." else "/tmp";
         const prefix = try std.fs.path.join(allocator, &.{ temp_dir, filename });
         defer allocator.free(prefix);
         const image_path = try std.fmt.allocPrint(allocator, "{s}.png", .{prefix});
@@ -5355,7 +5355,7 @@ fn makeMergeCandidate(
             .glyph_indices = owned_glyph_identity,
             .bbox = bbox,
         },
-        .normalized_source_hash = @intCast(normalized_offset + @as(usize, @intFromEnum(source_kind)) + 1),
+        .normalized_source_hash = @intCast(normalized_offset + @as(usize, @backingInt(source_kind)) + 1),
         .normalized_source_len = 100,
         .normalized_page_offset = normalized_offset,
         .page_position = Document.normalizedPagePosition(normalized_offset, 100),

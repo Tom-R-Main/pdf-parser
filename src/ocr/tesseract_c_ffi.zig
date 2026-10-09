@@ -5,9 +5,7 @@
 
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("tesseract/capi.h");
-});
+const c = @import("tesseract_c");
 
 test "libtesseract C API header exposes the intended entry points" {
     try std.testing.expect(@hasDecl(c, "TessVersion"));

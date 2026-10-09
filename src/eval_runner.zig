@@ -2219,7 +2219,7 @@ test "eval runner parses manifest option" {
 }
 
 test "eval runner adaptive mode emits OCR text metrics and counters" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     var threaded: std.Io.Threaded = .init(allocator, .{});

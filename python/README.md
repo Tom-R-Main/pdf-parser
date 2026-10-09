@@ -53,11 +53,11 @@ with Document(data) as doc:
 
 ## Benchmark
 
-Build the native library in ReleaseFast mode, then use the repository benchmark
+Build the native library in fast mode, then use the repository benchmark
 harness for current timings:
 
 ```bash
-zig build -Doptimize=ReleaseFast --summary all
+zig build -Doptimize=fast --summary all
 .venv/bin/python benchmark/eval/compare.py \
   --pdf-parser-adaptive \
   --tools pdf-parser,pymupdf,pypdfium2,pdfplumber \

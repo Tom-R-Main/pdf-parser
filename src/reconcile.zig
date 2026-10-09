@@ -831,7 +831,7 @@ fn sameLine(a: TextSpan, b: TextSpan, threshold: f64) bool {
 }
 
 fn sourceMask(source: SourceKind) SourceMask {
-    return @as(SourceMask, 1) << @as(u5, @intCast(@intFromEnum(source)));
+    return @as(SourceMask, 1) << @as(u5, @intCast(@backingInt(source)));
 }
 
 pub fn hasSource(mask: SourceMask, source: SourceKind) bool {

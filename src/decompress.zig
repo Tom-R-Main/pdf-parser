@@ -751,7 +751,7 @@ fn compressZlibForTest(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 
 test "FlateDecode enforces exact output-cap boundaries while streaming" {
     const allocator = std.testing.allocator;
-    const input = [_]u8{'A'} ** 1024;
+    const input: [1024]u8 = @splat('A');
     const compressed = try compressZlibForTest(allocator, &input);
     defer allocator.free(compressed);
 
@@ -771,7 +771,7 @@ fn flateAllocationProbe(allocator: std.mem.Allocator, compressed: []const u8) !v
 }
 
 test "FlateDecode releases bounded output on allocation failure" {
-    const input = [_]u8{'B'} ** 1024;
+    const input: [1024]u8 = @splat('B');
     const compressed = try compressZlibForTest(std.testing.allocator, &input);
     defer std.testing.allocator.free(compressed);
 

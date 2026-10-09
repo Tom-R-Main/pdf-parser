@@ -1129,7 +1129,7 @@ fn stripSubsetPrefix(name: []const u8) []const u8 {
 }
 
 fn fontNameContains(name: []const u8, needle: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(name, needle) != null;
+    return std.ascii.findIgnoreCase(name, needle) != null;
 }
 
 fn applySymbolEncoding(encoding: *FontEncoding) void {
