@@ -20,6 +20,8 @@ pub fn build(b: *std.Build) void {
     ) orelse "/opt/homebrew/lib";
     const ocr_options = b.addOptions();
     ocr_options.addOption(bool, "enable_tesseract_c", enable_tesseract_c);
+    const memory_options = b.addOptions();
+    memory_options.addOption(bool, "memcheck", false);
     const tesseract_c = if (enable_tesseract_c) blk: {
         const translated = b.addTranslateC(.{
             .root_source_file = b.path("src/ocr/tesseract_headers.h"),
@@ -34,6 +36,7 @@ pub fn build(b: *std.Build) void {
     } else null;
     const ocr_build = OcrBuildOptions{
         .options = ocr_options,
+        .memory_options = memory_options,
         .enable_tesseract_c = enable_tesseract_c,
         .tesseract_include = tesseract_include,
         .tesseract_lib = tesseract_lib,
@@ -88,6 +91,65 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+
+    // Explicit diagnostic artifacts: ordinary builds keep their allocators.
+    const diagnostic_options = b.addOptions();
+    diagnostic_options.addOption(bool, "memcheck", true);
+    var diagnostic_build = ocr_build;
+    diagnostic_build.memory_options = diagnostic_options;
+    diagnostic_build.memcheck = true;
+    var diagnostic_query = target.query;
+    diagnostic_query.cpu_model = .baseline;
+    diagnostic_query.cpu_features_add = .empty;
+    diagnostic_query.cpu_features_sub = .empty;
+    const diagnostic_target = b.resolveTargetQuery(diagnostic_query);
+    const diagnostic_exe = b.addExecutable(.{
+        .name = "pdf-parser",
+        .root_module = parserModule(b, "src/main.zig", diagnostic_target, .debug, diagnostic_build),
+        .use_llvm = true,
+    });
+    const diagnostic_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "pdf_parser",
+        .root_module = parserModule(b, "src/capi.zig", diagnostic_target, .debug, diagnostic_build),
+        .use_llvm = true,
+    });
+    const memcheck_build_step = b.step("memcheck-build", "Build isolated libc-backed Memcheck artifacts");
+    const diagnostic_info = b.addWriteFiles();
+    const target_triple = diagnostic_target.result.zigTriple(b.allocator) catch @panic("out of memory");
+    const info_file = diagnostic_info.add("memcheck-build.json", b.fmt(
+        "{{\"zig_version\":\"{s}\",\"allocator\":\"libc\",\"optimize\":\"debug\",\"cpu\":\"baseline\",\"target\":\"{s}\",\"compiler_valgrind\":{},\"tesseract_c\":{},\"stdio\":\"{s}\",\"zig_error_return_tracing\":{}}}\n",
+        .{ @import("builtin").zig_version_string, target_triple, switch (diagnostic_target.result.cpu.arch) {
+            .x86, .x86_64 => true,
+            else => false,
+        }, enable_tesseract_c, if (diagnostic_target.result.os.tag == .macos) "streaming" else "default", diagnostic_target.result.os.tag != .macos },
+    ));
+    memcheck_build_step.dependOn(&b.addInstallFile(info_file, "memcheck/build-info.json").step);
+    for ([_]*std.Build.Step.Compile{ diagnostic_exe, diagnostic_lib }) |artifact| {
+        const directory = if (artifact == diagnostic_exe) "memcheck/bin" else "memcheck/lib";
+        const install = b.addInstallArtifact(artifact, .{
+            .dest_dir = .{ .override = .{ .custom = directory } },
+        });
+        memcheck_build_step.dependOn(&install.step);
+    }
+    const arena_probe = b.addExecutable(.{
+        .name = "memcheck-arena",
+        .root_module = parserModule(b, "src/memcheck_arena.zig", diagnostic_target, .debug, diagnostic_build),
+        .use_llvm = true,
+    });
+    memcheck_build_step.dependOn(&b.addInstallArtifact(arena_probe, .{
+        .dest_dir = .{ .override = .{ .custom = "memcheck/bin" } },
+    }).step);
+    if (enable_tesseract_c) {
+        const diagnostic_ocr = b.addExecutable(.{
+            .name = "memcheck-ocr",
+            .root_module = parserModule(b, "src/memcheck_ocr.zig", diagnostic_target, .debug, diagnostic_build),
+            .use_llvm = true,
+        });
+        memcheck_build_step.dependOn(&b.addInstallArtifact(diagnostic_ocr, .{
+            .dest_dir = .{ .override = .{ .custom = "memcheck/bin" } },
+        }).step);
+    }
 
     // Run command
     const run_cmd = b.addRunArtifact(exe);
@@ -431,6 +493,8 @@ pub fn build(b: *std.Build) void {
 
 const OcrBuildOptions = struct {
     options: *std.Build.Step.Options,
+    memory_options: *std.Build.Step.Options,
+    memcheck: bool = false,
     enable_tesseract_c: bool,
     tesseract_include: []const u8,
     tesseract_lib: []const u8,
@@ -451,6 +515,23 @@ fn parserModule(
     });
     module.addSystemIncludePath(.{ .cwd_relative = "include" });
     module.addOptions("ocr_options", ocr_build.options);
+    module.addOptions("memory_options", ocr_build.memory_options);
+    if (ocr_build.memcheck) {
+        module.link_libc = true;
+        module.strip = false;
+        module.omit_frame_pointer = false;
+        module.unwind_tables = .sync;
+        // macOS error-return stack printing reads debug data through preadv,
+        // which the fork does not handle. Keep symbols and Memcheck stacks;
+        // disabling Zig error-return traces does not disable runtime safety.
+        if (target.result.os.tag == .macos) module.error_tracing = false;
+        // Zig 0.17 rejects -fvalgrind on ARM64. The macOS fork still
+        // instruments libc allocations; compiler client requests are separate.
+        module.valgrind = switch (target.result.cpu.arch) {
+            .x86, .x86_64 => true,
+            else => false,
+        };
+    }
 
     if (ocr_build.enable_tesseract_c) {
         module.addImport("tesseract_c", ocr_build.tesseract_c.?);

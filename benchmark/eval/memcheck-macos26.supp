@@ -1,0 +1,72 @@
+# macOS 26.5.1 ARM64, LouisBrunner revision
+# 7877928dcc8bfb873325e4f51949f930d77e493e (3.28.0.GIT-lbmacos).
+# Reproduced with memcheck_probe.c clean: allocate, read, free, normal exit.
+# No parser library is linked. Non-reachable leaks originate in libobjc's image
+# registration during dyld startup. Upstream darwin-arm64.supp documents this
+# class as OSX2600:dyld_map_images_leak (see upstream issue #198).
+# Constrain the allocator, libobjc frame, startup path, and leak categories.
+# Do not suppress reachable allocations or any invalid-access/definedness errors.
+# Requalify clean and all three negative probes after tool/OS changes.
+# Further Foundation/CoreGraphics initialization reports reproduce by only
+# dlopen/dlclose of the diagnostic library (library-clean), with no parser calls.
+# Their allocation stacks are constrained to system runtime objects and named
+# initialization paths below. Keep the unsuppressed loader control as evidence.
+{
+   macos26-objc-image-registration-calloc
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_calloc
+   obj:/usr/lib/libobjc.A.dylib
+   ...
+   fun:map_images_nolock
+   fun:map_images
+}
+{
+   macos26-corefoundation-class-initialization
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_*
+   obj:/usr/lib/libobjc.A.dylib
+   ...
+   fun:__CFInitialize
+}
+{
+   macos26-objc-dependency-image-initialization
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_*
+   obj:/usr/lib/libobjc.A.dylib
+   ...
+   fun:load_images
+}
+{
+   macos26-swift-foundation-initialization
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_calloc
+   obj:/usr/lib/swift/libswiftCore.dylib
+   ...
+   fun:_NSInitializePlatform
+   fun:load_images
+}
+{
+   macos26-coregraphics-initial-color
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_calloc
+   obj:/usr/lib/libobjc.A.dylib
+   ...
+   fun:CGColorCreateGenericGray
+   ...
+   obj:/usr/lib/dyld
+}
+{
+   macos26-objc-image-registration-malloc
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect,possible
+   fun:malloc_type_malloc
+   obj:/usr/lib/libobjc.A.dylib
+   ...
+   fun:map_images_nolock
+   fun:map_images
+}

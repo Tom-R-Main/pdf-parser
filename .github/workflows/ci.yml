@@ -9,6 +9,53 @@ permissions:
   contents: read
 
 jobs:
+  memcheck:
+    name: Memcheck public boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install memory-check and OCR tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind libc6-dbg libtesseract-dev libleptonica-dev tesseract-ocr-eng poppler-utils
+          python -m pip install cffi
+
+      - name: Build normal baseline
+        run: zig build --summary all
+
+      - name: Build isolated diagnostic artifacts
+        run: zig build memcheck-build -Dtesseract-c=true -Dtesseract-include=/usr/include -Dtesseract-lib=/usr/lib/x86_64-linux-gnu --summary all
+
+      - name: Qualify Memcheck and exercise CLI, shared library, Python, and OCR
+        run: |
+          python benchmark/eval/memcheck_runner.py \
+            --prefix zig-out/memcheck \
+            --baseline-prefix zig-out \
+            --python "$(command -v python)" \
+            --ocr \
+            --output benchmark/eval/outputs/memcheck-ci
+
+      - name: Upload memory-check evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: memcheck
+          path: benchmark/eval/outputs/memcheck-ci
+          if-no-files-found: warn
+
   native:
     name: Native parser gates
     runs-on: ubuntu-latest

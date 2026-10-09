@@ -1,5 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const root = @import("root");
+const memcheck_enabled = if (@hasDecl(root, "memcheck_enabled")) root.memcheck_enabled else false;
+const memcheck_stream_stdio = memcheck_enabled and builtin.os.tag == .macos;
+
+/// Only explicit diagnostic artifacts use libc allocation. Keep arena lifetime
+/// checks in the ordinary test lane: backing allocations are not logical blocks.
+pub fn applicationAllocator(normal: std.mem.Allocator) std.mem.Allocator {
+    return if (memcheck_enabled) std.heap.c_allocator else normal;
+}
 
 /// Zig 0.17 runtime helpers shared by CLI tools, tests, and FFI entrypoints.
 pub const File = std.Io.File;
@@ -31,7 +40,7 @@ pub fn MainWithArgs(comptime main_fn: anytype) type {
         pub fn main(init: std.process.Init) !void {
             setIo(init.io);
             const args = try init.minimal.args.toSlice(init.arena.allocator());
-            try main_fn(init.gpa, args);
+            try main_fn(applicationAllocator(init.gpa), args);
         }
     };
 }
@@ -62,16 +71,20 @@ pub const ArrayListWriter = struct {
 };
 
 pub fn stdoutWriter(buffer: []u8) @TypeOf(std.Io.File.stdout().writer(currentIo(), buffer)) {
+    // The macOS fork does not implement pwritev. Avoid a positional probe on
+    // standard streams; this still exercises actual writes under Memcheck.
+    if (memcheck_stream_stdio) return std.Io.File.stdout().writerStreaming(currentIo(), buffer);
     return std.Io.File.stdout().writer(currentIo(), buffer);
 }
 
 pub fn stderrWriter(buffer: []u8) @TypeOf(std.Io.File.stderr().writer(currentIo(), buffer)) {
+    if (memcheck_stream_stdio) return std.Io.File.stderr().writerStreaming(currentIo(), buffer);
     return std.Io.File.stderr().writer(currentIo(), buffer);
 }
 
 pub fn writeAllStdout(bytes: []const u8) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = std.Io.File.stdout().writer(currentIo(), &buffer);
+    var writer = stdoutWriter(&buffer);
     try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }

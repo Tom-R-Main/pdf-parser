@@ -16,6 +16,7 @@ const runtime = @import("runtime.zig");
 const zpdf = @import("root.zig");
 const benchmark_runner = @import("benchmark_runner.zig");
 const server = @import("server.zig");
+pub const memcheck_enabled = @import("memory_options").memcheck;
 
 pub const main = runtime.MainWithArgs(mainInner).main;
 

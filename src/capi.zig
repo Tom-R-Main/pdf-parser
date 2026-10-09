@@ -3,13 +3,14 @@ const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const zpdf = @import("root.zig");
 const testpdf = @import("testpdf.zig");
+pub const memcheck_enabled = @import("memory_options").memcheck;
 
 const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 const pdf_parser_abi_version_value: u32 = 2;
 
 pub const ZpdfDocument = opaque {};
 
-var c_allocator: std.mem.Allocator = std.heap.page_allocator;
+var c_allocator: std.mem.Allocator = runtime.applicationAllocator(std.heap.page_allocator);
 
 pub const PdfParserAdaptiveFormat = enum(c_int) {
     json = 0,

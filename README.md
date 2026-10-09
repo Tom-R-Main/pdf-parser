@@ -261,6 +261,9 @@ cache is populated.
 
 ## Building
 
+For diagnostic memory checks on Linux or with the optional macOS Valgrind fork,
+see [Memory checks](docs/memory-checks.md).
+
 Select the Zig 0.17.0 toolchain before building and check `zig version`. If the
 compiler is installed in this checkout's ignored toolchain directory, select it
 for the current shell:
