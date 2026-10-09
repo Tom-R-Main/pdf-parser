@@ -5,6 +5,21 @@ const zpdf = @import("root.zig");
 const testpdf = @import("testpdf.zig");
 pub const memcheck_enabled = @import("memory_options").memcheck;
 
+comptime {
+    if (memcheck_enabled) {
+        @export(&memcheckLiveAllocations, .{ .name = "pdf_parser_memcheck_live_allocations" });
+        @export(&memcheckLiveBytes, .{ .name = "pdf_parser_memcheck_live_bytes" });
+    }
+}
+
+fn memcheckLiveAllocations() callconv(.c) u64 {
+    return @import("memcheck_allocator.zig").liveAllocations();
+}
+
+fn memcheckLiveBytes() callconv(.c) u64 {
+    return @import("memcheck_allocator.zig").liveBytes();
+}
+
 const is_wasm = builtin.target.cpu.arch == .wasm32 or builtin.target.cpu.arch == .wasm64;
 const pdf_parser_abi_version_value: u32 = 2;
 

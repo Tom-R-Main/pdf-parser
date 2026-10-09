@@ -118,7 +118,7 @@ pub fn build(b: *std.Build) void {
     const diagnostic_info = b.addWriteFiles();
     const target_triple = diagnostic_target.result.zigTriple(b.allocator) catch @panic("out of memory");
     const info_file = diagnostic_info.add("memcheck-build.json", b.fmt(
-        "{{\"zig_version\":\"{s}\",\"allocator\":\"libc\",\"optimize\":\"debug\",\"cpu\":\"baseline\",\"target\":\"{s}\",\"compiler_valgrind\":{},\"tesseract_c\":{},\"stdio\":\"{s}\",\"zig_error_return_tracing\":{}}}\n",
+        "{{\"zig_version\":\"{s}\",\"allocator\":\"libc\",\"allocation_counters\":true,\"optimize\":\"debug\",\"cpu\":\"baseline\",\"target\":\"{s}\",\"compiler_valgrind\":{},\"tesseract_c\":{},\"stdio\":\"{s}\",\"zig_error_return_tracing\":{}}}\n",
         .{ @import("builtin").zig_version_string, target_triple, switch (diagnostic_target.result.cpu.arch) {
             .x86, .x86_64 => true,
             else => false,
@@ -138,6 +138,14 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
     });
     memcheck_build_step.dependOn(&b.addInstallArtifact(arena_probe, .{
+        .dest_dir = .{ .override = .{ .custom = "memcheck/bin" } },
+    }).step);
+    const counter_probe = b.addExecutable(.{
+        .name = "memcheck-allocator-probe",
+        .root_module = parserModule(b, "src/memcheck_allocator_probe.zig", diagnostic_target, .debug, diagnostic_build),
+        .use_llvm = true,
+    });
+    memcheck_build_step.dependOn(&b.addInstallArtifact(counter_probe, .{
         .dest_dir = .{ .override = .{ .custom = "memcheck/bin" } },
     }).step);
     if (enable_tesseract_c) {
@@ -544,7 +552,9 @@ fn parserModule(
         module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
         module.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
         module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        module.linkSystemLibrary("tesseract", .{});
+        // Diagnostic builds select the dependency explicitly. pkg-config can
+        // inject a different installation or duplicate its include path.
+        module.linkSystemLibrary("tesseract", .{ .use_pkg_config = if (ocr_build.memcheck) .no else .yes });
         module.linkSystemLibrary("leptonica", .{});
     }
 

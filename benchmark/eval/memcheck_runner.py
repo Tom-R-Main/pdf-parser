@@ -60,19 +60,25 @@ class Run:
         self.summary["failed_checks"] = []
         self.vg = None
 
-    def command(self, name, argv, expected=0, env=None, checked=False):
+    def command(self, name, argv, expected=0, env=None, checked=False, parser_lifetimes=False):
         index = len(self.summary["commands"])
         stem = self.out / ("%02d-%s" % (index, name))
         command = list(map(str, argv))
         xml_path = stem.with_suffix(".xml")
         if checked and self.vg:
             command = [self.vg, "--tool=memcheck", "--leak-check=full", "--show-leak-kinds=all",
-                       "--errors-for-leak-kinds=definite,indirect,possible", "--track-origins=yes",
-                       "--num-callers=100", "--error-exitcode=" + str(ERROR_EXIT),
+                       "--errors-for-leak-kinds=" + ("none" if parser_lifetimes else "definite,indirect,possible"), "--track-origins=yes",
+                       "--num-callers=100", "--keep-debuginfo=yes", "--error-exitcode=" + str(ERROR_EXIT),
                        "--default-suppressions=no", "--xml=yes", "--xml-file=" + str(xml_path)] + command
             command = command[:1] + ["--suppressions=" + str(path.resolve()) for path in self.args.suppressions] + command[1:]
+            if parser_lifetimes:
+                # Group interpreter shutdown losses by allocation site. This
+                # preserves leak totals while avoiding thousands of duplicate
+                # import stacks; access/definedness error resolution is unchanged.
+                command.insert(1, "--leak-resolution=low")
         record = {"name": name, "argv": command, "timeout_seconds": self.args.timeout,
                   "expected_exit": expected, "checked_by_memcheck": bool(checked and self.vg),
+                  "leak_policy": "parser-allocation-counters; whole-process leaks reported" if parser_lifetimes else "full-process",
                   "stdout": str(stem.with_suffix(".stdout")), "stderr": str(stem.with_suffix(".stderr"))}
         if env:
             # Only intentional non-secret selection knobs are persisted.
@@ -108,13 +114,14 @@ class Run:
         require(result.returncode == expected, "%s exited %d, expected %d; see %s" % (name, result.returncode, expected, stem))
         if checked and self.vg:
             if expected != ERROR_EXIT:
-                require(not [error for error in errors if error["kind"] != "Leak_StillReachable"],
+                require(not [error for error in errors if error["kind"] != "Leak_StillReachable"
+                             and not (parser_lifetimes and error["kind"].startswith("Leak_"))],
                         name + " contains Memcheck errors despite zero exit")
         return stem.with_suffix(".stdout").read_bytes(), record
 
-    def checked(self, name, argv, env=None):
-        output, record = self.command(name, argv, env=env, checked=True)
-        self.summary["coverage"].append({"name": name, "memcheck": record["checked_by_memcheck"]})
+    def checked(self, name, argv, env=None, parser_lifetimes=False):
+        output, record = self.command(name, argv, env=env, checked=True, parser_lifetimes=parser_lifetimes)
+        self.summary["coverage"].append({"name": name, "memcheck": record["checked_by_memcheck"], "leak_policy": record["leak_policy"]})
         return output
 
     def run(self):
@@ -131,15 +138,26 @@ class Run:
         require(build_info.get("allocator") == "libc" and build_info.get("optimize") == "debug",
                 "expected diagnostic libc-backed debug build")
         require(build_info.get("cpu") == "baseline", "diagnostic build must use baseline CPU features")
+        require(build_info.get("allocation_counters") is True, "diagnostic allocation counters unavailable")
         require(build_info.get("zig_version") == "0.17.0", "diagnostic build did not use pinned Zig 0.17.0")
         self.summary["build_info"] = build_info
         self.summary["artifacts"][str(build_info_path)] = digest(build_info_path)
         parser = prefix / "bin/pdf-parser"
         arena = prefix / "bin/memcheck-arena"
+        counter_probe = prefix / "bin/memcheck-allocator-probe"
         library = prefix / "lib" / ("libpdf_parser.dylib" if sys.platform == "darwin" else "libpdf_parser.so")
-        for path in (parser, library, arena):
+        for path in (parser, library, arena, counter_probe):
             require(path.is_file(), "missing diagnostic artifact: " + str(path))
             self.summary["artifacts"][str(path)] = digest(path)
+        if sys.platform == "linux":
+            dependencies, _ = self.command("library-dependencies", ["ldd", library])
+            for line in dependencies.decode().splitlines():
+                fields = line.split()
+                paths = [field for field in fields if field.startswith("/")]
+                for dependency in paths:
+                    path = Path(dependency)
+                    require(path.is_file(), "unavailable shared dependency: " + dependency)
+                    self.summary["artifacts"][str(path.resolve())] = digest(path)
         for path in ("memcheck_runner.py", "memcheck_probe.c", "memcheck_abi.c", "memcheck_python.py"):
             source = ROOT / "benchmark/eval" / path
             self.summary["artifacts"][str(source)] = digest(source)
@@ -187,6 +205,7 @@ class Run:
         self.summary["artifacts"][str(abi)] = digest(abi)
         clean = ROOT / "benchmark/eval/corpus" / FIXTURES[0]
         self.checked("abi-lifecycle", [abi, clean])
+        self.checked("allocation-counter-qualification", [counter_probe])
         arena_output = self.checked("arena-visibility-limit", [arena])
         require(b"logical boundary unchecked" in arena_output, "arena visibility probe did not execute deliberate slab-internal overrun")
         self.summary["arena_visibility"] = "deliberate logical overrun inside a live slab executed; no logical-boundary detection claimed"
@@ -222,6 +241,7 @@ class Run:
                 self.summary["coverage"].append({"name": case + "-" + command[0], "memcheck": bool(self.vg)})
         if self.args.python:
             python = resolve_tool(self.args.python)
+            self.summary["artifacts"][python] = digest(python)
             env = dict(os.environ, PDF_PARSER_LIB=str(library.resolve()), PYTHONPATH=str(ROOT / "python"), PYTHONMALLOC="malloc")
             if sys.platform == "darwin":
                 selection, _ = self.command("python-selection", [python, "-c",
@@ -236,10 +256,19 @@ class Run:
                     python = str(actual.resolve())
                     self.summary["python_selection"]["instrumented_executable"] = python
                     self.summary["artifacts"][python] = digest(python)
-            try:
-                self.checked("python-binding", [python, ROOT / "benchmark/eval/memcheck_python.py", clean], env=env)
-            except (RuntimeError, OSError, ValueError, ET.ParseError) as exc:
-                self.summary["failed_checks"].append({"name": "python-binding", "failure": str(exc)})
+            for name, argument in (("python-runtime-control", "--control"), ("python-binding", clean)):
+                try:
+                    if name == "python-binding":
+                        negative, _ = self.command("python-retained-document-control",
+                            [python, ROOT / "benchmark/eval/memcheck_python.py", "--counter-leak-control", clean],
+                            expected=78, env=env, checked=True,
+                            parser_lifetimes=self.args.python_leak_policy == "parser-allocations")
+                        require(json.loads(negative).get("retained_document_rejected") is True,
+                                "Python lifetime checker did not reject retained document")
+                    self.checked(name, [python, ROOT / "benchmark/eval/memcheck_python.py", argument], env=env,
+                                 parser_lifetimes=self.args.python_leak_policy == "parser-allocations")
+                except (RuntimeError, OSError, ValueError, ET.ParseError) as exc:
+                    self.summary["failed_checks"].append({"name": name, "failure": str(exc)})
         else:
             self.summary["skipped"].append({"name": "Python binding", "reason": "--python not requested; C ABI independently exercised"})
         if self.args.ocr:
@@ -257,8 +286,15 @@ class Run:
             self.checked("tesseract-recognition-teardown", [ocr, raster])
         else:
             self.summary["skipped"].append({"name": "Tesseract FFI", "reason": "--ocr not requested"})
+        for path, sha256 in self.summary["artifacts"].items():
+            require(digest(path) == sha256, "artifact changed during verification: " + path)
         self.summary["status"] = "failed" if self.summary["failed_checks"] else "passed"
-        self.summary["memcheck_proven"] = bool(self.vg) and not self.summary["failed_checks"]
+        self.summary["parser_memory_checks_passed"] = bool(self.vg) and not self.summary["failed_checks"]
+        self.summary["memcheck_proven"] = self.summary["parser_memory_checks_passed"] and not (
+            self.args.python and self.args.python_leak_policy == "parser-allocations")
+        self.summary["python_leak_policy"] = self.args.python_leak_policy
+        self.summary["python_process_shutdown_qualified"] = bool(self.vg and self.args.python and
+            self.args.python_leak_policy == "full-process" and not self.summary["failed_checks"])
 
 
 def validate_jsonl(output, fmt, source, require_text):
@@ -302,6 +338,8 @@ def main():
     parser.add_argument("--cc", default="cc")
     parser.add_argument("--zig", default="zig")
     parser.add_argument("--python", help="Python interpreter with cffi for binding checks")
+    parser.add_argument("--python-leak-policy", choices=("full-process", "parser-allocations"), default="full-process",
+                        help="full-process remains strict; parser-allocations checks native lifetimes and Memcheck accesses, retaining host shutdown leak reports")
     parser.add_argument("--ocr", action="store_true", help="exercise optional real libtesseract recognition and teardown")
     parser.add_argument("--rasterizer", default="pdftoppm")
     parser.add_argument("--timeout", type=float, default=300)
@@ -320,6 +358,7 @@ def main():
         run.summary["skip_count"] = len(run.summary["skipped"])
         (run.out / "summary.json").write_text(json.dumps(run.summary, indent=2) + "\n")
         print(json.dumps({"status": run.summary["status"], "memcheck_proven": run.summary["memcheck_proven"],
+                          "parser_memory_checks_passed": run.summary.get("parser_memory_checks_passed", False),
                           "executed_checks": run.summary["executed_checks"], "skip_count": run.summary["skip_count"],
                           "summary": str(run.out / "summary.json")}))
     return 0 if run.summary["status"] == "passed" else 1

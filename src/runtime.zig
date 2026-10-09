@@ -7,7 +7,7 @@ const memcheck_stream_stdio = memcheck_enabled and builtin.os.tag == .macos;
 /// Only explicit diagnostic artifacts use libc allocation. Keep arena lifetime
 /// checks in the ordinary test lane: backing allocations are not logical blocks.
 pub fn applicationAllocator(normal: std.mem.Allocator) std.mem.Allocator {
-    return if (memcheck_enabled) std.heap.c_allocator else normal;
+    return if (memcheck_enabled) @import("memcheck_allocator.zig").allocator() else normal;
 }
 
 /// Zig 0.17 runtime helpers shared by CLI tools, tests, and FFI entrypoints.

@@ -30,14 +30,37 @@ jobs:
       - name: Install memory-check and OCR tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y valgrind libc6-dbg libtesseract-dev libleptonica-dev tesseract-ocr-eng poppler-utils
+          sudo apt-get install -y valgrind libc6-dbg cmake g++ libleptonica-dev tesseract-ocr-eng poppler-utils
           python -m pip install cffi
+
+      # libgomp's initialization allocations survive dlclose even after
+      # omp_pause_resource_all. Exercise unloading with Tesseract's supported
+      # serial build instead of suppressing those leaks or retaining the DSO.
+      - name: Checkout pinned Tesseract for memory checks
+        uses: actions/checkout@v7
+        with:
+          repository: tesseract-ocr/tesseract
+          ref: 8ee020e14cf5be4e3f0e9beb09b6b050a1871854 # 5.3.4
+          path: benchmark/eval/raw_cache/tesseract-memcheck
+          persist-credentials: false
+
+      - name: Build Tesseract with unloadable dependencies
+        run: |
+          cmake -S benchmark/eval/raw_cache/tesseract-memcheck -B "$RUNNER_TEMP/tesseract-build" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/memcheck-tesseract" \
+            -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON -DOPENMP_BUILD=OFF \
+            -DBUILD_TRAINING_TOOLS=OFF -DBUILD_TESTS=OFF
+          cmake --build "$RUNNER_TEMP/tesseract-build" --parallel 4
+          cmake --install "$RUNNER_TEMP/tesseract-build"
+          echo "TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/memcheck-tesseract/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/memcheck-tesseract/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
 
       - name: Build normal baseline
         run: zig build --summary all
 
       - name: Build isolated diagnostic artifacts
-        run: zig build memcheck-build -Dtesseract-c=true -Dtesseract-include=/usr/include -Dtesseract-lib=/usr/lib/x86_64-linux-gnu --summary all
+        run: zig build memcheck-build -Dtesseract-c=true -Dtesseract-include="$RUNNER_TEMP/memcheck-tesseract/include" -Dtesseract-lib="$RUNNER_TEMP/memcheck-tesseract/lib" --summary all
 
       - name: Qualify Memcheck and exercise CLI, shared library, Python, and OCR
         run: |
@@ -45,6 +68,7 @@ jobs:
             --prefix zig-out/memcheck \
             --baseline-prefix zig-out \
             --python "$(command -v python)" \
+            --python-leak-policy parser-allocations \
             --ocr \
             --output benchmark/eval/outputs/memcheck-ci
 
