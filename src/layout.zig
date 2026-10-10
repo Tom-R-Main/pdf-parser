@@ -1,4 +1,7 @@
 const std = @import("std");
+const form_scope = @import("form_scope.zig");
+
+pub const TextBoundary = enum { join, space, line_break, block_break, region_break };
 
 pub const SourceKind = enum(u8) {
     native_pdf,
@@ -15,6 +18,33 @@ pub const BBox = struct {
     y0: f64 = 0,
     x1: f64 = 0,
     y1: f64 = 0,
+};
+
+/// Operator evidence, not a claim about final rendered pixel visibility.
+pub const PaintEvidence = struct {
+    rendering_mode: ?u8 = null,
+    paint_state: enum { painting, non_painting, unknown } = .unknown,
+    clip_state: enum { unclipped, inside, outside, partial, unknown } = .unknown,
+    clip_bbox: ?BBox = null,
+
+    pub fn forBBox(self: PaintEvidence, box: BBox) PaintEvidence {
+        var value = self;
+        if (self.clip_state == .unknown) return value;
+        if (!std.math.isFinite(box.x0) or !std.math.isFinite(box.y0) or !std.math.isFinite(box.x1) or !std.math.isFinite(box.y1)) {
+            value.clip_state = .unknown;
+            value.clip_bbox = null;
+            return value;
+        }
+        if (self.clip_bbox) |clip| {
+            value.clip_state = if (clip.x0 >= clip.x1 or clip.y0 >= clip.y1 or box.x1 <= clip.x0 or box.x0 >= clip.x1 or box.y1 <= clip.y0 or box.y0 >= clip.y1)
+                .outside
+            else if (box.x0 >= clip.x0 and box.x1 <= clip.x1 and box.y0 >= clip.y0 and box.y1 <= clip.y1)
+                .inside
+            else
+                .partial;
+        }
+        return value;
+    }
 };
 
 pub const FontMetadata = struct {
@@ -84,6 +114,9 @@ pub const TextSpan = struct {
     unicode_map_error: bool = false,
     actual_text: bool = false,
     writing_mode: u8 = 0,
+    paint: PaintEvidence = .{},
+    content_scope: ?form_scope.Scope = null,
+    leading_boundary: ?TextBoundary = null,
 
     pub fn init(args: struct {
         page_index: u32 = 0,
@@ -98,6 +131,9 @@ pub const TextSpan = struct {
         unicode_map_error: bool = false,
         actual_text: bool = false,
         writing_mode: u8 = 0,
+        paint: PaintEvidence = .{},
+        content_scope: ?form_scope.Scope = null,
+        leading_boundary: ?TextBoundary = null,
     }) TextSpan {
         var font = args.font;
         const font_size = if (font.size != 0) font.size else args.bbox.y1 - args.bbox.y0;
@@ -121,6 +157,9 @@ pub const TextSpan = struct {
             .unicode_map_error = args.unicode_map_error,
             .actual_text = args.actual_text,
             .writing_mode = args.writing_mode,
+            .paint = args.paint,
+            .content_scope = args.content_scope,
+            .leading_boundary = args.leading_boundary,
         };
     }
 };
@@ -2560,12 +2599,16 @@ fn mergeSpanBounds(spans: []const TextSpan) TextSpan {
     var y0 = spans[0].y0;
     var x1 = spans[0].x1;
     var y1 = spans[0].y1;
+    var paint = spans[0].paint;
+    var content_scope = spans[0].content_scope;
 
     for (spans[1..]) |s| {
         x0 = @min(x0, s.x0);
         y0 = @min(y0, s.y0);
         x1 = @max(x1, s.x1);
         y1 = @max(y1, s.y1);
+        if (!std.meta.eql(paint, s.paint)) paint = .{};
+        if (!std.meta.eql(content_scope, s.content_scope)) content_scope = null;
     }
 
     return TextSpan.init(.{
@@ -2578,6 +2621,9 @@ fn mergeSpanBounds(spans: []const TextSpan) TextSpan {
         .block_id = spans[0].block_id,
         .line_id = spans[0].line_id,
         .mcid = spans[0].mcid,
+        .paint = paint.forBBox(.{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 }),
+        .content_scope = content_scope,
+        .leading_boundary = spans[0].leading_boundary,
     });
 }
 
@@ -2586,12 +2632,16 @@ fn mergeBounds(lines: []const TextLine) TextSpan {
     var y0 = lines[0].bounds.y0;
     var x1 = lines[0].bounds.x1;
     var y1 = lines[0].bounds.y1;
+    var paint = lines[0].bounds.paint;
+    var content_scope = lines[0].bounds.content_scope;
 
     for (lines[1..]) |l| {
         x0 = @min(x0, l.bounds.x0);
         y0 = @min(y0, l.bounds.y0);
         x1 = @max(x1, l.bounds.x1);
         y1 = @max(y1, l.bounds.y1);
+        if (!std.meta.eql(paint, l.bounds.paint)) paint = .{};
+        if (!std.meta.eql(content_scope, l.bounds.content_scope)) content_scope = null;
     }
 
     return TextSpan.init(.{
@@ -2604,6 +2654,9 @@ fn mergeBounds(lines: []const TextLine) TextSpan {
         .block_id = lines[0].bounds.block_id,
         .line_id = lines[0].bounds.line_id,
         .mcid = lines[0].bounds.mcid,
+        .paint = paint.forBBox(.{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 }),
+        .content_scope = content_scope,
+        .leading_boundary = lines[0].bounds.leading_boundary,
     });
 }
 
@@ -2630,6 +2683,35 @@ test "TextSpan carries provenance and semantic identity" {
     try std.testing.expectEqual(@as(u32, 7), span.block_id.?);
     try std.testing.expectEqual(@as(u32, 9), span.line_id.?);
     try std.testing.expectEqual(@as(i32, 11), span.mcid.?);
+}
+
+test "layout bounds preserve homogeneous paint and withhold mixed paint claims" {
+    const hidden = TextSpan.init(.{ .bbox = .{ .x0 = 10, .y0 = 10, .x1 = 20, .y1 = 20 }, .text = "A", .paint = .{ .rendering_mode = 3, .paint_state = .non_painting, .clip_state = .unclipped } });
+    var second = hidden;
+    second.bbox.x0 = 20;
+    second.bbox.x1 = 30;
+    second.x0 = 20;
+    second.x1 = 30;
+    const homogeneous = mergeSpanBounds(&.{ hidden, second });
+    try std.testing.expect(std.meta.eql(hidden.paint, homogeneous.paint));
+    second.paint = .{ .rendering_mode = 0, .paint_state = .painting, .clip_state = .unclipped };
+    const mixed = mergeSpanBounds(&.{ hidden, second });
+    try std.testing.expectEqual(.unknown, mixed.paint.paint_state);
+    try std.testing.expectEqual(@as(?u8, null), mixed.paint.rendering_mode);
+}
+
+test "layout bounds preserve scoped origin only when every span shares it" {
+    var first = TextSpan.init(.{ .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 10, .y1 = 10 }, .text = "A", .content_scope = .{ .page_index = 3, .stream_object_num = 19, .invocation_index = 1 }, .leading_boundary = .region_break });
+    first.page_index = 3;
+    var second = first;
+    second.text = "B";
+    second.leading_boundary = .space;
+    const same = mergeSpanBounds(&.{ first, second });
+    try std.testing.expect(std.meta.eql(first.content_scope, same.content_scope));
+    try std.testing.expectEqual(TextBoundary.region_break, same.leading_boundary.?);
+    second.content_scope.?.invocation_index = 2;
+    const mixed = mergeSpanBounds(&.{ first, second });
+    try std.testing.expectEqual(@as(?form_scope.Scope, null), mixed.content_scope);
 }
 
 fn testSpan(text: []const u8, x0: f64, y0: f64, x1: f64, y1: f64) TextSpan {

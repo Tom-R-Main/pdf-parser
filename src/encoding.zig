@@ -1038,6 +1038,10 @@ fn applyBase14FallbackMetrics(encoding: *FontEncoding, base_font_raw: []const u8
 
     if (fontNameContains(base_font, "Helvetica")) {
         fillRepresentativeWidths(&encoding.widths.simple_widths, .helvetica);
+        // Standard ASCII metrics include every letter: using the default
+        // width for C or D creates geometric gaps inside an ordinary word.
+        const ascii_widths = if (fontNameContains(base_font, "Bold")) helvetica_bold_ascii_widths else helvetica_ascii_widths;
+        for (ascii_widths, 32..) |width, code| encoding.widths.simple_widths[code] = width;
         encoding.widths.default_width = 556;
         encoding.metrics.ascender = 718;
         encoding.metrics.descender = -207;
@@ -1063,6 +1067,9 @@ fn applyBase14FallbackMetrics(encoding: *FontEncoding, base_font_raw: []const u8
 }
 
 const Base14Kind = enum { helvetica, times, symbol, zapf_dingbats };
+
+const helvetica_ascii_widths = [_]f64{ 278, 278, 355, 556, 556, 889, 667, 222, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 222, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584 };
+const helvetica_bold_ascii_widths = [_]f64{ 278, 333, 474, 556, 556, 889, 722, 278, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 278, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584 };
 
 fn fillRepresentativeWidths(widths: *[256]f64, kind: Base14Kind) void {
     switch (kind) {
@@ -2271,13 +2278,15 @@ const standard_encoding = blk: {
     break :blk table;
 };
 
-const pdf_doc_encoding = blk: {
+/// PDF text-string encoding; zero marks an undefined byte for callers to
+/// handle explicitly. Font decoding keeps its existing unresolved-glyph policy.
+pub const pdf_doc_encoding: [256]u21 = blk: {
     var table: [256]u21 = undefined;
 
-    // Start with WinAnsi
-    table = win_ansi_encoding;
+    // ASCII and Latin-1 ranges, with the PDF-specific exceptions below.
+    // Preserve legacy control values, including tab, linefeed and carriage return.
+    for (&table, 0..) |*codepoint, byte| codepoint.* = @intCast(byte);
 
-    // PDFDocEncoding differs in a few places
     table[0x18] = 0x02D8; // breve
     table[0x19] = 0x02C7; // caron
     table[0x1A] = 0x02C6; // circumflex
@@ -2286,6 +2295,17 @@ const pdf_doc_encoding = blk: {
     table[0x1D] = 0x02DB; // ogonek
     table[0x1E] = 0x02DA; // ring
     table[0x1F] = 0x02DC; // tilde
+    const extended = [_]u21{
+        0x2022, 0x2020, 0x2021, 0x2026, 0x2014, 0x2013, 0x0192, 0x2044,
+        0x2039, 0x203a, 0x2212, 0x2030, 0x201e, 0x201c, 0x201d, 0x2018,
+        0x2019, 0x201a, 0x2122, 0xfb01, 0xfb02, 0x0141, 0x0152, 0x0160,
+        0x0178, 0x017d, 0x0131, 0x0142, 0x0153, 0x0161, 0x017e,
+    };
+    for (extended, 0x80..) |codepoint, byte| table[byte] = codepoint;
+    table[0x7f] = 0;
+    table[0x9f] = 0;
+    table[0xad] = 0;
+    table[0xa0] = 0x20ac; // Euro, not Latin-1 nonbreaking space
 
     break :blk table;
 };
@@ -2303,6 +2323,27 @@ test "WinAnsi decode ASCII" {
 
     try enc.decode("Hello", runtime.arrayListWriter(&output, std.testing.allocator));
     try std.testing.expectEqualStrings("Hello", output.items);
+}
+
+test "PDFDocEncoding extended characters follow independent Unicode golden text" {
+    const bytes = [_]u8{ 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa0, 0xe9, 0xff };
+    var enc = FontEncoding.init(std.testing.allocator);
+    defer enc.deinit();
+    applyNamedEncoding(&enc, "PDFDocEncoding");
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try enc.decode(&bytes, runtime.arrayListWriter(&output, std.testing.allocator));
+    try std.testing.expectEqualStrings("•†‡…—–ƒ⁄‹›−‰„“”‘’‚™ﬁﬂŁŒŠŸŽıłœšž€éÿ", output.items);
+}
+
+test "PDFDocEncoding marks undefined bytes without inventing Unicode mappings" {
+    for ([_]u8{ 0x7f, 0x9f, 0xad }) |byte| try std.testing.expectEqual(@as(u21, 0), pdf_doc_encoding[byte]);
+    try std.testing.expectEqual(@as(u21, '\t'), pdf_doc_encoding[9]);
+    try std.testing.expectEqual(@as(u21, '\n'), pdf_doc_encoding[10]);
+    try std.testing.expectEqual(@as(u21, '\r'), pdf_doc_encoding[13]);
+    try std.testing.expectEqual(@as(u21, 0x02d8), pdf_doc_encoding[0x18]);
+    try std.testing.expectEqual(@as(u21, 0x02dc), pdf_doc_encoding[0x1f]);
+    try std.testing.expectEqual(@as(u21, 'A'), pdf_doc_encoding['A']);
 }
 
 test "WinAnsi decode extended" {
@@ -3046,6 +3087,21 @@ test "Base14 fallback metrics and symbolic encodings" {
     applyBase14FallbackMetrics(&symbol, "Symbol");
     try std.testing.expectEqual(@as(u21, 0x03A9), symbol.simple_encoding.codepoints['W']);
     try std.testing.expectEqual(@as(u21, 0x03C0), symbol.simple_encoding.codepoints['p']);
+}
+
+test "Helvetica fallback ASCII advances retain word geometry and bold distinctions" {
+    var regular = FontEncoding.init(std.testing.allocator);
+    defer regular.deinit();
+    applyBase14FallbackMetrics(&regular, "Helvetica");
+    try std.testing.expectEqual(@as(f64, 667), regular.widths.getWidth('B'));
+    try std.testing.expectEqual(@as(f64, 722), regular.widths.getWidth('C'));
+    try std.testing.expectEqual(@as(f64, 722), regular.widths.getWidth('D'));
+    try std.testing.expectEqual(@as(f64, 611), regular.widths.getWidth('F'));
+    var bold = FontEncoding.init(std.testing.allocator);
+    defer bold.deinit();
+    applyBase14FallbackMetrics(&bold, "ABCDEE+Helvetica-BoldOblique");
+    try std.testing.expectEqual(@as(f64, 722), bold.widths.getWidth('B'));
+    try std.testing.expectEqual(@as(f64, 278), bold.widths.getWidth('i'));
 }
 
 test "predefined CJK CMaps set width and writing mode conservatively" {

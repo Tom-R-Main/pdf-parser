@@ -767,6 +767,13 @@ fn hashSpans(hasher: anytype, result: anytype) void {
             span.span.bbox.y1,
         });
         hashText(hasher, span.span.text);
+        hashPrint(hasher, "{s}|{s}|", .{ @tagName(span.span.paint.paint_state), @tagName(span.span.paint.clip_state) });
+        if (span.span.paint.rendering_mode) |mode| hashPrint(hasher, "{}|", .{mode}) else hashText(hasher, "unknown-mode|");
+        if (span.span.paint.clip_bbox) |bbox| hashPrint(hasher, "{d:.6},{d:.6},{d:.6},{d:.6}|", .{ bbox.x0, bbox.y0, bbox.x1, bbox.y1 });
+        if (span.span.content_scope) |scope| {
+            hashPrint(hasher, "scope:{},{},{}|", .{ scope.page_index, scope.stream_generation, scope.invocation_index });
+            if (scope.stream_object_num) |number| hashPrint(hasher, "stream:{}|", .{number}) else hashText(hasher, "page-stream|");
+        } else hashText(hasher, "unknown-scope|");
         hashPrint(hasher, "{s}|{s}|{d:.3};", .{ sourceKindName(span.span.source), sourceKindName(span.chosen_source), span.confidence });
     }
 }
@@ -884,6 +891,11 @@ fn hashOcrAttempts(hasher: anytype, result: anytype) void {
             attempt.selected,
         });
         if (attempt.diagnostic_code) |code| hashText(hasher, @tagName(code));
+        if (attempt.region_index) |region| hashPrint(hasher, "region:{}|", .{region}) else hashText(hasher, "page|");
+        if (attempt.crop_bbox) |bbox| hashPrint(hasher, "{d:.6},{d:.6},{d:.6},{d:.6}|", .{ bbox.x0, bbox.y0, bbox.x1, bbox.y1 });
+        if (attempt.crop_image_sha256) |digest| hasher.update(&digest);
+        if (attempt.crop_image_byte_length) |length| hashPrint(hasher, "{}|", .{length});
+        hashPrint(hasher, "budgets:{},{},{},{}|", .{ attempt.max_image_pixels, attempt.max_image_bytes, attempt.max_regions_per_page, attempt.max_attempts_per_page });
     }
     for (result.formula_attempts) |attempt| {
         hashPrint(hasher, "formula|{d}|{d}|{s}|", .{ attempt.page_index, attempt.region_index, @tagName(attempt.status) });
@@ -1183,6 +1195,8 @@ fn writeSpanRecord(writer: anytype, result: anytype, document_id: []const u8, so
     try writeOptionalU32(writer, span.span.line_id);
     try writer.writeAll(",\"mcid\":");
     try writeOptionalI32(writer, span.span.mcid);
+    try writePaint(writer, span.span.paint);
+    try specialist_protocol.writeContentScope(writer, span.span.content_scope);
     try writeTextView(writer, "span", span_index, "reconciled_span", span.span.text);
     try writeProvenancePrefix(writer, .{
         .document_id = document_id,
@@ -1982,11 +1996,16 @@ fn writeOwningBlockIds(writer: anytype, result: anytype, page_index: u32, bbox: 
 }
 
 fn writeCoverage(writer: anytype, assessment: coverage.Assessment) !void {
-    try writer.print(",\"coverage\":{{\"status\":\"{s}\",\"completeness\":\"{s}\",\"native_span_count\":{},\"recognized_span_count\":{},\"requested_recovery\":{},\"recovery_state\":\"{s}\",\"unresolved_region_count\":{}}}", .{
-        @tagName(assessment.status),        @tagName(assessment.completeness), assessment.native_span_count,
-        assessment.recognized_span_count,   assessment.requested_recovery,     @tagName(assessment.recovery_state),
-        assessment.unresolved_region_count,
+    try writer.print(",\"coverage\":{{\"status\":\"{s}\",\"completeness\":\"{s}\",\"native_span_count\":{},\"recognized_span_count\":{},\"requested_recovery\":{},\"recovery_state\":\"{s}\",\"unresolved_region_count\":{},\"non_painting_span_count\":{},\"clipped_out_span_count\":{},\"uncertain_paint_span_count\":{}}}", .{
+        @tagName(assessment.status),           @tagName(assessment.completeness),  assessment.native_span_count,
+        assessment.recognized_span_count,      assessment.requested_recovery,      @tagName(assessment.recovery_state),
+        assessment.unresolved_region_count,    assessment.non_painting_span_count, assessment.clipped_out_span_count,
+        assessment.uncertain_paint_span_count,
     });
+}
+
+fn writePaint(writer: anytype, paint: layout.PaintEvidence) !void {
+    try specialist_protocol.writePaintEvidence(writer, paint);
 }
 
 fn collectCellSpanIds(allocator: std.mem.Allocator, span_ids: *std.ArrayList(u32), result: anytype, cell: layout.TableCell, offsets: RecordOffsets) !void {

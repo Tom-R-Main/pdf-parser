@@ -669,7 +669,7 @@ and ruling lines, invokes OCR only for scanned routes, then reconciles native,
 OCR, table, formula, and form spans with typed provenance.
 
 The versioned JSON, artifact JSONL, and streaming JSONL schema is currently
-`0.15.0`, with parser build identity `0.4.0-dev` after the `v0.3.0` release.
+`0.17.0`, with parser build identity `0.4.0-dev` after the `v0.3.0` release.
 Every emitted record carries a `provenance` envelope with document and
 source identity, input hash context, artifact id, page/bbox, source kind,
 confidence, related span/block/chunk ids, route trace ids, and route reasons.
@@ -683,7 +683,15 @@ UTF-16 locators, overlap-aware chunk origins and separate prompt projections.
 Schema `0.15.0` adds reconciled span/table/cell ownership and page/region recovery
 assessments. Streaming supports output and adaptive page allocation budgets;
 the JavaScript page adapter validates lifecycle completion and applies
-backpressure. Visual completeness remains unverified.
+backpressure. Schema `0.16.0` retains rendering-mode and rectangular-clipping
+evidence on native spans and adds bounded, page/region-scoped OCR crops with
+accepted PNG hashes. Crops preserve native text on refusal and expose unresolved
+quota skips. Visual completeness remains unverified; paint evidence describes
+operators and span bounds rather than final pixel visibility.
+Schema `0.17.0` adds content-stream and Form invocation scope to spans.
+ActualText and classified text boundaries survive adaptive reconstruction; Form
+text uses scoped resources and transformed geometry. Native and adaptive text
+quality gates run against the same born-digital and hard-font floors.
 Host adoption remains explicit; accepted schema families and parser/compiler
 pins must be updated together.
 

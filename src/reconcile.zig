@@ -501,7 +501,13 @@ fn buildBlocks(
 
         if (text.items.len > 0) {
             const previous = spans[index - 1].span;
-            if (sameLine(previous, span.span, options.same_line_threshold)) {
+            if (nativeBoundary(previous, span.span, options)) |boundary| {
+                switch (boundary) {
+                    .join => {},
+                    .space => if (!endsInUnicodeWhitespace(text.items) and !startsInUnicodeWhitespace(span.span.text)) try text.append(allocator, ' '),
+                    .line_break, .block_break, .region_break => if (text.items[text.items.len - 1] != '\n') try text.append(allocator, '\n'),
+                }
+            } else if (sameLine(previous, span.span, options.same_line_threshold)) {
                 const gap = span.span.bbox.x0 - previous.bbox.x1;
                 if (gap > @max(1, previous.font_size * 0.15)) try text.append(allocator, ' ');
             } else {
@@ -784,14 +790,47 @@ fn mergeDuplicate(allocator: std.mem.Allocator, existing: *ReconciledSpan, candi
 
 fn shouldStartBlock(previous: ReconciledSpan, current: ReconciledSpan, options: ReconcileOptions) bool {
     if (previous.span.page_index != current.span.page_index) return true;
-    if (kindForSpan(previous.span) != kindForSpan(current.span)) return true;
     if (previous.span.block_id != null and current.span.block_id != null and previous.span.block_id.? != current.span.block_id.?) return true;
+    if (nativeBoundary(previous.span, current.span, options)) |boundary| {
+        switch (boundary) {
+            .join, .space => return false,
+            .block_break, .region_break => return true,
+            .line_break => {},
+        }
+    }
+    if (kindForSpan(previous.span) != kindForSpan(current.span)) return true;
 
     if (sameLine(previous.span, current.span, options.same_line_threshold)) return false;
 
     const gap = previous.span.bbox.y0 - current.span.bbox.y0;
     const font_size = @max(1, previous.span.font_size);
     return gap > font_size * options.block_gap_multiplier;
+}
+
+fn nativeBoundary(previous: TextSpan, current: TextSpan, options: ReconcileOptions) ?layout.TextBoundary {
+    if (!options.preserve_input_order or previous.page_index != current.page_index or previous.source != current.source or
+        (current.source != .native_pdf and current.source != .embedded_ocr)) return null;
+    const boundary = current.leading_boundary orelse return null;
+    if ((boundary == .join or boundary == .space) and
+        (previous.line_id == null or current.line_id == null or previous.line_id.? != current.line_id.?)) return null;
+    return boundary;
+}
+
+fn startsInUnicodeWhitespace(text: []const u8) bool {
+    if (text.len == 0) return false;
+    const len = std.unicode.utf8ByteSequenceLength(text[0]) catch return false;
+    if (len > text.len) return false;
+    return switch (std.unicode.utf8Decode(text[0..len]) catch return false) {
+        0x0009...0x000d, 0x0020, 0x0085, 0x00a0, 0x1680, 0x2000...0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000 => true,
+        else => false,
+    };
+}
+
+fn endsInUnicodeWhitespace(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var start = text.len - 1;
+    while (start > 0 and text[start] & 0xc0 == 0x80) start -= 1;
+    return startsInUnicodeWhitespace(text[start..]);
 }
 
 fn spanLessThan(_: void, a: ReconciledSpan, b: ReconciledSpan) bool {
@@ -1266,6 +1305,40 @@ test "reconciler emits specialist blocks and rag jsonl chunks" {
     defer std.testing.allocator.free(jsonl);
     try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"source_id\":\"fixture.pdf\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"embedding\":null") != null);
+}
+
+test "native classified word gaps survive overlapping rotated segment bounds" {
+    var first = testSpan("AB", .native_pdf, 100, 50, 120, 75);
+    first.line_id = 0;
+    first.leading_boundary = .region_break;
+    var second = testSpan("CD", .native_pdf, 115, 50, 135, 75);
+    second.line_id = 0;
+    second.leading_boundary = .space;
+    var doc = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, second } }}, .{ .preserve_input_order = true });
+    defer doc.deinit();
+    try std.testing.expectEqualStrings("AB CD", doc.blocks[0].text);
+    try std.testing.expectEqualStrings("AB CD", doc.chunks[0].content);
+    try std.testing.expectEqual(@as(usize, 3), doc.spans[1].block_text_start);
+}
+
+test "native classified joins preserve superscripts and classified line breaks" {
+    var first = testSpan("F", .native_pdf, 100, 50, 112, 62);
+    first.line_id = 0;
+    first.leading_boundary = .region_break;
+    var superscript = testSpan("1", .native_pdf, 112, 57, 117, 65);
+    superscript.font_size = 8;
+    superscript.line_id = 0;
+    superscript.leading_boundary = .join;
+    var tail = testSpan(".25", .native_pdf, 118, 50, 136, 62);
+    tail.line_id = 0;
+    tail.leading_boundary = .join;
+    var next = testSpan("Next", .native_pdf, 120, 50, 150, 62);
+    next.line_id = 1;
+    next.leading_boundary = .line_break;
+    var doc = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, superscript, tail, next } }}, .{ .preserve_input_order = true });
+    defer doc.deinit();
+    try std.testing.expectEqualStrings("F1.25\nNext", doc.blocks[0].text);
+    try std.testing.expectEqualStrings("F1.25\nNext", doc.chunks[0].content);
 }
 
 test "coordinate serializers include hocr alto and debug overlay" {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArtifactJsonl, PdfExtractionError } from './extract.mjs';
 import { terminateSubprocess } from './subprocess.mjs';
+import { ocrArguments } from './ocr-options.mjs';
 
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -77,7 +78,7 @@ async function consume(binaryPath, args, options, inputSha256) {
     const firstRecord = !manifest;
     if (firstRecord) {
       if (type !== 'document_manifest' || record.streaming !== true || record.sequence_scope !== 'document' ||
-        !/^0\.(14|15)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
+        !/^0\.(14|15|16|17)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
         typeof record.document_id !== 'string' || !record.document_id || record.input_sha256 !== inputSha256 || record.source_id !== inputSha256) fail('Invalid stream manifest');
       if (record.page_count > options.maxPages) throw new PdfExtractionError('output_limit', 'Stream exceeded its page-count budget');
       if (!Array.isArray(record.errors) || record.errors.length) fail('Stream manifest reports document errors');
@@ -194,6 +195,8 @@ export async function extractPdfPages(buffer, options) {
   const defaults = { timeoutMs: 45_000, maxOutputBytes: 25 * 1024 * 1024, maxPageBytes: 4 * 1024 * 1024,
     maxRecordBytes: 1024 * 1024, maxRecords: 100_000, maxPages: 10_000 };
   const limits = { ...options };
+  const ocrArgs = ocrArguments(options.ocrLimits);
+  if (options.allowPartial !== undefined && typeof options.allowPartial !== 'boolean') throw new TypeError('allowPartial must be a boolean');
   for (const [key, defaultValue] of Object.entries(defaults)) {
     limits[key] ??= defaultValue;
     if (!integer(limits[key]) || limits[key] < 1 || (key === 'timeoutMs' && limits[key] > 2_147_483_647)) throw new RangeError('Invalid streaming limits');
@@ -208,9 +211,10 @@ export async function extractPdfPages(buffer, options) {
     directory = await mkdtemp(join(tmpdir(), 'pdf-parser-stream-'));
     const path = join(directory, 'input.pdf');
     await writeFile(path, input, { mode: 0o600 });
-    const args = ['extract-adaptive', '--input', path, '--source-id', inputSha256, '--format', 'stream-jsonl'];
+    const args = ['extract-adaptive', '--input', path, '--source-id', inputSha256, '--format', 'stream-jsonl', ...ocrArgs];
     if (options.maxNativePageMemoryBytes !== undefined) args.push('--max-page-memory-bytes', String(options.maxNativePageMemoryBytes));
     if (!options.enableOcr) args.push('--no-ocr');
+    if (options.allowPartial) args.push('--allow-partial');
     return await consume(options.binaryPath, args, limits, inputSha256);
   } catch (error) {
     failure = error instanceof PdfExtractionError ? error : new PdfExtractionError('unavailable', 'Local streaming I/O failed', { cause: error });

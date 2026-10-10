@@ -1,4 +1,4 @@
-import type { RichPdfDocument } from './extract.mjs';
+import type { RichPdfDocument, OcrLimits } from './extract.mjs';
 /** Global artifact IDs and page index; source positions are local to this page.
  * Delivered pages remain provisional until the extraction receipt succeeds. */
 export interface RichPdfPage extends RichPdfDocument {
@@ -19,6 +19,8 @@ export interface StreamExtractionOptions {
   maxNativePageMemoryBytes?: number;
   signal?: AbortSignal;
   enableOcr?: boolean;
+  ocrLimits?: OcrLimits;
+  allowPartial?: boolean;
 }
 export interface StreamExtractionReceipt {
   complete: true;

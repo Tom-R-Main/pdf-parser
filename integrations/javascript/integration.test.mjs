@@ -30,8 +30,7 @@ test('actual CLI without caller source identity keeps every artifact source null
 
 // Small generated, redistribution-safe PDF. Each marked group contains repeated
 // lines; a second page checks that origin identity includes the actual page.
-function fixturePdf() {
-  const content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (Repeated evidence.) Tj 0 -24 Td (Repeated evidence.) Tj ET EMC';
+function fixturePdf(content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (Repeated evidence.) Tj 0 -24 Td (Repeated evidence.) Tj ET EMC') {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>',
@@ -54,11 +53,34 @@ function fixturePdf() {
   return Buffer.from(pdf, 'ascii');
 }
 
+// Reuse the checked-in scan pixels; an incremental update supplies two disjoint
+// placements per page without adding a binary fixture or another PDF library.
+function repeatedImagePdf(original, pageCount = 1) {
+  const content = 'BT /F1 12 Tf 50 740 Td (Native cover text) Tj ET\n' +
+    'q 240 0 0 320 20 100 cm /Im1 Do Q\nq 240 0 0 320 300 100 cm /Im1 Do Q';
+  const page = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> >> >>';
+  const previous = Number(original.toString('latin1').match(/startxref\s+(\d+)\s+%%EOF\s*$/u)[1]);
+  const entries = [[2, `<< /Type /Pages /Kids [3 0 R${pageCount === 2 ? ' 7 0 R' : ''}] /Count ${pageCount} >>`],
+    [3, page], [4, `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`]];
+  if (pageCount === 2) entries.push([7, page]);
+  let tail = '\n';
+  const offsets = [];
+  for (const [id, object] of entries) {
+    offsets.push([id, original.length + Buffer.byteLength(tail)]);
+    tail += `${id} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = original.length + Buffer.byteLength(tail);
+  tail += 'xref\n';
+  for (const [id, offset] of offsets) tail += `${id} 1\n${String(offset).padStart(10, '0')} 00000 n \n`;
+  tail += `trailer\n<< /Size ${pageCount === 2 ? 8 : 7} /Root 1 0 R /Prev ${previous} >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.concat([original, Buffer.from(tail, 'ascii')]);
+}
+
 test('actual CLI -> validated rich text -> overlapping chunks -> page/span locators', {
   skip: available ? false : 'Build the parser with zig build to run the real CLI integration',
 }, async () => {
   const document = await extractPdfDocument(fixturePdf(), { binaryPath });
-  assert.equal(document.manifest.schema_version, '0.15.0');
+  assert.equal(document.manifest.schema_version, '0.17.0');
   assert.equal(document.spans.length, 4);
   assert.equal(document.blocks.length, 4);
   assert.equal(document.sourceText, Array(4).fill('Repeated evidence.').join('\n\n'));
@@ -119,7 +141,7 @@ test('actual multi-page stream preserves global ownership with page-local locato
   const receipt = await extractPdfPages(fixturePdf(), { binaryPath, onPage: async page => { pages.push(page); } });
   assert.equal(receipt.complete, true);
   assert.equal(receipt.pageCount, 2);
-  assert.equal(receipt.schemaVersion, '0.15.0');
+  assert.equal(receipt.schemaVersion, '0.17.0');
   assert.deepEqual(pages.map(page => page.pageIndex), [0, 1]);
   assert.equal(new Set(pages.flatMap(page => page.spans.map(span => span.span_id))).size, 4);
   for (const page of pages) {
@@ -147,6 +169,24 @@ test('actual native page allocation limit fails without delivering a page or rec
     onPage: () => {} })).complete, true);
 });
 
+test('actual hidden text specialist contexts bind to global second-page IDs', { skip: !available }, async () => {
+  const pages = [];
+  const receipt = await extractPdfPages(fixturePdf('BT /F1 12 Tf 3 Tr 20 250 Td (HIDDEN evidence) Tj ET'), {
+    binaryPath, onPage: page => pages.push(page),
+  });
+  assert.equal(receipt.complete, true);
+  assert.equal(pages.length, 2);
+  for (const page of pages) {
+    const requests = page.records.filter(record => record.record_type === 'specialist_request');
+    assert.ok(requests.length > 0);
+    for (const request of requests) {
+      for (const id of request.span_ids) assert.equal(page.spans.find(span => span.span_id === id)?.page_index, page.pageIndex);
+      for (const id of request.block_ids) assert.equal(page.blocks.find(block => block.block_id === id)?.page_index, page.pageIndex);
+    }
+  }
+  assert.ok(pages[1].records.some(record => record.record_type === 'specialist_request' && record.span_ids.includes('span-1')));
+});
+
 test('actual mixed scan keeps native evidence and exposes disabled recovery', { skip: !available }, async () => {
   const pdf = await readFile(new URL('../../benchmark/eval/corpus/scanned_typewritten/mixed-native-scan.pdf', import.meta.url));
   const document = await extractPdfDocument(pdf, { binaryPath });
@@ -158,4 +198,92 @@ test('actual mixed scan keeps native evidence and exposes disabled recovery', { 
   assert.equal(outcome.recovery_state, 'not_invoked');
   assert.equal(outcome.completeness, 'unverified');
   assert.ok(outcome.native_span_count > 0);
+});
+
+test('actual public artifacts preserve nonpainting and clipped text with transformed evidence', { skip: !available }, async () => {
+  const bytes = fixturePdf(`BT /F1 12 Tf 20 260 Td (VISIBLE) Tj ET
+    q BT /F1 12 Tf 3 Tr 20 230 Td (HIDDEN) Tj ET Q
+    q 0 0 40 40 re W n BT /F1 12 Tf 180 180 Td (CLIPPED) Tj ET Q
+    q 2 0 0 2 30 40 cm 0 0 50 50 re W n BT /F1 12 Tf 10 10 Td (TRANSFORMED) Tj ET Q`);
+  const document = await extractPdfDocument(bytes, { binaryPath });
+  for (const text of ['VISIBLE', 'HIDDEN', 'CLIPPED', 'TRANSFORMED']) assert.ok(document.sourceText.includes(text));
+  const hidden = document.spans.find(span => span.text.includes('HIDDEN'));
+  assert.equal(hidden.paint.rendering_mode, 3);
+  assert.equal(hidden.paint.paint_state, 'non_painting');
+  const clipped = document.spans.find(span => span.text.includes('CLIPPED'));
+  assert.equal(clipped.paint.clip_state, 'outside');
+  const transformed = document.spans.filter(span => span.page_index === 0 && span.paint.clip_bbox?.x0 === 30 && span.paint.clip_bbox?.y0 === 40);
+  assert.equal(transformed.map(span => span.text).join(''), 'TRANSFORMED');
+  assert.ok(transformed.every(span => JSON.stringify(span.paint.clip_bbox) === JSON.stringify({ x0: 30, y0: 40, x1: 130, y1: 140 })));
+  assert.equal(transformed[0].bbox.x0, 50);
+  assert.ok(document.pageOutcomes.every(outcome => outcome.non_painting_span_count > 0 && outcome.clipped_out_span_count > 0 && outcome.completeness === 'unverified'));
+  let pages = 0;
+  assert.equal((await extractPdfPages(bytes, { binaryPath, onPage(page) {
+    assert.ok(page.spans.some(span => span.paint.paint_state === 'non_painting'));
+    pages++;
+  } })).complete, true);
+  assert.equal(pages, 2);
+});
+
+test('actual regional OCR binds crop identity and budgets, preserving native text on refusal', { skip: !available }, async () => {
+  const pdf = await readFile(new URL('../../benchmark/eval/corpus/scanned_typewritten/mixed-native-scan.pdf', import.meta.url));
+  const document = await extractPdfDocument(pdf, { binaryPath, enableOcr: true });
+  assert.ok(document.sourceText.includes('Native cover text'));
+  assert.ok(document.sourceText.includes('SCANNED TYPEWRITTEN'));
+  assert.equal(document.pageOutcomes[0].status, 'recovered');
+  const attempts = document.records.filter(record => record.record_type === 'specialist_attempt' && record.specialist_kind === 'ocr');
+  assert.ok(attempts.length > 0);
+  for (const attempt of attempts) {
+    assert.ok(Number.isInteger(attempt.region_index));
+    assert.match(attempt.crop.image_sha256, /^[a-f0-9]{64}$/u);
+    assert.ok(attempt.crop.image_byte_length > 24);
+    assert.ok(attempt.crop.pixel_width * attempt.crop.pixel_height <= attempt.config.max_image_pixels);
+  }
+  await assert.rejects(extractPdfDocument(pdf, { binaryPath, enableOcr: true, ocrLimits: { maxImagePixels: 1 } }), { code: 'document' });
+  const partial = await extractPdfDocument(pdf, { binaryPath, enableOcr: true, allowPartial: true, ocrLimits: { maxImagePixels: 1 } });
+  assert.ok(partial.sourceText.includes('Native cover text'));
+  assert.equal(partial.pageOutcomes[0].status, 'recovery_failed');
+  assert.equal(partial.pageOutcomes[0].completeness, 'unverified');
+  assert.ok(partial.records.some(record => record.record_type === 'specialist_attempt' && record.errors.some(error => error.code === 'rasterizer_pixel_limit')));
+});
+
+test('actual independent image crops retain quota failures and stream global OCR identities', { skip: !available }, async () => {
+  const original = await readFile(new URL('../../benchmark/eval/corpus/scanned_typewritten/mixed-native-scan.pdf', import.meta.url));
+  const quota = await extractPdfDocument(repeatedImagePdf(original), { binaryPath, enableOcr: true, allowPartial: true,
+    timeoutMs: 120000, ocrLimits: { maxRegionsPerPage: 1 } });
+  const images = quota.records.filter(record => record.record_type === 'route_trace' && record.trace_kind === 'region_route' && record.layout_block_index === null && record.image_count === 1);
+  assert.equal(images.length, 2);
+  assert.deepEqual(images.map(record => record.bbox), [{ x0: 20, y0: 100, x1: 260, y1: 420 }, { x0: 300, y0: 100, x1: 540, y1: 420 }]);
+  const attempts = quota.records.filter(record => record.record_type === 'specialist_attempt' && record.specialist_kind === 'ocr');
+  assert.ok(attempts.some(attempt => attempt.region_index === images[0].region_index && attempt.selected));
+  assert.ok(attempts.some(attempt => attempt.region_index === images[1].region_index && attempt.attempt_status === 'not_invoked' && [...attempt.warnings, ...attempt.errors].some(diagnostic => diagnostic.code === 'ocr_region_limit')));
+  assert.equal(quota.pageOutcomes[0].status, 'recovery_required');
+  assert.equal(quota.pageOutcomes[0].completeness, 'unverified');
+  assert.ok(quota.sourceText.includes('Native cover text'));
+
+  const attemptQuota = await extractPdfDocument(repeatedImagePdf(original), { binaryPath, enableOcr: true, allowPartial: true,
+    timeoutMs: 120000, ocrLimits: { maxAttemptsPerPage: 1 } });
+  assert.ok(attemptQuota.records.some(record => record.record_type === 'specialist_attempt' && record.attempt_status === 'not_invoked' &&
+    [...record.warnings, ...record.errors].some(diagnostic => diagnostic.code === 'ocr_attempt_limit')));
+  assert.equal(attemptQuota.pageOutcomes[0].status, 'recovery_required');
+  assert.ok(attemptQuota.sourceText.includes('Native cover text'));
+
+  const pages = [];
+  const receipt = await extractPdfPages(repeatedImagePdf(original, 2), { binaryPath, enableOcr: true, timeoutMs: 120000,
+    onPage: page => pages.push(page) });
+  assert.equal(receipt.complete, true);
+  assert.equal(pages.length, 2);
+  const identities = pages.flatMap(page => page.records.filter(record => record.record_type === 'specialist_attempt').map(record => record.attempt_id));
+  assert.equal(new Set(identities).size, identities.length);
+  for (const page of pages) {
+    assert.equal(page.pageOutcomes[0].status, 'recovered');
+    assert.ok(page.sourceText.includes('Native cover text'));
+    assert.ok(page.sourceText.includes('SCANNED'));
+    const results = page.records.filter(record => record.record_type === 'specialist_result' && record.specialist_kind === 'ocr');
+    assert.equal(results.length, 2);
+    for (const result of results) {
+      assert.ok(result.span_ids.length > 0);
+      assert.ok(result.span_ids.every(id => page.spans.some(span => span.span_id === id && span.page_index === page.pageIndex)));
+    }
+  }
 });

@@ -312,6 +312,8 @@ fn writeGlyphTraceSpan(writer: anytype, span: layout.TextSpan, span_index: usize
         } else {
             try writer.writeAll("null");
         }
+        try @import("specialist_protocol.zig").writePaintEvidence(writer, span.paint);
+        try @import("specialist_protocol.zig").writeContentScope(writer, span.content_scope);
         try writer.writeAll("}\n");
 
         char_index.* += 1;

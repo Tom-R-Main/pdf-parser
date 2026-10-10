@@ -210,9 +210,8 @@ const RegionStats = struct {
                 self.unknown_tounicode_fonts += 1;
             }
 
-            if (text_span.font.name) |name| {
-                if (looksLikeHiddenOcrFont(name)) self.hidden_ocr_spans += 1;
-            }
+            if (text_span.paint.paint_state == .non_painting or
+                (if (text_span.font.name) |name| looksLikeHiddenOcrFont(name) else false)) self.hidden_ocr_spans += 1;
 
             if (prev_seen) {
                 const line_threshold = @max(3.0, @max(prev_font_size, text_span.font_size) * 0.75);
@@ -598,6 +597,18 @@ test "bad unicode and hidden OCR layer are OCR signals" {
     try std.testing.expect(page.score.signals.hidden_ocr >= 0.9);
     try std.testing.expect(page.score.signals.missing_tounicode >= 0.9);
     try std.testing.expect(page.score.route.needs_ocr);
+}
+
+test "ordinary font nonpainting text contributes hidden-layer evidence without changing source" {
+    var text_span = span("Hidden ordinary font", 20, 20, 200, 40);
+    text_span.font.name = "Ordinary";
+    text_span.paint = .{ .rendering_mode = 3, .paint_state = .non_painting, .clip_state = .unclipped };
+    const hidden = scorePage(.{ .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, .spans = &.{text_span} });
+    try std.testing.expectEqual(@as(f32, 1), hidden.score.signals.hidden_ocr);
+    try std.testing.expectEqual(layout.SourceKind.native_pdf, text_span.source);
+    text_span.paint = .{ .rendering_mode = 0, .paint_state = .painting, .clip_state = .outside };
+    const clipped = scorePage(.{ .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, .spans = &.{text_span} });
+    try std.testing.expectEqual(@as(f32, 0), clipped.score.signals.hidden_ocr);
 }
 
 test "dense native text layer does not OCR solely for broken Unicode metadata" {

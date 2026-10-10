@@ -4,6 +4,12 @@ export class PdfExtractionError extends Error {
   cleanupError?: PdfExtractionError;
   constructor(code: ExtractionErrorCode, message: string, options?: ErrorOptions);
 }
+export interface OcrLimits {
+  maxImagePixels?: number;
+  maxImageBytes?: number;
+  maxRegionsPerPage?: number;
+  maxAttemptsPerPage?: number;
+}
 export interface ExtractionOptions {
   /** Host-owned executable selection. No environment or default path discovery. */
   binaryPath: string;
@@ -12,6 +18,9 @@ export interface ExtractionOptions {
   signal?: AbortSignal;
   /** Defaults to false. Requires host-installed OCR tools when enabled. */
   enableOcr?: boolean;
+  ocrLimits?: OcrLimits;
+  /** Explicitly retain results with specialist failures; coverage stays unverified. */
+  allowPartial?: boolean;
 }
 export interface TextView {
   text_view_id: string;
@@ -60,6 +69,22 @@ export interface SpanRecord extends ArtifactRecord {
   bbox: PdfBBox;
   text: string;
   text_view: TextView;
+  /** 0.16 operator/bbox evidence; not final rendered visibility. */
+  paint?: PaintEvidence;
+  /** 0.17 PDF content-stream and Form placement identity; null for derived evidence. */
+  content_scope?: ContentScope | null;
+}
+export interface ContentScope {
+  page_index: number;
+  stream_object_num: number | null;
+  stream_generation: number;
+  invocation_index: number;
+}
+export interface PaintEvidence {
+  rendering_mode: number | null;
+  paint_state: 'painting' | 'non_painting' | 'unknown';
+  clip_state: 'unclipped' | 'inside' | 'outside' | 'partial' | 'unknown';
+  clip_bbox: PdfBBox | null;
 }
 export interface ByteSourceSegment {
   text_start_byte: number;
@@ -153,6 +178,9 @@ export interface PageOutcome {
   requested_recovery?: boolean;
   native_span_count?: number;
   recognized_span_count?: number;
+  non_painting_span_count?: number;
+  clipped_out_span_count?: number;
+  uncertain_paint_span_count?: number;
   unresolved_region_count?: number;
 }
 export function utf8BoundaryMap(text: string): Map<number, number>;
