@@ -91,6 +91,17 @@ test('named marked-content properties retain semantic text and MCID through publ
   });
 });
 
+test('aggregate fast CLI resolves named properties using each page resource scope', { skip: !available }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pdf-parser-fast-properties-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const input = join(directory, 'input.pdf');
+  await writeFile(input, textPdf('BT /F1 12 Tf 20 250 Td /Span /Replacement BDC (WRONG) Tj EMC ET',
+    '/Properties << /Replacement << /ActualText (Named replacement) /MCID 7 >> >>'));
+  const text = execFileSync(binaryPath, ['extract', input, '--fast'], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(text.split('Named replacement').length - 1, 2);
+  assert.ok(!text.includes('WRONG'));
+});
+
 test('PDFDocEncoding replacement text survives both public adapters', { skip: !available }, async () => {
   const bytes = textPdf('BT /F1 12 Tf 20 250 Td /Span << /ActualText <18808d8e9394a07f9fad> >> BDC (WRONG) Tj EMC ET');
   const expected = '˘•“”ﬁﬂ€���';

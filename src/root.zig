@@ -1720,8 +1720,7 @@ pub const Document = struct {
                 ) catch continue;
 
                 if (content.len == 0) continue;
-                self.ensurePageFonts(page_num);
-                try extractTextFromContent(scratch_allocator, content, page_num, &self.font_cache, runtime.arrayListWriter(&result, allocator));
+                try self.extractTextStreamOrderFromContentInto(page_num, scratch_allocator, content, runtime.arrayListWriter(&result, allocator));
             }
         }
 
@@ -4398,21 +4397,6 @@ fn lookupFont(
     return font_cache.getPtr(key);
 }
 
-/// Extract text from content stream using pre-resolved fonts
-fn extractTextFromContent(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-    page_num: usize,
-    font_cache: *const std.StringHashMap(encoding.FontEncoding),
-    writer: anytype,
-) !void {
-    // Simple path without Form XObject support - null ctx skips Do handling
-    try extractContentStream(content, .{ .stream = .{
-        .resources = null,
-        .ctx = null,
-    } }, font_cache, page_num, allocator, writer);
-}
-
 /// Extract text with full context (supports Form XObjects)
 fn extractTextFromContentFull(
     content: []const u8,
@@ -5871,6 +5855,12 @@ test "Form traversal resolves scoped named ActualText and preserves inherited pa
         defer allocator.free(raw);
         const expected = if (resources.len == 0) "Page namedPage named" else "Page namedForm named";
         try std.testing.expectEqualStrings(expected, raw);
+        const fast_page = try doc.extractTextFast(0, allocator);
+        defer allocator.free(fast_page);
+        try std.testing.expectEqualStrings(expected, fast_page);
+        const fast_all = try doc.extractAllTextFast(allocator);
+        defer allocator.free(fast_all);
+        try std.testing.expectEqualStrings(expected, fast_all);
         var geometry = try doc.extractNativePageGeometry(0, allocator);
         defer geometry.deinit();
         try std.testing.expectEqual(@as(usize, 2), geometry.spans.len);
@@ -5894,7 +5884,52 @@ test "Form traversal cycles and unresolved properties fail all observable native
         try std.testing.expectError(case.failure, doc.extractNativePageGeometry(0, allocator));
         try std.testing.expectError(case.failure, doc.extractTextRawRecall(0, allocator));
         try std.testing.expectError(case.failure, doc.extractTextFast(0, allocator));
+        try std.testing.expectError(case.failure, doc.extractAllTextFast(allocator));
     }
+}
+
+test "aggregate fast extraction resolves named properties separately on each page" {
+    const allocator = std.testing.allocator;
+    const content = "BT /F1 12 Tf 20 280 Td /Tag /Property BDC (WRONGVISIBLE) Tj EMC ET";
+    const stream_object = try std.fmt.allocPrint(allocator, "<< /Length {} >>\nstream\n{s}\nendstream", .{ content.len, content });
+    defer allocator.free(stream_object);
+    const objects = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 5 0 R >> /Properties << /Property << /ActualText (Page one) /MCID 0 >> >> >> /Contents 6 0 R >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources 8 0 R /Contents 7 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream_object,
+        stream_object,
+        "<< /Font << /F1 5 0 R >> /Properties << /Property 9 0 R >> >>",
+        "<< /ActualText (Page two) /MCID 0 >>",
+    };
+    var pdf: std.ArrayList(u8) = .empty;
+    defer pdf.deinit(allocator);
+    var writer = runtime.arrayListWriter(&pdf, allocator);
+    try writer.writeAll("%PDF-1.4\n");
+    var offsets: [objects.len]usize = undefined;
+    for (objects, 0..) |object, index| {
+        offsets[index] = pdf.items.len;
+        try writer.print("{} 0 obj\n{s}\nendobj\n", .{ index + 1, object });
+    }
+    const xref_offset = pdf.items.len;
+    try writer.print("xref\n0 {}\n0000000000 65535 f \n", .{objects.len + 1});
+    for (offsets) |offset| try writer.print("{d:0>10} 00000 n \n", .{offset});
+    try writer.print("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", .{ objects.len + 1, xref_offset });
+    const doc = try Document.openFromMemory(allocator, pdf.items, ErrorConfig.default());
+    defer doc.close();
+    for ([_][]const u8{ "Page one", "Page two" }, 0..) |expected, page_num| {
+        const page = try doc.extractTextFast(page_num, allocator);
+        defer allocator.free(page);
+        try std.testing.expectEqualStrings(expected, page);
+    }
+    const aggregate = try doc.extractAllTextFast(allocator);
+    defer allocator.free(aggregate);
+    try std.testing.expectEqualStrings("Page one\x0cPage two", aggregate);
+    const through_mode = try doc.extractAllTextWithMode(allocator, .fast);
+    defer allocator.free(through_mode);
+    try std.testing.expectEqualStrings(aggregate, through_mode);
 }
 
 fn formGeometryAllocationProbe(allocator: std.mem.Allocator, doc: *Document, content: []const u8) !void {

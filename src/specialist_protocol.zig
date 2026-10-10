@@ -190,7 +190,8 @@ pub fn countRequests(result: anytype) usize {
         count += requestKindCount(route.route, route.reason_mask);
     }
     for (result.trace_records, 0..) |record, trace_index| {
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const kind = maybe_kind orelse continue;
             if (requestAlreadyCovered(result, kind, record.page_index, record.region_index)) continue;
             if (traceRequestSeenEarlier(result, trace_index, kind, record.page_index, record.region_index)) continue;
             count += 1;
@@ -411,8 +412,9 @@ pub fn writeRouteTraceSpecialistFields(writer: anytype, route: anytype, page_ind
 pub fn writeRouteTraceSpecialistFieldsWithReason(writer: anytype, route: anytype, reason_mask: u32, page_index: u32, region_index: ?u32) !void {
     try writer.writeAll(",\"specialist_request_ids\":[");
     var first = true;
-    if (requestKindForScope(route, reason_mask, region_index)) |kind|
-        try writeRequestIdValue(writer, kind, page_index, region_index, &first);
+    for (requestKindsForScope(route, reason_mask, region_index)) |maybe_kind| {
+        if (maybe_kind) |kind| try writeRequestIdValue(writer, kind, page_index, region_index, &first);
+    }
     try writer.writeAll("],\"specialist_status\":\"");
     try writer.writeAll(if (first) "none" else "requested");
     try writer.writeByte('"');
@@ -473,7 +475,8 @@ fn writeRequests(
     }
     for (result.trace_records, 0..) |record, trace_index| {
         if (!matchesPage(page_filter, record.page_index)) continue;
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const kind = maybe_kind orelse continue;
             if (requestAlreadyCovered(result, kind, record.page_index, record.region_index)) continue;
             if (traceRequestSeenEarlier(result, trace_index, kind, record.page_index, record.region_index)) continue;
             const bbox = traceBBox(result, record) orelse layout.BBox{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
@@ -487,7 +490,8 @@ fn writeRequests(
 fn traceRequestSeenEarlier(result: anytype, end_index: usize, kind: SpecialistKind, page_index: u32, region_index: ?u32) bool {
     for (result.trace_records[0..end_index]) |record| {
         if (record.page_index != page_index or record.region_index != region_index) continue;
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |prior_kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const prior_kind = maybe_kind orelse continue;
             if (prior_kind == kind and !requestAlreadyCovered(result, kind, page_index, region_index)) return true;
         }
     }
@@ -1098,16 +1102,11 @@ fn requestKindCount(route: complexity.RouteDecision, reason_mask: u32) usize {
     return @as(usize, @intFromBool(routeNeedsKindOrReason(route, .ocr, reason_mask))) + @as(usize, @intFromBool(primaryRegionKind(route, reason_mask) != null));
 }
 
-fn primaryRequestKind(route: complexity.RouteDecision, reason_mask: u32) ?SpecialistKind {
-    if (routeNeedsKindOrReason(route, .ocr, reason_mask)) return .ocr;
-    return primaryRegionKind(route, reason_mask);
-}
-
-fn requestKindForScope(route: complexity.RouteDecision, reason_mask: u32, region_index: ?u32) ?SpecialistKind {
-    if (region_index == null) {
-        return if (routeNeedsKindOrReason(route, .ocr, reason_mask)) .ocr else null;
-    }
-    return primaryRequestKind(route, reason_mask);
+fn requestKindsForScope(route: complexity.RouteDecision, reason_mask: u32, region_index: ?u32) [2]?SpecialistKind {
+    return .{
+        if (routeNeedsKindOrReason(route, .ocr, reason_mask)) .ocr else null,
+        if (region_index != null) primaryRegionKind(route, reason_mask) else null,
+    };
 }
 
 fn primaryRegionKind(route: complexity.RouteDecision, reason_mask: u32) ?SpecialistKind {
@@ -1576,6 +1575,29 @@ test "specialist route metadata records stable ids" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "specialist-request-formula-region-7") == null);
 }
 
+test "mixed OCR and specialist route metadata names both emitted requests" {
+    for ([_]complexity.RouteDecision{
+        .{ .needs_ocr = true, .needs_table_model = true },
+        .{ .needs_ocr = true, .needs_formula_model = true },
+        .{ .needs_ocr = true, .needs_layout_model = true },
+    }, [_][]const u8{ "table", "formula", "layout" }) |route, kind| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        const writer = runtime.arrayListWriter(&output, std.testing.allocator);
+        try writer.writeAll("{\"route\":true");
+        try writeRouteTraceSpecialistFields(writer, route, 2, 7);
+        try writer.writeByte('}');
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output.items, .{});
+        defer parsed.deinit();
+        const ids = parsed.value.object.get("specialist_request_ids").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), ids.len);
+        try std.testing.expectEqualStrings("specialist-request-ocr-region-7", ids[0].string);
+        const second = try std.fmt.allocPrint(std.testing.allocator, "specialist-request-{s}-region-7", .{kind});
+        defer std.testing.allocator.free(second);
+        try std.testing.expectEqualStrings(second, ids[1].string);
+    }
+}
+
 test "entity request writer exposes entity protocol shape" {
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
@@ -1603,6 +1625,49 @@ test "region routing consolidates table formula and layout to one request" {
     };
     try std.testing.expectEqual(@as(usize, 1), requestKindCount(route, 0));
     try std.testing.expectEqual(SpecialistKind.table, primaryRegionKind(route, 0).?);
+}
+
+test "mixed trace fallback emits each request once with matching count and links" {
+    const Route = struct {
+        page_index: u32,
+        region_index: u32 = 7,
+        bbox: layout.BBox,
+        route: complexity.RouteDecision,
+        reason_mask: u32 = 0,
+        signals: complexity.SignalScores = .{},
+    };
+    const Trace = struct {
+        page_index: u32,
+        region_index: ?u32,
+        route: complexity.RouteDecision,
+        reason_mask: u32 = 0,
+    };
+    const route = complexity.RouteDecision{ .needs_ocr = true, .needs_table_model = true };
+    const traces = [_]Trace{
+        .{ .page_index = 2, .region_index = 7, .route = route },
+        .{ .page_index = 2, .region_index = 7, .route = route },
+    };
+    const result = .{
+        .page_routes = @as([]const Route, &.{}),
+        .region_routes = @as([]const Route, &.{}),
+        .trace_records = &traces,
+        .reconciled = .{
+            .spans = @as([]const reconcile.ReconciledSpan, &.{}),
+            .blocks = @as([]const reconcile.ReconciledBlock, &.{}),
+        },
+    };
+    try std.testing.expectEqual(@as(usize, 2), countRequests(&result));
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try writeRequestsArray(runtime.arrayListWriter(&output, std.testing.allocator), &result, .{});
+    const json = try std.fmt.allocPrint(std.testing.allocator, "[{s}]", .{output.items});
+    defer std.testing.allocator.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    const requests = parsed.value.array.items;
+    try std.testing.expectEqual(@as(usize, 2), requests.len);
+    try std.testing.expectEqualStrings("specialist-request-ocr-region-7", requests[0].object.get("request_id").?.string);
+    try std.testing.expectEqualStrings("specialist-request-table-region-7", requests[1].object.get("request_id").?.string);
 }
 
 test "page specialist request writer scopes requests and spans to page" {
