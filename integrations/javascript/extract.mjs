@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { terminateSubprocess } from './subprocess.mjs';
 
 export class PdfExtractionError extends Error {
   constructor(code, message, options) {
@@ -306,13 +307,13 @@ function runParser(binaryPath, args, { timeoutMs, maxOutputBytes, signal }) {
     const output = [];
     let bytes = 0;
     let imposedFailure;
+    let termination = Promise.resolve();
     const stop = (code, message) => {
       if (imposedFailure) return;
       imposedFailure = new PdfExtractionError(code, message);
-      if (grouped && child.pid) {
-        try { process.kill(-child.pid, 'SIGKILL'); }
-        catch { child.kill('SIGKILL'); }
-      } else child.kill('SIGKILL');
+      termination = terminateSubprocess(child, grouped).catch(cause => {
+        imposedFailure.cleanupError = new PdfExtractionError('cleanup', 'Process-tree cleanup could not be qualified', { cause });
+      });
       // Do not wait for an inherited pipe to be closed by a descendant. Other
       // platforms kill the direct child but do not promise process-tree cleanup.
       child.stdout.destroy();
@@ -330,9 +331,10 @@ function runParser(binaryPath, args, { timeoutMs, maxOutputBytes, signal }) {
     // Drain diagnostics without retaining document contents or scratch paths.
     child.stderr.resume();
     child.once('error', (cause) => { imposedFailure ??= new PdfExtractionError('unavailable', 'Parser could not be executed', { cause }); });
-    child.once('close', (code, terminationSignal) => {
+    child.once('close', async (code, terminationSignal) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
+      await termination;
       if (imposedFailure) reject(imposedFailure);
       else if (terminationSignal) reject(new PdfExtractionError('crashed', `Parser terminated by ${terminationSignal}`));
       else if (code !== 0) reject(new PdfExtractionError('document', `Parser returned exit ${code}`));

@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArtifactJsonl, PdfExtractionError } from './extract.mjs';
+import { terminateSubprocess } from './subprocess.mjs';
 
 const integer = (value) => Number.isSafeInteger(value) && value >= 0;
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -22,15 +23,16 @@ async function consume(binaryPath, args, options, inputSha256) {
   const grouped = process.platform !== 'win32';
   const child = spawn(binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: grouped, windowsHide: true });
   let failure;
+  let termination = Promise.resolve();
   let rejectFailure;
   const failed = new Promise((_, reject) => { rejectFailure = reject; });
   failed.catch(() => {});
   const stop = (error) => {
     if (failure) return;
     failure = error;
-    if (grouped && child.pid) {
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-    } else child.kill('SIGKILL');
+    termination = terminateSubprocess(child, grouped).catch(cause => {
+      failure.cleanupError = new PdfExtractionError('cleanup', 'Process-tree cleanup could not be qualified', { cause });
+    });
     child.stdout.destroy();
     child.stderr.destroy();
     rejectFailure(error);
@@ -176,6 +178,7 @@ async function consume(binaryPath, args, options, inputSha256) {
   } catch (error) {
     stop(error instanceof PdfExtractionError ? error : new PdfExtractionError('protocol', 'Streaming extraction failed', { cause: error }));
     await closed;
+    await termination;
     throw failure;
   } finally {
     clearTimeout(timer);

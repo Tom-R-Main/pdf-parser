@@ -133,9 +133,12 @@ cells must share their table's page. Use these authoritative fields for links.
 attached to an earlier error does not replace the original diagnosis. The host
 maps these outcomes to its own user-facing messages and retry policy.
 
-On macOS/Linux, timeout, cancellation and output limits terminate the private
-process group, including ordinary wrapper/OCR descendants, and close their
-output pipes before cleanup. Descendants that deliberately create a separate
+On macOS/Linux, timeout, cancellation and output limits close output pipes and
+terminate descendants from leaves upward, allowing each live parent to reap its
+children before terminating the private process group. This uses the local `ps`
+inventory with a one-second cleanup grace period. An unavailable inventory or a
+parent unable to reap attaches `cleanupError` to the original extraction error;
+cleanup is then unqualified. Descendants that deliberately create a separate
 session are outside that group. Other platforms kill the direct child and close
 its pipes; process-tree cleanup is not qualified there.
 

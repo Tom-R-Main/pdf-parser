@@ -5,7 +5,6 @@ import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { execFileSync } from 'node:child_process';
 import { extractPdfPages } from './stream.mjs';
 
 const input = Buffer.from('%PDF-stream-test');
@@ -191,8 +190,7 @@ test('timeout kills POSIX wrapper descendants', { skip: process.platform === 'wi
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
       process.kill(pid, 0);
-      // Linux may keep an orphan's zombie entry briefly after SIGKILL.
-      alive = !/^Z/u.test(execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim());
+      // Zombies still occupy PID slots and do not qualify as cleaned up.
     } catch { alive = false; }
     if (!alive) break;
     await delay(50);
