@@ -140,7 +140,12 @@ jobs:
           node-version: "22"
 
       - name: Test public JavaScript adapters against current CLI
-        run: node --test integrations/javascript/*.test.mjs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+          tesseract --version
+          pdftoppm -v
+          node --test integrations/javascript/*.test.mjs
 
   python:
     name: Python ${{ matrix.python-version }} bindings and wheel
