@@ -182,7 +182,9 @@ publishing authority.
 Schema `0.17.x` adds nullable span `content_scope`. A known scope carries its
 page, PDF stream object reference and per-page Form invocation index. Repeated
 Form placements remain distinguishable even when they reuse local font names or
-MCIDs. The adapter rejects out-of-page or malformed scopes and inconsistent
+MCIDs. Coincident identical text may still merge during reconciliation: public
+scope identifies the retained occurrence, while raw glyph inventory distinguishes
+the contributing invocations. The adapter rejects out-of-page or malformed scopes and inconsistent
 specialist context. A locator's `sourceSpanId` resolves to the retained span and
 its scope; null scope explicitly withholds that attribution.
 

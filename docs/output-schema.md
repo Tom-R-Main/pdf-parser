@@ -451,6 +451,9 @@ A Form scope carries its PDF object number/generation and a positive invocation
 index assigned in traversal order on that page. Repeated placements of the same
 Form share the object reference but have distinct invocation indices. Scope is
 bound to the input identity and page; it does not establish logical reading order.
+Reconciliation may merge coincident identical text, retaining the chosen span's
+scope and a duplicate count. Raw glyph inventory preserves invocation identity;
+public spans do not enumerate every contributing invocation scope.
 MCIDs are interpreted within their content stream, not as page-global identities.
 Fallback/OCR and reconstructed table text may have null scope. Specialist span
 context must agree with the corresponding public span's scope.
