@@ -11,13 +11,7 @@ const layout = @import("layout.zig");
 pub const GlyphSpan = interpreter.GlyphSpan;
 pub const BBox = layout.BBox;
 
-pub const BoundaryKind = enum(u8) {
-    join,
-    space,
-    line_break,
-    block_break,
-    region_break,
-};
+pub const BoundaryKind = layout.TextBoundary;
 
 pub const BoundaryProvenance = enum(u8) {
     content_start,
@@ -142,12 +136,13 @@ pub fn analyze(
         const glyph = glyphs[glyph_index];
         if (glyph.text.len == 0) continue;
         const glyph_baseline = baselineCoordinate(glyph);
+        const glyph_font_size = baselineFontSize(glyph);
         var target_line: ?usize = null;
         var line_index = pending_lines.items.len;
         while (line_index > 0) {
             line_index -= 1;
             const candidate = pending_lines.items[line_index];
-            const tolerance = @max(1.5, @max(candidate.max_font_size, glyph.font_size) * 0.55);
+            const tolerance = @max(1.5, @max(candidate.max_font_size, glyph_font_size) * 0.55);
             const delta = @abs(glyph_baseline - candidate.baseline());
             if (delta <= tolerance and
                 sameOrientation(glyphs[candidateGlyphIndex(line_glyphs.items, candidate)], glyph) and
@@ -172,7 +167,7 @@ pub fn analyze(
             line.count += 1;
             line.baseline_sum += glyph_baseline;
             line.baseline_count += 1;
-            line.max_font_size = @max(line.max_font_size, glyph.font_size);
+            line.max_font_size = @max(line.max_font_size, glyph_font_size);
             line.bbox = unionBox(line.bbox, glyph.bbox);
         } else {
             const start = line_glyphs.items.len;
@@ -182,7 +177,7 @@ pub fn analyze(
                 .count = 1,
                 .baseline_sum = glyph_baseline,
                 .baseline_count = 1,
-                .max_font_size = glyph.font_size,
+                .max_font_size = glyph_font_size,
                 .bbox = glyph.bbox,
                 .region_index = regionForGlyph(glyph.bbox, gutter),
             });
@@ -309,12 +304,12 @@ pub fn buildLineSpans(
                 const boundary = result.boundaries[ordered_index];
                 const glyph = glyphs[result.ordered_glyph_indices[ordered_index]];
                 segment_bbox = unionBox(segment_bbox, glyph.bbox);
-                if (local_index > 0 and boundary.kind == .space and !endsInWhitespace(text.items)) {
+                if (local_index > segment_start and boundary.kind == .space and !endsInWhitespace(text.items) and !(glyph.actual_text and startsInWhitespace(glyph.text))) {
                     try text.append(allocator, ' ');
                 }
-                try appendNormalizedGlyph(allocator, &text, glyph.text);
+                try appendNormalizedGlyph(allocator, &text, glyph.text, glyph.actual_text);
             }
-            trimTrailingWhitespace(&text);
+            if (!representative.actual_text) trimTrailingWhitespace(&text);
             if (text.items.len == 0) {
                 text.deinit(allocator);
                 segment_start = segment_end;
@@ -328,6 +323,7 @@ pub fn buildLineSpans(
             };
             try spans.ensureUnusedCapacity(allocator, 1);
             const owned_text = try text.toOwnedSlice(allocator);
+            const paint = representative.paint.forBBox(segment_bbox);
             spans.appendAssumeCapacity(layout.TextSpan.init(.{
                 .page_index = page_index,
                 .bbox = segment_bbox,
@@ -340,6 +336,9 @@ pub fn buildLineSpans(
                 .unicode_map_error = representative.unicode_map_error,
                 .actual_text = representative.actual_text,
                 .writing_mode = representative.writing_mode,
+                .leading_boundary = segmentLeadingBoundary(glyphs, result, start + segment_start),
+                .content_scope = representative.content_scope,
+                .paint = paint,
             }));
             font_name_transferred = true;
             segment_start = segment_end;
@@ -348,13 +347,28 @@ pub fn buildLineSpans(
     return spans.toOwnedSlice(allocator);
 }
 
+fn segmentLeadingBoundary(glyphs: []const GlyphSpan, result: *const Result, ordered_index: usize) BoundaryKind {
+    const boundary = result.boundaries[ordered_index].kind;
+    // The previous provenance segment may trim an explicit trailing space, or
+    // a whitespace-only segment may emit no span. Carry that word boundary
+    // forward rather than inferring it again from touching glyph boxes.
+    if (boundary == .join and ordered_index > 0) {
+        const previous = glyphs[result.ordered_glyph_indices[ordered_index - 1]];
+        if (!previous.actual_text and isWhitespace(previous.text)) return .space;
+    }
+    return boundary;
+}
+
 fn sameTextSpanProvenance(a: GlyphSpan, b: GlyphSpan) bool {
     return optionalTextEqual(a.font_name, b.font_name) and
         a.font_size == b.font_size and
         a.mcid == b.mcid and
         a.unicode_map_error == b.unicode_map_error and
         a.actual_text == b.actual_text and
-        a.writing_mode == b.writing_mode;
+        a.semantic_run_id == b.semantic_run_id and
+        a.writing_mode == b.writing_mode and
+        std.meta.eql(a.content_scope, b.content_scope) and
+        std.meta.eql(a.paint, b.paint);
 }
 
 fn optionalTextEqual(a: ?[]const u8, b: ?[]const u8) bool {
@@ -401,19 +415,26 @@ fn compareGlyphInline(glyphs: []const GlyphSpan, a_index: u32, b_index: u32) boo
 }
 
 fn inlineCoordinate(glyph: GlyphSpan) f64 {
-    if (glyph.writing_mode == 1) return -glyph.text_matrix[5];
-    const a = glyph.text_matrix[0];
-    const b = glyph.text_matrix[1];
-    const magnitude = @max(0.0001, @sqrt(a * a + b * b));
-    return (glyph.text_matrix[4] * a + glyph.text_matrix[5] * b) / magnitude;
+    const axis = writingAxis(glyph);
+    return glyph.text_matrix[4] * axis.x + glyph.text_matrix[5] * axis.y;
 }
 
 fn baselineCoordinate(glyph: GlyphSpan) f64 {
-    if (glyph.writing_mode == 1) return glyph.text_matrix[4];
-    const a = glyph.text_matrix[0];
-    const b = glyph.text_matrix[1];
+    const axis = writingAxis(glyph);
+    return -glyph.text_matrix[4] * axis.y + glyph.text_matrix[5] * axis.x;
+}
+
+fn writingAxis(glyph: GlyphSpan) struct { x: f64, y: f64, scale: f64 } {
+    const a = if (glyph.writing_mode == 1) -glyph.text_matrix[2] else glyph.text_matrix[0];
+    const b = if (glyph.writing_mode == 1) -glyph.text_matrix[3] else glyph.text_matrix[1];
     const magnitude = @max(0.0001, @sqrt(a * a + b * b));
-    return (-glyph.text_matrix[4] * b + glyph.text_matrix[5] * a) / magnitude;
+    return .{ .x = a / magnitude, .y = b / magnitude, .scale = magnitude };
+}
+
+fn baselineFontSize(glyph: GlyphSpan) f64 {
+    const matrix = glyph.text_matrix;
+    const normal_scale = @abs(matrix[0] * matrix[3] - matrix[1] * matrix[2]) / writingAxis(glyph).scale;
+    return glyph.font_size * normal_scale;
 }
 
 fn sameOrientation(a: GlyphSpan, b: GlyphSpan) bool {
@@ -438,18 +459,46 @@ fn detectCentralGutter(
     if (page_width <= 0 or glyphs.len < 24) return null;
     const bin_count = 96;
     var occupancy: [bin_count]u32 = @splat(0);
+    var first_baseline: [bin_count]?f64 = @splat(null);
+    var first_em: [bin_count]f64 = @splat(0);
+    var repeated_baseline: [bin_count]bool = @splat(false);
     var left_count: usize = 0;
     var right_count: usize = 0;
 
     for (glyphs) |glyph| {
-        if (isWhitespace(glyph.text)) continue;
-        const x0 = @max(page_bbox.x0, @min(page_bbox.x1, glyph.bbox.x0));
-        const x1 = @max(page_bbox.x0, @min(page_bbox.x1, glyph.bbox.x1));
-        const first: usize = @intFromFloat(@floor((x0 - page_bbox.x0) / page_width * bin_count));
-        const last_raw: usize = @intFromFloat(@floor((x1 - page_bbox.x0) / page_width * bin_count));
-        const last = @min(bin_count - 1, last_raw);
-        var bin = @min(bin_count - 1, first);
-        while (bin <= last) : (bin += 1) occupancy[bin] += 1;
+        if (glyph.text.len == 0 or isWhitespace(glyph.text)) continue;
+        const range = horizontalBinRange(glyph.bbox, page_bbox, bin_count);
+        const baseline = baselineCoordinate(glyph);
+        const em = baselineFontSize(glyph);
+        for (range.first..range.last + 1) |bin| {
+            if (first_baseline[bin]) |first| {
+                if (@abs(first - baseline) > @max(1.5, @max(first_em[bin], em) * 0.55)) repeated_baseline[bin] = true;
+            } else {
+                first_baseline[bin] = baseline;
+                first_em[bin] = em;
+            }
+        }
+    }
+
+    // Isolated centered footers must not carve a false edge into a real
+    // gutter. Keep whole native runs when any of their occupied columns has
+    // another baseline of support; do not truncate longer supported lines.
+    var native_run_start: usize = 0;
+    while (native_run_start < glyphs.len) {
+        var run_end = native_run_start + 1;
+        var run_bbox = glyphs[native_run_start].bbox;
+        while (run_end < glyphs.len and inlineNeighbors(glyphs[run_end - 1], glyphs[run_end])) : (run_end += 1) {
+            run_bbox = unionBox(run_bbox, glyphs[run_end].bbox);
+        }
+        const run_range = horizontalBinRange(run_bbox, page_bbox, bin_count);
+        var supported = false;
+        for (run_range.first..run_range.last + 1) |bin| supported = supported or repeated_baseline[bin];
+        if (supported) for (glyphs[native_run_start..run_end]) |glyph| {
+            if (glyph.text.len == 0 or isWhitespace(glyph.text)) continue;
+            const range = horizontalBinRange(glyph.bbox, page_bbox, bin_count);
+            for (range.first..range.last + 1) |bin| occupancy[bin] += 1;
+        };
+        native_run_start = run_end;
     }
 
     const allowed: u32 = @intCast(@max(1, glyphs.len / 800));
@@ -481,6 +530,8 @@ fn detectCentralGutter(
     if (gutter_width < @max(12.0, page_width * 0.025)) return null;
     const gutter_x0 = page_bbox.x0 + @as(f64, @floatFromInt(best_start)) / bin_count * page_width;
     const gutter_x1 = gutter_x0 + gutter_width;
+    const proposed_gutter = BBox{ .x0 = gutter_x0, .y0 = page_bbox.y0, .x1 = gutter_x1, .y1 = page_bbox.y1 };
+    if (splitsContinuousWord(glyphs, proposed_gutter)) return null;
     for (glyphs) |glyph| {
         if (isWhitespace(glyph.text)) continue;
         const center = (glyph.bbox.x0 + glyph.bbox.x1) / 2.0;
@@ -490,6 +541,40 @@ fn detectCentralGutter(
     if (left_count < 10 or right_count < 10) return null;
     if (baselineBandCount(glyphs, gutter_x0, true) < 2 or baselineBandCount(glyphs, gutter_x1, false) < 2) return null;
     return .{ .x0 = gutter_x0, .y0 = page_bbox.y0, .x1 = gutter_x1, .y1 = page_bbox.y1 };
+}
+
+fn horizontalBinRange(bbox: BBox, page_bbox: BBox, comptime count: usize) struct { first: usize, last: usize } {
+    const scale = @as(f64, @floatFromInt(count)) / (page_bbox.x1 - page_bbox.x0);
+    const x0 = @max(page_bbox.x0, @min(page_bbox.x1, bbox.x0));
+    const x1 = @max(page_bbox.x0, @min(page_bbox.x1, bbox.x1));
+    return .{
+        .first = @min(count - 1, @as(usize, @intFromFloat(@floor((x0 - page_bbox.x0) * scale)))),
+        .last = @min(count - 1, @as(usize, @intFromFloat(@floor((x1 - page_bbox.x0) * scale)))),
+    };
+}
+
+fn inlineNeighbors(previous: GlyphSpan, current: GlyphSpan) bool {
+    if (!sameOrientation(previous, current)) return false;
+    const axis = writingAxis(previous);
+    const dx = current.text_matrix[4] - previous.text_matrix[4];
+    const dy = current.text_matrix[5] - previous.text_matrix[5];
+    const normal_em = @max(baselineFontSize(previous), baselineFontSize(current));
+    if (@abs(-dx * axis.y + dy * axis.x) > @max(1.5, normal_em * 0.55)) return false;
+    const em = @max(1.0, @max(previous.font_size * axis.scale, current.font_size * writingAxis(current).scale));
+    const font_space = @max(previous.font_space_advance * axis.scale, current.font_space_advance * writingAxis(current).scale);
+    const threshold = if (font_space > 0 and std.math.isFinite(font_space)) font_space * 0.5 else em * 0.105;
+    const gap = inlineGap(previous, current);
+    return gap >= -em * 0.5 and gap <= threshold;
+}
+
+fn splitsContinuousWord(glyphs: []const GlyphSpan, gutter: BBox) bool {
+    if (glyphs.len < 2) return false;
+    for (glyphs[0 .. glyphs.len - 1], glyphs[1..]) |previous, current| {
+        if (isWhitespace(previous.text) or isWhitespace(current.text) or !sameOrientation(previous, current) or
+            regionForGlyph(previous.bbox, gutter) == regionForGlyph(current.bbox, gutter)) continue;
+        if (inlineNeighbors(previous, current)) return true;
+    }
+    return false;
 }
 
 fn baselineBandCount(glyphs: []const GlyphSpan, split_x: f64, left_side: bool) usize {
@@ -640,8 +725,9 @@ fn classifyBoundaries(
         }
 
         const gap = inlineGap(previous, current);
-        const em = @max(1.0, @max(previous.font_size, current.font_size));
-        const space_threshold = em * 0.105;
+        const em = @max(1.0, @max(previous.font_size * writingAxis(previous).scale, current.font_size * writingAxis(current).scale));
+        const font_space = @max(previous.font_space_advance * writingAxis(previous).scale, current.font_space_advance * writingAxis(current).scale);
+        const space_threshold = if (font_space > 0 and std.math.isFinite(font_space)) font_space * 0.5 else em * 0.105;
         const is_space = gap > space_threshold;
         const ratio = gap / em;
         boundaries[ordered_index] = .{
@@ -658,13 +744,9 @@ fn classifyBoundaries(
 }
 
 fn inlineGap(previous: GlyphSpan, current: GlyphSpan) f64 {
-    if (previous.writing_mode == 1) return previous.bbox.y0 - current.bbox.y1;
-    const a = previous.text_matrix[0];
-    const b = previous.text_matrix[1];
-    if (@abs(b) > @abs(a) * 0.5) {
-        return inlineCoordinate(current) - inlineCoordinate(previous) - previous.advance;
-    }
-    return current.bbox.x0 - previous.bbox.x1;
+    const axis = writingAxis(previous);
+    return (current.text_matrix[4] - previous.text_matrix[4]) * axis.x +
+        (current.text_matrix[5] - previous.text_matrix[5]) * axis.y - previous.advance * axis.scale;
 }
 
 fn renderReadable(
@@ -683,7 +765,7 @@ fn renderReadable(
         const boundary = boundaries[ordered_index];
         if (ordered_index > 0) switch (boundary.kind) {
             .join => {},
-            .space => if (!endsInWhitespace(output.items)) try output.append(allocator, ' '),
+            .space => if (!endsInWhitespace(output.items) and !(glyphs[glyph_index].actual_text and startsInWhitespace(glyphs[glyph_index].text))) try output.append(allocator, ' '),
             .line_break => try appendBreak(allocator, &output, 1),
             .block_break, .region_break => try appendBreak(allocator, &output, 2),
         };
@@ -692,12 +774,12 @@ fn renderReadable(
             line_index += 1;
             mutable_lines[line_index].text_start = @intCast(output.items.len);
         }
-        try appendNormalizedGlyph(allocator, &output, glyphs[glyph_index].text);
+        try appendNormalizedGlyph(allocator, &output, glyphs[glyph_index].text, glyphs[glyph_index].actual_text);
     }
     if (mutable_lines.len > 0) {
         mutable_lines[line_index].text_len = @intCast(output.items.len - mutable_lines[line_index].text_start);
     }
-    trimTrailingWhitespace(&output);
+    if (ordered.len == 0 or !glyphs[ordered[ordered.len - 1]].actual_text) trimTrailingWhitespace(&output);
     synchronizeLineTextRanges(mutable_lines, output.items.len);
     return output.toOwnedSlice(allocator);
 }
@@ -715,7 +797,11 @@ fn synchronizeLineTextRanges(lines: []Line, text_len: usize) void {
     }
 }
 
-fn appendNormalizedGlyph(allocator: std.mem.Allocator, output: *std.ArrayList(u8), text: []const u8) !void {
+fn appendNormalizedGlyph(allocator: std.mem.Allocator, output: *std.ArrayList(u8), text: []const u8, actual_text: bool) !void {
+    if (actual_text) {
+        try output.appendSlice(allocator, text);
+        return;
+    }
     if (isWhitespace(text)) {
         if (output.items.len > 0 and !endsInWhitespace(output.items)) try output.append(allocator, ' ');
         return;
@@ -997,6 +1083,13 @@ fn endsInWhitespace(text: []const u8) bool {
     return std.ascii.isWhitespace(text[text.len - 1]);
 }
 
+fn startsInWhitespace(text: []const u8) bool {
+    if (text.len == 0) return false;
+    const len = std.unicode.utf8ByteSequenceLength(text[0]) catch return false;
+    if (len > text.len) return false;
+    return isWhitespaceCodepoint(std.unicode.utf8Decode(text[0..len]) catch return false);
+}
+
 fn trimTrailingSpaces(output: *std.ArrayList(u8)) void {
     while (output.items.len > 0 and (output.items[output.items.len - 1] == ' ' or output.items[output.items.len - 1] == '\t')) _ = output.pop();
 }
@@ -1039,12 +1132,232 @@ test "glyph geometry reconstructs missing spaces and line breaks" {
     try std.testing.expectEqual(BoundaryKind.line_break, result.boundaries[2].kind);
 }
 
+fn rotatedTestGlyph(text: []const u8, distance: f64, vertical: bool) GlyphSpan {
+    const component = @sqrt(@as(f64, 0.5));
+    var glyph = testGlyph(text, 100 + distance * component * 2, 100 + distance * component * 2 * (if (vertical) @as(f64, -1) else 1), 6);
+    glyph.text_matrix[0] = component * 2;
+    glyph.text_matrix[1] = component * 2;
+    glyph.text_matrix[2] = -component * 2;
+    glyph.text_matrix[3] = component * 2;
+    glyph.font_space_advance = 3;
+    glyph.writing_mode = if (vertical) 1 else 0;
+    return glyph;
+}
+
+test "projected rotated advances preserve within-word joins and real word gaps" {
+    const glyphs = [_]GlyphSpan{
+        rotatedTestGlyph("A", 0, false),  rotatedTestGlyph("B", 6, false),
+        rotatedTestGlyph("C", 15, false), rotatedTestGlyph("D", 21, false),
+    };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 300 }, "ABCD");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("AB CD", result.text);
+    try std.testing.expectEqual(@as(usize, 1), result.lines.len);
+    try std.testing.expectEqual(BoundaryKind.join, result.boundaries[1].kind);
+    try std.testing.expectEqual(BoundaryKind.space, result.boundaries[2].kind);
+}
+
+test "projected vertical advances support rotation and font-space evidence" {
+    const glyphs = [_]GlyphSpan{
+        rotatedTestGlyph("A", 0, true),  rotatedTestGlyph("B", 6, true),
+        rotatedTestGlyph("C", 15, true), rotatedTestGlyph("D", 21, true),
+    };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 300 }, "ABCD");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("AB CD", result.text);
+    try std.testing.expectEqual(@as(usize, 1), result.lines.len);
+}
+
+test "scaled baseline bands retain mixed-font superscripts on the same line" {
+    var first = testGlyph("F", 100, 100, 6);
+    first.text_matrix[0] = 2;
+    first.text_matrix[3] = 2;
+    var superscript = testGlyph("1", 112, 110, 4);
+    superscript.font_size = 8;
+    superscript.text_matrix[0] = 2;
+    superscript.text_matrix[3] = 2;
+    var tail = testGlyph(".25", 120, 100, 12);
+    tail.text_matrix[0] = 2;
+    tail.text_matrix[3] = 2;
+    const glyphs = [_]GlyphSpan{ first, superscript, tail };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 300 }, "F1.25");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("F1.25", result.text);
+    try std.testing.expectEqual(@as(usize, 1), result.lines.len);
+}
+
+test "column gutter cannot split a continuous transformed word at paint boundaries" {
+    const words = [_][]const u8{ "VISIBLE", "HIDDEN", "CLIPPED", "TRANSFORMED" };
+    const xs = [_]f64{ 20, 20, 180, 50 };
+    const ys = [_]f64{ 260, 230, 180, 60 };
+    var glyphs: [31]GlyphSpan = undefined;
+    var count: usize = 0;
+    for (words, 0..) |word, row| {
+        for (word, 0..) |_, letter| {
+            const scale: f64 = if (row == 3) 2 else 1;
+            const advance: f64 = if (row == 3) 8 else 6;
+            const x = xs[row] + @as(f64, @floatFromInt(letter)) * advance * scale;
+            var glyph = testGlyph(word[letter .. letter + 1], x, ys[row], advance);
+            glyph.text_matrix[0] = scale;
+            glyph.text_matrix[3] = scale;
+            glyph.bbox.x1 = x + advance * scale;
+            glyph.font_space_advance = 3;
+            if (row == 3) {
+                glyph.paint = (layout.PaintEvidence{ .rendering_mode = 0, .paint_state = .painting, .clip_bbox = .{ .x0 = 30, .y0 = 40, .x1 = 130, .y1 = 140 } }).forBBox(glyph.bbox);
+            }
+            glyphs[count] = glyph;
+            count += 1;
+        }
+    }
+    var native = try analyze(std.testing.allocator, glyphs[0..count], .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 300 }, "VISIBLE HIDDEN CLIPPED TRANSFORMED");
+    defer native.deinit();
+    try std.testing.expect(native.gutter == null);
+    try std.testing.expect(std.mem.indexOf(u8, native.text, "TRANSFORMED") != null);
+    const spans = try buildLineSpans(std.testing.allocator, glyphs[0..count], &native, 0);
+    defer {
+        for (spans) |span| std.testing.allocator.free(@constCast(span.text));
+        std.testing.allocator.free(spans);
+    }
+    var reconciled = try @import("reconcile.zig").reconcile(std.testing.allocator, &.{.{ .spans = spans }}, .{ .preserve_input_order = true });
+    defer reconciled.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, reconciled.chunks[0].content, "TRANSFORMED") != null);
+}
+
+test "word-continuity guard preserves corroborated two-column gutters" {
+    var glyphs: [54]GlyphSpan = undefined;
+    var count: usize = 0;
+    for ([_]f64{ 260, 240 }) |y| {
+        for ([_][]const u8{ "LEFTPARAGRAPH", "RIGHTPARAGRAPH" }, 0..) |word, column| {
+            const x: f64 = if (column == 0) 20 else 180;
+            for (word, 0..) |_, index| {
+                var glyph = testGlyph(word[index .. index + 1], x + @as(f64, @floatFromInt(index)) * 6, y, 6);
+                glyph.font_space_advance = 3;
+                glyphs[count] = glyph;
+                count += 1;
+            }
+        }
+    }
+    var native = try analyze(std.testing.allocator, glyphs[0..count], .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 300 }, "LEFTPARAGRAPH RIGHTPARAGRAPH LEFTPARAGRAPH RIGHTPARAGRAPH");
+    defer native.deinit();
+    try std.testing.expect(native.gutter != null);
+    try std.testing.expectEqualStrings("LEFTPARAGRAPH\nLEFTPARAGRAPH\n\nRIGHTPARAGRAPH\nRIGHTPARAGRAPH", native.text);
+}
+
+test "central footer does not veto corroborated columns or split its own word" {
+    var glyphs: [56]GlyphSpan = undefined;
+    var count: usize = 0;
+    for ([_]f64{ 720, 700 }) |y| {
+        for ([_][]const u8{ "LEFTPARAGRAPH", "RIGHTPARAGRAPH" }, 0..) |word, column| {
+            const x: f64 = if (column == 0) 72 else 330;
+            for (word, 0..) |_, index| {
+                var glyph = testGlyph(word[index .. index + 1], x + @as(f64, @floatFromInt(index)) * 6, y, 6);
+                glyph.font_space_advance = 3;
+                glyphs[count] = glyph;
+                count += 1;
+            }
+        }
+    }
+    glyphs[count] = testGlyph("4", 300, 60, 6);
+    glyphs[count + 1] = testGlyph("2", 306, 60, 6);
+    var native = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "LEFTPARAGRAPH RIGHTPARAGRAPH LEFTPARAGRAPH RIGHTPARAGRAPH 42");
+    defer native.deinit();
+    try std.testing.expect(native.gutter != null);
+    try std.testing.expectEqualStrings("LEFTPARAGRAPH\nLEFTPARAGRAPH\n\nRIGHTPARAGRAPH\nRIGHTPARAGRAPH\n\n42", native.text);
+}
+
+test "semantic ActualText spans retain exact whitespace through native layout" {
+    var glyph = testGlyph("  first\nsecond  ", 72, 700, 30);
+    glyph.actual_text = true;
+    const glyphs = [_]GlyphSpan{glyph};
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 800 }, glyph.text);
+    defer result.deinit();
+    try std.testing.expectEqualStrings(glyph.text, result.text);
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &result, 0);
+    defer {
+        for (spans) |span| std.testing.allocator.free(@constCast(span.text));
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqualStrings(glyph.text, spans[0].text);
+}
+
+test "scoped provenance splits put synthetic separators outside exact span text" {
+    var first = testGlyph("A", 100, 700, 6);
+    first.content_scope = .{ .page_index = 0, .stream_object_num = 17, .invocation_index = 1 };
+    var second = testGlyph("C", 108, 700, 6);
+    second.content_scope = .{ .page_index = 0, .stream_object_num = 17, .invocation_index = 2 };
+    const glyphs = [_]GlyphSpan{ first, second };
+    var native = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 800 }, "AC");
+    defer native.deinit();
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &native, 0);
+    defer {
+        for (spans) |span| std.testing.allocator.free(@constCast(span.text));
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqualStrings("A", spans[0].text);
+    try std.testing.expectEqualStrings("C", spans[1].text);
+    try std.testing.expectEqual(BoundaryKind.space, spans[1].leading_boundary.?);
+    var reconciled = try @import("reconcile.zig").reconcile(std.testing.allocator, &.{.{ .spans = spans }}, .{ .preserve_input_order = true });
+    defer reconciled.deinit();
+    try std.testing.expectEqualStrings("A C", reconciled.blocks[0].text);
+    try std.testing.expectEqual(@as(usize, 2), reconciled.spans[1].block_text_start);
+}
+
+test "whitespace-only ActualText scopes retain one exact authored separator" {
+    var separator = testGlyph("\u{a0}", 106, 700, 4);
+    separator.actual_text = true;
+    separator.semantic_run_id = 1;
+    separator.semantic_replacement = true;
+    const glyphs = [_]GlyphSpan{ testGlyph("A", 100, 700, 6), separator, testGlyph("B", 110, 700, 6) };
+    var native = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 300, .y1 = 800 }, "A\u{a0}B");
+    defer native.deinit();
+    try std.testing.expectEqualStrings("A\u{a0}B", native.text);
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &native, 0);
+    defer {
+        for (spans) |span| std.testing.allocator.free(@constCast(span.text));
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqualStrings("\u{a0}", spans[1].text);
+    var reconciled = try @import("reconcile.zig").reconcile(std.testing.allocator, &.{.{ .spans = spans }}, .{ .preserve_input_order = true });
+    defer reconciled.deinit();
+    try std.testing.expectEqualStrings("A\u{a0}B", reconciled.blocks[0].text);
+}
+
+test "mathematical font switches retain explicit word spaces after segment trimming" {
+    // Derived from the checked-in mathematical-pi fixture: each comparison
+    // operator uses another font immediately after an explicit text space.
+    const tokens = [_][]const u8{ "BMI", " ", "<", "25 BMI", " ", ">", "30 IRP", " ", "≥", " upper limit", " ", "→", " muscle" };
+    var glyphs: [tokens.len]GlyphSpan = undefined;
+    var x: f64 = 100;
+    for (tokens, 0..) |token, index| {
+        glyphs[index] = testGlyph(token, x, 700, 6);
+        glyphs[index].font_name = if (index == 2 or index == 5 or index == 8) "MathematicalPi-One" else if (index == 11) "Symbol" else "Body";
+        x += 6;
+    }
+    const expected = "BMI <25 BMI >30 IRP ≥ upper limit → muscle";
+    var native = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, expected);
+    defer native.deinit();
+    try std.testing.expectEqualStrings(expected, native.text);
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &native, 0);
+    defer {
+        for (spans) |span| {
+            std.testing.allocator.free(@constCast(span.text));
+            if (span.font.name) |name| std.testing.allocator.free(@constCast(name));
+        }
+        std.testing.allocator.free(spans);
+    }
+    var reconciled = try @import("reconcile.zig").reconcile(std.testing.allocator, &.{.{ .spans = spans }}, .{ .preserve_input_order = true });
+    defer reconciled.deinit();
+    try std.testing.expectEqualStrings(expected, reconciled.blocks[0].text);
+    try std.testing.expectEqualStrings(expected, reconciled.chunks[0].content);
+}
+
 test "line spans preserve representative font and vertical provenance" {
     var glyph = testGlyph("日", 300, 700, 12);
     glyph.font_name = "FVertical";
     glyph.writing_mode = 1;
     glyph.actual_text = true;
     glyph.mcid = 7;
+    glyph.paint = .{ .rendering_mode = 3, .paint_state = .non_painting, .clip_state = .outside, .clip_bbox = .{ .x0 = 0, .y0 = 0, .x1 = 20, .y1 = 20 } };
     const glyphs = [_]GlyphSpan{glyph};
     var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "日");
     defer result.deinit();
@@ -1062,6 +1375,50 @@ test "line spans preserve representative font and vertical provenance" {
     try std.testing.expectEqual(@as(u8, 1), spans[0].writing_mode);
     try std.testing.expect(spans[0].actual_text);
     try std.testing.expectEqual(@as(?i32, 7), spans[0].mcid);
+    try std.testing.expect(std.meta.eql(glyph.paint, spans[0].paint));
+}
+
+test "line spans split equal-font glyphs at paint evidence changes" {
+    var visible = testGlyph("A", 72, 700, 6);
+    visible.paint = .{ .rendering_mode = 0, .paint_state = .painting, .clip_state = .inside, .clip_bbox = .{ .x0 = 70, .y0 = 690, .x1 = 100, .y1 = 720 } };
+    var hidden = testGlyph("B", 78, 700, 6);
+    hidden.paint = visible.paint;
+    hidden.paint.rendering_mode = 3;
+    hidden.paint.paint_state = .non_painting;
+    const glyphs = [_]GlyphSpan{ visible, hidden };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "AB");
+    defer result.deinit();
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &result, 0);
+    defer {
+        for (spans) |span| {
+            std.testing.allocator.free(@constCast(span.text));
+            if (span.font.name) |name| std.testing.allocator.free(@constCast(name));
+        }
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqual(@as(usize, 2), spans.len);
+    try std.testing.expectEqual(.painting, spans[0].paint.paint_state);
+    try std.testing.expectEqual(.non_painting, spans[1].paint.paint_state);
+}
+
+test "line span aggregate clip evidence is conservative across separated outside glyphs" {
+    var left = testGlyph("A", 72, 700, 6);
+    left.paint = .{ .rendering_mode = 0, .paint_state = .painting, .clip_state = .outside, .clip_bbox = .{ .x0 = 79, .y0 = 690, .x1 = 81, .y1 = 720 } };
+    var right = testGlyph("B", 82, 700, 6);
+    right.paint = left.paint;
+    const glyphs = [_]GlyphSpan{ left, right };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "AB");
+    defer result.deinit();
+    const spans = try buildLineSpans(std.testing.allocator, &glyphs, &result, 0);
+    defer {
+        for (spans) |span| {
+            std.testing.allocator.free(@constCast(span.text));
+            if (span.font.name) |name| std.testing.allocator.free(@constCast(name));
+        }
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqual(@as(usize, 1), spans.len);
+    try std.testing.expectEqual(.partial, spans[0].paint.clip_state);
 }
 
 test "line spans split mixed font and marked-content provenance" {
@@ -1153,12 +1510,15 @@ test "quality gate reports extreme token and line rates" {
 }
 
 fn lineSpanAllocationProbe(allocator: std.mem.Allocator) !void {
-    const glyphs = [_]GlyphSpan{
+    var glyphs = [_]GlyphSpan{
         testGlyph("Hello", 72, 700, 26),
         testGlyph("world", 102, 700, 27),
         testGlyph("Second", 72, 682, 36),
         testGlyph("line", 112, 682, 18),
     };
+    glyphs[1].font_name = "Alternate";
+    glyphs[2].content_scope = .{ .page_index = 0, .stream_object_num = 17, .invocation_index = 1 };
+    glyphs[3].semantic_run_id = 2;
     var result = try analyze(
         allocator,
         &glyphs,
@@ -1169,7 +1529,10 @@ fn lineSpanAllocationProbe(allocator: std.mem.Allocator) !void {
 
     const spans = try buildLineSpans(allocator, &glyphs, &result, 0);
     defer {
-        for (spans) |span| allocator.free(@constCast(span.text));
+        for (spans) |span| {
+            allocator.free(@constCast(span.text));
+            if (span.font.name) |name| allocator.free(@constCast(name));
+        }
         allocator.free(spans);
     }
 }

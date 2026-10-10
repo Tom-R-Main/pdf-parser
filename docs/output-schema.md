@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current schema version: `0.15.0`
+Current schema version: `0.17.0`
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.15.0` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.17.0` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,18 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.17.0` adds nullable `content_scope` to spans and inline specialist span
+context. It identifies native page content or a particular Form invocation.
+Semantic replacements and inferred text boundaries survive adaptive
+reconstruction; the existing text-view and source-map contract remains in place.
+Readers must explicitly accept `0.17.x`; formula children must echo it.
+
+Schema `0.16.0` adds span paint evidence, coverage paint counts, and bounded
+regional OCR attempts with accepted crop identity and execution budgets.
+Specialist span/block context uses document-global IDs in both batch and stream
+output. Readers must explicitly accept `0.16.x`; formula children must echo it.
+These additions retain extracted text and keep visual completeness unverified.
 
 Schema `0.15.0` adds authoritative reconciled block references to spans, tables
 and cells, and page/region recovery assessments to route traces. Span provenance
@@ -253,6 +265,38 @@ failures from recognize failures.
 successful candidate is selected deterministically by outcome, confidence,
 coverage, character count, then lower DPI and attempt index.
 
+In `0.16`, OCR attempts have `page_index` and nullable `region_index`. IDs use
+`specialist-attempt-ocr-page-P-I` for whole pages and
+`specialist-attempt-ocr-page-P-region-R-I` for crops; response/result IDs use the
+same page/region scope. Selection, counts and recovery bind to that exact scope.
+A response describes the last attempt; its selected winner may be an earlier
+completed attempt after a failed retry. Completed results require a completed
+selected OCR attempt.
+Compatibility OCR responses summarize timeout/invalid output as `failed`;
+the attempt retains the detailed `timeout`/`invalid_output` status and diagnostics.
+
+OCR `config` also records `max_image_pixels`, `max_image_bytes`,
+`max_regions_per_page` and `max_attempts_per_page`. Defaults are 40,000,000
+pixels, 33,554,432 bytes, 8 regions and 16 attempts per page. Whole-page attempts
+have `crop:null`; regional attempts carry `crop` with `bbox`, `dpi`,
+`pixel_width`, `pixel_height`, nullable `image_sha256` and `image_byte_length`.
+The hash and length identify the accepted PNG bytes delivered to recognition.
+They stay null when rasterization is refused or fails. The bbox is the actual
+pixel-aligned crop in PDF user space: padded by two points, clamped to MediaBox,
+then rounded outward using the nonzero page origin. Ephemeral PNG paths are
+deleted after each attempt and never exposed as public crop identity.
+Whole-page OCR preserves its established MediaBox coordinate mapping; crop
+rounding does not rescale whole-page recognition geometry.
+
+Good native pages route image placements individually; pages failing native
+quality use whole-page recovery. Native text survives failed recovery. Quota
+skips retain requested routes and `not_invoked` attempts with `ocr_region_limit`
+or `ocr_attempt_limit`. Pixel/byte refusal, invalid geometry and rotation have
+explicit diagnostics. Rotated OCR pages are refused until their raster mapping
+is qualified. Pixel bounds apply before launch and to accepted PNG dimensions;
+byte bounds apply before reading the PNG. These are not child RSS or in-flight
+temporary-file disk caps.
+
 ### `specialist_response`
 
 Response record from a specialist boundary. Existing Tesseract OCR output is
@@ -370,8 +414,74 @@ page; retained native text does not prove that image regions were recognized.
 Selected OCR/formula attempts count as recovery only when retained recognized
 spans intersect the assessed region. Successful OCR cannot hide unresolved
 formula or disjoint image regions. Lifecycle `completed` means extraction
-finished, not that the source has complete visual coverage. Paint/clipping
-evidence and bounded regional OCR crops remain future work.
+finished, not that the source has complete visual coverage.
+
+### Paint and clipping evidence (0.16)
+
+Spans and inline specialist span context include `paint`:
+
+```json
+{"rendering_mode":0,"paint_state":"painting","clip_state":"inside","clip_bbox":{"x0":0,"y0":0,"x1":300,"y1":300}}
+```
+
+`rendering_mode` is 0–7 or null. `paint_state` is `painting`, `non_painting` or
+`unknown`; modes 3 and 7 are nonpainting. Type 3 fonts retain unknown paint
+state for the other modes. `clip_state` is `unclipped`, `inside`, `outside`,
+`partial` or `unknown`. Known rectangular clips carry their PDF-space bbox.
+Span geometry follows the current affine transform, with graphics state restored
+by q/Q. Text clipping takes effect after the text object; arbitrary paths,
+multiple subpaths and uncertain transforms retain unknown clip evidence.
+
+This is operator and bbox evidence, not final pixel visibility. It does not
+qualify opacity, transparency, glyph outlines, recursive Form bounds or the
+initial page clip. Nonpainting/clipped text is retained as native source text.
+Page/region `coverage` adds `non_painting_span_count`, `clipped_out_span_count`
+and `uncertain_paint_span_count`; these counts never establish completeness.
+
+### Semantic text and content scope (0.17)
+
+`content_scope` is null when a single native scope is unknown or not retained by
+a derived artifact. Native page content has the following scope:
+
+```json
+{"page_index":0,"stream_object_num":null,"stream_generation":0,"invocation_index":0}
+```
+
+A Form scope carries its PDF object number/generation and a positive invocation
+index assigned in traversal order on that page. Repeated placements of the same
+Form share the object reference but have distinct invocation indices. Scope is
+bound to the input identity and page; it does not establish logical reading order.
+Reconciliation may merge coincident identical text, retaining the chosen span's
+scope and a duplicate count. Raw glyph inventory preserves invocation identity;
+public spans do not enumerate every contributing invocation scope.
+MCIDs are interpreted within their content stream, not as page-global identities.
+Fallback/OCR and reconstructed table text may have null scope. Specialist span
+context must agree with the corresponding public span's scope.
+
+ActualText replacement strings are authoritative semantic text. PDF text strings
+decode UTF-16BE with a BOM or PDFDocEncoding, including extended punctuation,
+accents, ligatures and Euro. Undefined PDFDocEncoding bytes become U+FFFD.
+Named marked-content properties resolve through the current resource scope.
+The native
+geometry API retains original glyph evidence separately from the semantic view;
+adaptive spans, blocks, chunks and text views consume the semantic view. Each
+replacement is emitted once over its marked-content scope, including across font,
+paint and text-operator changes. Empty replacement strings suppress that scope's
+raw text. A differing glyph/character count uses union geometry, not fabricated
+per-character placement; conflicting paint or content-scope evidence stays unknown.
+
+For conflicting nested ActualText declarations, the parser uses an explicit
+outer-owner policy: the enclosing replacement owns its entire lexical scope.
+This is a deterministic parser policy, not a claim of agreement among external
+extractors. Source locators retain span-bbox precision. Search results for an
+aggregate semantic replacement may have null raw glyph indices while retaining
+the union bbox.
+
+Form traversal shares resource resolution across extraction paths, composes the
+Form matrix, and retains Form-bbox clip evidence conservatively. Local font
+resources are scoped independently of page font names. Cycles, nesting beyond ten
+Forms and more than 10,000 Form invocations per page fail explicitly. These are
+traversal bounds, not whole-process memory or visual-completeness guarantees.
 
 ### Streaming resource budgets
 

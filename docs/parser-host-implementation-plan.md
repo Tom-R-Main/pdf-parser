@@ -1,6 +1,6 @@
 # Parser, Research consumer, and Editorial consumer implementation plan
 
-Status: phases 0/1 implemented and locally verified; reconciled table links, bounded streaming and recovery assessments implemented in pdf-parser, host adoption pending, 2026-10-10. All current writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Paint/clipping evidence, regional OCR crops, richer hierarchy/figures and host rollout remain planned.
+Status: phases 0/1, reconciled table links, bounded streaming and recovery assessments landed in [PR #5](https://github.com/Tom-R-Main/pdf-parser/pull/5), merge commit `0dd534d`. Paint/clipping, bounded regional OCR and the text-fidelity continuation are implemented locally in schema 0.17; verification is recorded below. Host adoption remains pending, 2026-10-10. All writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Richer hierarchy/figures and host rollout remain planned.
 
 ## Delivery order and ownership
 
@@ -159,13 +159,106 @@ and covered by permanent regressions. The hash-bound
 [continuation receipt](../benchmark/eval/outputs/parser-capabilities-2026-10-10/receipt.json)
 retains the gates, corpus results, actual OCR outcome and limitations.
 
-Next parser work is paint/clipping provenance and bounded regional OCR crops,
-with outlined-lettering, invisible-text, clipped-text and mixed-region controls.
-Host activation remains a separate adoption step with reader/persistence tests.
-Table topology, cross-page continuation, hierarchy and figures need their own
-holdouts; exact reconciled links alone do not qualify those capabilities.
+### Paint provenance and bounded crops continuation (0.16)
 
-Inferred next priority from the financial fixture's three unresolved legacy
-table/block references: implement exact reconciled table linkage with additive
-fields, then bound streaming/retained memory, then expose page/region coverage.
-These are recommendations; no subsequent phase was started by this review.
+Observed: PR #5 merged after all six CI checks passed on its final head. The
+post-merge continuation adds operator paint evidence to native spans and
+specialist context, with rendering modes, rectangular clipping and affine
+graphics-state restoration. It retains hidden/clipped text, and reports unknown
+evidence for unqualified paths rather than claiming visual completeness.
+
+Good native pages now OCR image placements individually, using pixel-aligned
+PDF-space crops with accepted PNG SHA-256 and byte length. Native-quality failure
+retains whole-page recovery. Pixel/byte limits and per-page region/attempt quotas
+are public controls, and refusal leaves native text and unresolved targets.
+Selected attempts bind to the exact page/region. Stream specialist references
+now use the same global span/block IDs as public maps. Both neutral JavaScript
+adapters expose crop budgets and an explicit partial-result policy.
+
+Independent review reproduced four issues: image transforms leaked across q/Q,
+later-page specialist context named local IDs, readers accepted inconsistent
+selected OCR attempts, and duplicate-route suppression erased independent
+hidden-text needs. Each has a failing control and a remediation regression.
+Allocation sweeps also exposed lexer string/array OOM text loss; those operations
+now propagate failure and release partial buffers.
+
+The [continuation receipt](../benchmark/eval/outputs/paint-regional-ocr-2026-10-10/receipt.json)
+binds the final source/binary identity to native gates, reader tests, actual
+two-image/two-page OCR, quota skips, corpus results and remaining limits. This
+continuation is locally checked; remote CI and a second merge are not established.
+
+Observed final checks: 169 JavaScript tests pass without skips; formatting,
+strict declaration checks, native tests (62/62 steps), build (12/12), shared
+(6/6) and WASM (5/5) gates pass. All 36 corpus PDFs pass batch and streaming
+readers with OCR disabled; adaptive evaluation completes all 36 with local OCR.
+Scanned-form, JBIG2 and JPX quality gates pass using the installed local tool
+versions. The unchanged JBIG2 route-count gate exposed fractional whole-page
+mapping drift, which was fixed without relaxing expectations. These are local
+contract/fixture checks, not universal accuracy or production qualification.
+
+The next priority inferred at the end of that continuation was rotated raster mapping and Form/opacity
+evidence, then add unexplained vector-region routing with held-out outlined-text
+controls. Paint evidence describes operators and bboxes, not final pixels;
+regional budgets do not cap child RSS or temporary disk during rasterization.
+Host activation needs its own reader/persistence tests. Table topology,
+cross-page continuation, hierarchy and figures need separate holdouts.
+
+### Adaptive text fidelity continuation (0.17)
+
+Fresh assessment moved semantic text fidelity ahead of additional recovery:
+the checked-in ActualText fixture retained the wrong glyph text in adaptive
+output, Form text depended on an external page-sized fallback, and horizontal
+and rotated controls lost word boundaries in final chunks.
+
+ActualText now supplies a separate semantic glyph projection while raw glyph
+evidence remains available. Replacement text is emitted once across operators,
+fonts and paint changes; empty replacements suppress raw text. Unicode and
+PDFDocEncoding controls cover non-BMP characters, punctuation and ligatures.
+Named properties resolve through the active resources. Conflicting nested
+replacements use the documented outer-owner policy. Replacement geometry is a
+union bbox, and search does not invent per-character raw glyph indices.
+
+Form traversal now shares resource frames across recall, geometry, structured
+extraction and image inventory. Local, indirect and inherited fonts, composed
+matrices, conservative BBox clips and repeated placements retain their evidence.
+Cycles, depth beyond ten Forms and more than 10,000 invocations per page fail
+explicitly. Schema 0.17 adds page/stream/invocation scope to native spans and
+specialist context; readers validate those identities. Earlier reader families
+remain supported. Scoped MCIDs never substitute for duplicate-text checks.
+
+Word grouping uses local writing coordinates and font-space advances, preserves
+explicit boundaries across reconstructed spans, and retains semantic replacement
+text verbatim. Both native and adaptive born-digital/hard-font benchmark lanes
+now block regressions at the same existing floors. Public CLI regressions cover
+batch, stream, source text, chunks and locators, including Form extraction with
+external tools absent. No evaluation threshold was lowered.
+
+Cross-module review found cold font-cache initialization and pending Form span
+metadata lifetime defects. Both were fixed with regression tests and allocation
+sweeps. Review used independent contexts on the inherited session model; it does
+not establish model diversity. The
+[text-fidelity receipt](../benchmark/eval/outputs/text-fidelity-2026-10-10/receipt.json)
+binds the current source and binary to the final local checks. This continuation
+is uncommitted; no new remote CI, merge, host adoption or deployment is claimed.
+
+Observed final local checks: 183 JavaScript tests pass without skips; native
+tests pass all 62 steps, shared builds 6/6 and WASM 5/5. The combined benchmark
+gate passes all 18 steps. All twelve hard-font documents pass exact text floors
+in both native and adaptive lanes, and both born-digital controls pass in each
+lane. All 36 corpus PDFs pass both public readers with OCR disabled; adaptive
+evaluation completes all 36 with local OCR enabled. These results qualify the
+exercised corpus and contracts, not universal extraction accuracy.
+
+Linux/aarch64 Memcheck passes checker qualification, 16 parser/ABI/counter
+checks and six additional ActualText/Form controls, without suppressions.
+Expected injected faults remain detected. This qualifies the diagnostic native
+lane; Python and OCR memory lifetimes were excluded, and logical suballocation
+boundaries inside live arenas remain outside its proof.
+
+Inferred next implementation unit: a shared forward/inverse transform contract
+for page boxes, rotation, UserUnit and raster crops. Qualify quarter-turn pages,
+nonzero origins, fractional edges and transformed Forms before enabling rotated
+OCR. Then identify unexplained vector regions with new outlined-text controls and
+negative cases for rules, highlights, borders and logos. Keep recovered text
+separate from visual completeness. Table topology and reading order need new
+held-out suites; the earlier reading-order holdout must not be retuned or promoted.

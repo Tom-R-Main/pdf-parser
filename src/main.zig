@@ -110,6 +110,10 @@ fn printUsage() !void {
         \\                  Write specialist request JSONL without invoking specialists
         \\  --max-output-bytes N     Stream serialized-byte cap (positive integer)
         \\  --max-page-memory-bytes N  Stream live adaptive-page allocation cap
+        \\  --ocr-max-image-pixels N  Accepted OCR raster pixel cap
+        \\  --ocr-max-image-bytes N   Accepted OCR raster file byte cap
+        \\  --ocr-max-regions N       OCR crop count cap per page
+        \\  --ocr-max-attempts N      OCR attempt count cap per page
         \\  --specialist-config FILE
         \\                  Specialist executable config for future local adapters
         \\  --trace         Emit adaptive route trace JSON
@@ -1058,6 +1062,13 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
             if (i >= args.len) return error.InvalidArguments;
             const limit = try parsePositiveResourceLimit(args[i]);
             if (std.mem.eql(u8, arg, "--max-output-bytes")) max_output_bytes = limit else max_page_memory_bytes = limit;
+        } else if (std.mem.eql(u8, arg, "--ocr-max-image-pixels") or std.mem.eql(u8, arg, "--ocr-max-image-bytes") or
+            std.mem.eql(u8, arg, "--ocr-max-regions") or std.mem.eql(u8, arg, "--ocr-max-attempts"))
+        {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const limit = try parsePositiveResourceLimit(args[i]);
+            if (std.mem.eql(u8, arg, "--ocr-max-image-pixels")) ocr_config.max_image_pixels = limit else if (std.mem.eql(u8, arg, "--ocr-max-image-bytes")) ocr_config.max_image_bytes = limit else if (std.mem.eql(u8, arg, "--ocr-max-regions")) ocr_config.max_regions_per_page = limit else ocr_config.max_attempts_per_page = limit;
         } else if (std.mem.eql(u8, arg, "--password")) {
             i += 1;
             if (i < args.len) password = args[i];
@@ -1272,6 +1283,12 @@ test "stream resource arguments reject invalid limits and non-stream formats" {
         try std.testing.expectError(error.InvalidArguments, parsePositiveResourceLimit(value));
     }
     try std.testing.expectEqual(@as(usize, 1024), try parsePositiveResourceLimit("1024"));
+    for ([_][]const u8{ "--ocr-max-image-pixels", "--ocr-max-image-bytes", "--ocr-max-regions", "--ocr-max-attempts" }) |flag| {
+        try std.testing.expectError(error.InvalidArguments, runExtractAdaptive(std.testing.allocator, &.{flag}));
+        for ([_][]const u8{ "0", "-1", "1.5", "184467440737095516160" }) |value| {
+            try std.testing.expectError(error.InvalidArguments, runExtractAdaptive(std.testing.allocator, &.{ flag, value }));
+        }
+    }
     for ([_][]const u8{ "--max-output-bytes", "--max-page-memory-bytes" }) |flag| {
         try std.testing.expectError(error.InvalidArguments, runExtractAdaptive(std.testing.allocator, &.{flag}));
         try std.testing.expectError(error.InvalidArguments, runExtractAdaptive(std.testing.allocator, &.{ flag, "0" }));
@@ -2040,7 +2057,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.15.0","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.17.0","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(formula_file);
@@ -2114,7 +2131,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         const requests = try runtime.readFileAllocAlignedCwd(allocator, requests_path, .fromByteUnits(1));
         defer allocator.free(requests);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"record_type\":\"specialist_request\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.15.0\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.17.0\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"source_id\":\"external-specialist-cli\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_kind\":\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_outputs\"") != null);

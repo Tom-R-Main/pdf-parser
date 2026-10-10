@@ -582,8 +582,15 @@ pdf-parser benchmark \
 ```
 
 Checked-in homogeneous gates live under `benchmark/eval/gates/`. CI runs the
-born-digital and hard-font gates alongside the broad tiny-corpus scorecard;
-table, OCR, render, and encrypted-twin checks retain their specialist
+born-digital and hard-font gates in both `pdf-parser:native` and
+`pdf-parser:adaptive` lanes alongside the broad tiny-corpus scorecard. Both lanes
+use the same absolute text floors; successful record parsing is a separate check.
+The JavaScript fidelity tests additionally verify batch/stream artifacts,
+semantic source text, chunks and locators for ActualText, writing boundaries and
+resource-scoped Forms. Run `node --test integrations/javascript/*.test.mjs` after
+building the CLI; skipped real-CLI tests do not qualify this boundary.
+
+Table, OCR, render, and encrypted-twin checks retain their specialist
 comparators because their success contracts include structure, routing, pixels,
 or twin equivalence rather than text metrics alone.
 

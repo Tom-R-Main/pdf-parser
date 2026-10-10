@@ -367,21 +367,27 @@ pub const TaggedContent = struct {
 
 /// Extract text from content stream with MCID tracking
 pub const MarkedContentExtractor = struct {
+    pub const Key = struct { stream_ref: ?ObjRef = null, mcid: i32 };
     allocator: std.mem.Allocator,
-    /// Collected content by MCID
-    content_by_mcid: std.AutoHashMap(i32, std.ArrayList(u8)),
+    /// MCIDs are local to a page or Form content stream, not globally unique.
+    content_by_mcid: std.AutoHashMap(Key, std.ArrayList(u8)),
     /// Current MCID stack
-    mcid_stack: std.ArrayList(i32),
+    mcid_stack: std.ArrayList(Key),
     /// Current tag stack
     tag_stack: std.ArrayList([]const u8),
+    stream_scope: ?ObjRef = null,
 
     pub fn init(allocator: std.mem.Allocator) MarkedContentExtractor {
         return .{
             .allocator = allocator,
-            .content_by_mcid = std.AutoHashMap(i32, std.ArrayList(u8)).init(allocator),
+            .content_by_mcid = std.AutoHashMap(Key, std.ArrayList(u8)).init(allocator),
             .mcid_stack = .empty,
             .tag_stack = .empty,
         };
+    }
+
+    pub fn setStreamScope(self: *MarkedContentExtractor, stream_ref: ?ObjRef) void {
+        self.stream_scope = stream_ref;
     }
 
     pub fn deinit(self: *MarkedContentExtractor) void {
@@ -397,16 +403,16 @@ pub const MarkedContentExtractor = struct {
     /// Called when BDC (begin marked content) is encountered
     pub fn beginMarkedContent(self: *MarkedContentExtractor, tag: []const u8, mcid: ?i32) !void {
         try self.tag_stack.append(self.allocator, tag);
-        if (mcid) |m| {
-            try self.mcid_stack.append(self.allocator, m);
+        errdefer _ = self.tag_stack.pop();
+        const key = Key{ .stream_ref = self.stream_scope, .mcid = mcid orelse -1 };
+        try self.mcid_stack.append(self.allocator, key);
+        errdefer _ = self.mcid_stack.pop();
+        if (mcid != null) {
             // Ensure we have a buffer for this MCID
-            const gop = try self.content_by_mcid.getOrPut(m);
+            const gop = try self.content_by_mcid.getOrPut(key);
             if (!gop.found_existing) {
                 gop.value_ptr.* = .empty;
             }
-        } else {
-            // No MCID, push sentinel
-            try self.mcid_stack.append(self.allocator, -1);
         }
     }
 
@@ -422,11 +428,15 @@ pub const MarkedContentExtractor = struct {
 
     /// Get current MCID (innermost)
     pub fn currentMcid(self: *const MarkedContentExtractor) ?i32 {
+        return if (self.currentKey()) |key| key.mcid else null;
+    }
+
+    fn currentKey(self: *const MarkedContentExtractor) ?Key {
         // Find innermost non-sentinel MCID
         var i = self.mcid_stack.items.len;
         while (i > 0) {
             i -= 1;
-            if (self.mcid_stack.items[i] >= 0) {
+            if (self.mcid_stack.items[i].mcid >= 0) {
                 return self.mcid_stack.items[i];
             }
         }
@@ -435,8 +445,8 @@ pub const MarkedContentExtractor = struct {
 
     /// Add text to current MCID
     pub fn addText(self: *MarkedContentExtractor, text: []const u8) !void {
-        if (self.currentMcid()) |mcid| {
-            if (self.content_by_mcid.getPtr(mcid)) |buf| {
+        if (self.currentKey()) |key| {
+            if (self.content_by_mcid.getPtr(key)) |buf| {
                 try buf.appendSlice(self.allocator, text);
             }
         }
@@ -444,9 +454,56 @@ pub const MarkedContentExtractor = struct {
 
     /// Get text for an MCID
     pub fn getTextForMcid(self: *const MarkedContentExtractor, mcid: i32) ?[]const u8 {
-        if (self.content_by_mcid.get(mcid)) |buf| {
+        return self.getTextForScopedMcid(null, mcid);
+    }
+
+    pub fn getTextForScopedMcid(self: *const MarkedContentExtractor, stream_ref: ?ObjRef, mcid: i32) ?[]const u8 {
+        if (self.content_by_mcid.get(.{ .stream_ref = stream_ref, .mcid = mcid })) |buf| {
             return buf.items;
         }
         return null;
     }
 };
+
+test "marked content scopes isolate equal MCIDs in page and different Forms" {
+    var extractor = MarkedContentExtractor.init(std.testing.allocator);
+    defer extractor.deinit();
+    try extractor.beginMarkedContent("Span", 0);
+    try extractor.addText("PAGE");
+    extractor.endMarkedContent();
+    const first = ObjRef{ .num = 11, .gen = 0 };
+    const second = ObjRef{ .num = 12, .gen = 0 };
+    extractor.setStreamScope(first);
+    try extractor.beginMarkedContent("Span", 0);
+    try extractor.addText("FIRST");
+    extractor.endMarkedContent();
+    extractor.setStreamScope(second);
+    try extractor.beginMarkedContent("Span", 0);
+    try extractor.addText("SECOND");
+    extractor.endMarkedContent();
+    try std.testing.expectEqualStrings("PAGE", extractor.getTextForMcid(0).?);
+    try std.testing.expectEqualStrings("FIRST", extractor.getTextForScopedMcid(first, 0).?);
+    try std.testing.expectEqualStrings("SECOND", extractor.getTextForScopedMcid(second, 0).?);
+    try std.testing.expect(extractor.getTextForScopedMcid(.{ .num = 11, .gen = 1 }, 0) == null);
+}
+
+fn scopedMarkedContentAllocationProbe(allocator: std.mem.Allocator) !void {
+    var extractor = MarkedContentExtractor.init(allocator);
+    defer extractor.deinit();
+    extractor.setStreamScope(.{ .num = 11, .gen = 0 });
+    extractor.beginMarkedContent("Span", 0) catch |err| {
+        std.debug.assert(extractor.tag_stack.items.len == 0);
+        std.debug.assert(extractor.mcid_stack.items.len == 0);
+        return err;
+    };
+    try extractor.addText("FIRST");
+    extractor.endMarkedContent();
+    extractor.setStreamScope(.{ .num = 12, .gen = 0 });
+    try extractor.beginMarkedContent("Span", 0);
+    try extractor.addText("SECOND");
+    extractor.endMarkedContent();
+}
+
+test "scoped marked content rolls back and frees every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, scopedMarkedContentAllocationProbe, .{});
+}

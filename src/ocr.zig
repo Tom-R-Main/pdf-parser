@@ -8,6 +8,7 @@ const layout = @import("layout.zig");
 const complexity = @import("complexity.zig");
 
 pub const types = @import("ocr/types.zig");
+pub const crop = @import("ocr/crop.zig");
 pub const tesseract_cli = @import("ocr/tesseract_cli.zig");
 pub const tesseract_c = @import("ocr/tesseract_c.zig");
 pub const tesseract_tsv = @import("ocr/tesseract_tsv.zig");
@@ -97,6 +98,7 @@ fn elapsedMs(started_ns: i128) u64 {
 }
 
 test {
+    _ = crop;
     _ = tesseract_cli;
     _ = tesseract_c;
     _ = tesseract_tsv;

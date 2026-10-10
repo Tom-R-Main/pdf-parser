@@ -234,6 +234,8 @@ fn writePageArtifacts(
         .document_id = document_id,
         .source_id = source_id,
         .input_sha256 = input_sha256,
+        .span_base = offsets.span_base,
+        .block_base = offsets.block_base,
     };
     counts.specialist_requests = try specialist_protocol.writePageRequestsJsonl(writer, result, specialist_context, page_index, event_index);
     counts.specialist_attempts = try specialist_protocol.writePageAttemptsJsonl(writer, result, specialist_context, page_index, event_index);

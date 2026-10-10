@@ -13,6 +13,9 @@ pub const Assessment = struct {
     completeness: Completeness = .unverified,
     native_span_count: usize = 0,
     recognized_span_count: usize = 0,
+    non_painting_span_count: usize = 0,
+    clipped_out_span_count: usize = 0,
+    uncertain_paint_span_count: usize = 0,
     requested_recovery: bool = false,
     recovery_state: RecoveryState = .not_required,
     unresolved_region_count: usize = 0,
@@ -23,7 +26,7 @@ pub fn assessRegion(result: anytype, route: anytype) Assessment {
     var unresolved = false;
     if (route.route.needs_ocr) {
         assessment.requested_recovery = true;
-        const state = ocrState(result, route.page_index);
+        const state = ocrState(result, route.page_index, route.region_index, route.bbox);
         assessment.recovery_state = combine(assessment.recovery_state, state);
         unresolved = state != .completed or countRecognized(result, route.page_index, route.bbox, .fresh_ocr) == 0;
     }
@@ -43,8 +46,17 @@ pub fn assessPage(result: anytype, page_index: u32) Assessment {
     var unresolved = false;
     for (result.page_routes) |route| {
         if (route.page_index != page_index or !route.route.needs_ocr) continue;
+        // Regional attempts can satisfy a page OCR decision. Assess each
+        // routed target below rather than inventing an absent page failure.
+        var page_attempt = false;
+        var regional_attempt = false;
+        for (result.ocr_attempts) |attempt| {
+            if (attempt.page_index != page_index) continue;
+            if (attempt.region_index == null) page_attempt = true else regional_attempt = true;
+        }
+        if (!page_attempt and regional_attempt) continue;
         assessment.requested_recovery = true;
-        const state = ocrState(result, page_index);
+        const state = ocrState(result, page_index, null, null);
         assessment.recovery_state = combine(assessment.recovery_state, state);
         unresolved = state != .completed or countRecognized(result, page_index, null, .fresh_ocr) == 0;
     }
@@ -89,6 +101,9 @@ fn countSpans(result: anytype, page_index: u32, bbox: ?layout.BBox) Assessment {
         assessment.status = .text_available;
         if (reconcile.hasSource(span.source_mask, .native_pdf) or reconcile.hasSource(span.source_mask, .embedded_ocr)) assessment.native_span_count += 1;
         if (reconcile.hasSource(span.source_mask, .fresh_ocr) or reconcile.hasSource(span.source_mask, .formula_model)) assessment.recognized_span_count += 1;
+        if (span.span.paint.paint_state == .non_painting) assessment.non_painting_span_count += 1;
+        if (span.span.paint.clip_state == .outside) assessment.clipped_out_span_count += 1;
+        if (span.span.paint.paint_state == .unknown or span.span.paint.clip_state == .unknown or span.span.paint.clip_state == .partial) assessment.uncertain_paint_span_count += 1;
     }
     return assessment;
 }
@@ -101,10 +116,12 @@ fn countRecognized(result: anytype, page_index: u32, bbox: ?layout.BBox, source:
     return count;
 }
 
-fn ocrState(result: anytype, page_index: u32) RecoveryState {
+fn ocrState(result: anytype, page_index: u32, region_index: ?u32, bbox: ?layout.BBox) RecoveryState {
     var state: RecoveryState = .not_invoked;
+    var found = false;
     for (result.ocr_attempts) |attempt| {
-        if (attempt.page_index != page_index) continue;
+        if (attempt.page_index != page_index or attempt.region_index != region_index) continue;
+        found = true;
         state = switch (attempt.status) {
             .not_invoked => .not_invoked,
             .completed => .completed,
@@ -115,6 +132,21 @@ fn ocrState(result: anytype, page_index: u32) RecoveryState {
             .invalid_output => .invalid_output,
         };
         if (attempt.selected) return state;
+    }
+    if (!found and region_index != null) {
+        for (result.ocr_attempts) |attempt| {
+            if (attempt.page_index == page_index and attempt.region_index == null) return ocrState(result, page_index, null, null);
+        }
+        // Derived layout regions can be explained by a successful image crop,
+        // but a disjoint or only partly covering crop cannot qualify recovery.
+        if (bbox) |region| {
+            for (result.ocr_attempts) |attempt| {
+                if (attempt.page_index != page_index or !attempt.selected or attempt.status != .completed) continue;
+                if (attempt.crop_bbox) |crop| {
+                    if (crop.x0 <= region.x0 and crop.y0 <= region.y0 and crop.x1 >= region.x1 and crop.y1 >= region.y1) return .completed;
+                }
+            }
+        }
     }
     // A nonselected completed attempt is insufficient to attribute output to it.
     return if (state == .completed) .not_invoked else state;
@@ -160,7 +192,7 @@ const TestRoute = struct {
     route: struct { needs_ocr: bool = false, needs_formula_model: bool = false, needs_table_model: bool = false } = .{},
 };
 const TestOcrStatus = enum { not_invoked, completed, empty, unavailable, failed, timeout, invalid_output };
-const TestOcrAttempt = struct { page_index: u32 = 0, status: TestOcrStatus, selected: bool = false };
+const TestOcrAttempt = struct { page_index: u32 = 0, region_index: ?u32 = null, crop_bbox: ?layout.BBox = null, status: TestOcrStatus, selected: bool = false };
 const TestFormulaStatus = enum { completed, empty, unavailable, failed, timeout, invalid_output };
 const TestFormulaAttempt = struct { page_index: u32 = 0, region_index: u32 = 0, status: TestFormulaStatus };
 const TestResult = struct {
@@ -178,6 +210,37 @@ fn testSpan(source: layout.SourceKind, bbox: layout.BBox) reconcile.ReconciledSp
         .chosen_source = source,
         .confidence = 1,
     };
+}
+
+test "regional OCR recovery scopes include derived regions but exclude disjoint or skipped targets" {
+    const recognized = testSpan(.fresh_ocr, .{ .x1 = 10, .y1 = 10 });
+    const regions = [_]TestRoute{
+        .{ .region_index = 0, .bbox = .{ .x1 = 20, .y1 = 20 }, .route = .{ .needs_ocr = true } },
+        .{ .region_index = 1, .bbox = .{ .x1 = 10, .y1 = 10 }, .route = .{ .needs_ocr = true } },
+    };
+    var result = TestResult{ .page_routes = &.{.{ .route = .{ .needs_ocr = true } }}, .region_routes = &regions, .ocr_attempts = &.{.{ .region_index = 0, .crop_bbox = .{ .x1 = 20, .y1 = 20 }, .selected = true, .status = .completed }}, .reconciled = .{ .spans = &.{recognized} } };
+    try std.testing.expectEqual(Status.recovered, assessPage(result, 0).status);
+    const disjoint = TestRoute{ .region_index = 2, .bbox = .{ .x0 = 50, .y0 = 50, .x1 = 100, .y1 = 100 }, .route = .{ .needs_ocr = true } };
+    try std.testing.expectEqual(Status.recovery_required, assessRegion(result, disjoint).status);
+    result.ocr_attempts = &.{
+        .{ .region_index = 0, .crop_bbox = .{ .x1 = 20, .y1 = 20 }, .selected = true, .status = .completed },
+        .{ .region_index = 1, .crop_bbox = .{ .x1 = 10, .y1 = 10 }, .status = .not_invoked },
+    };
+    try std.testing.expectEqual(Status.recovery_required, assessPage(result, 0).status);
+    try std.testing.expectEqual(@as(usize, 1), assessPage(result, 0).unresolved_region_count);
+}
+
+test "coverage retains nonpainting clipped and uncertain evidence counts" {
+    var hidden = testSpan(.native_pdf, .{ .x1 = 10, .y1 = 10 });
+    hidden.span.paint = .{ .rendering_mode = 3, .paint_state = .non_painting, .clip_state = .unclipped };
+    var clipped = testSpan(.native_pdf, .{ .x1 = 10, .y1 = 10 });
+    clipped.span.paint = .{ .rendering_mode = 0, .paint_state = .painting, .clip_state = .outside, .clip_bbox = .{ .x0 = 20, .y0 = 20, .x1 = 30, .y1 = 30 } };
+    const unknown = testSpan(.manual, .{ .x1 = 10, .y1 = 10 });
+    const assessed = assessPage(TestResult{ .reconciled = .{ .spans = &.{ hidden, clipped, unknown } } }, 0);
+    try std.testing.expectEqual(@as(usize, 1), assessed.non_painting_span_count);
+    try std.testing.expectEqual(@as(usize, 1), assessed.clipped_out_span_count);
+    try std.testing.expectEqual(@as(usize, 1), assessed.uncertain_paint_span_count);
+    try std.testing.expectEqual(Completeness.unverified, assessed.completeness);
 }
 
 test "coverage never proves blankness or completeness from text presence" {

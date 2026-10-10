@@ -28,6 +28,12 @@ pub const DiagnosticCode = enum {
     rasterizer_timeout,
     rasterizer_output_limit,
     invalid_raster_image,
+    rasterizer_pixel_limit,
+    rasterizer_image_byte_limit,
+    rasterizer_rotation_unsupported,
+    invalid_crop_geometry,
+    ocr_region_limit,
+    ocr_attempt_limit,
     tesseract_unavailable,
     tesseract_failed,
     tesseract_timeout,
@@ -80,6 +86,11 @@ pub const OcrConfig = struct {
     timeout_ms: u32 = 10_000,
     stdout_limit: usize = 16 * 1024 * 1024,
     stderr_limit: usize = 1024 * 1024,
+    max_image_pixels: usize = 40_000_000,
+    max_image_bytes: usize = 32 * 1024 * 1024,
+    max_regions_per_page: usize = 8,
+    max_attempts_per_page: usize = 16,
+    crop_padding_points: f64 = 2,
 };
 
 pub const OcrInput = struct {
@@ -88,6 +99,8 @@ pub const OcrInput = struct {
     image_path: []const u8,
     pixel_width: u32,
     pixel_height: u32,
+    image_sha256: ?[32]u8 = null,
+    image_byte_length: ?usize = null,
 };
 
 pub const RasterizeOutcome = struct {

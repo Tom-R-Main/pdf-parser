@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { terminateSubprocess } from './subprocess.mjs';
+import { ocrArguments } from './ocr-options.mjs';
 
 export class PdfExtractionError extends Error {
   constructor(code, message, options) {
@@ -93,7 +94,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   });
   const manifest = records[0];
   if (!object(manifest) || manifest.record_type !== 'document_manifest') fail('Expected manifest first');
-  if (!/^0\.(14|15)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
+  if (!/^0\.(14|15|16|17)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
       typeof manifest.document_id !== 'string' || !manifest.document_id || !integer(manifest.page_count) ||
       manifest.input_sha256 !== inputSha256) fail('Unsupported schema or manifest input identity');
   if (!(manifest.source_id === null || (typeof manifest.source_id === 'string' && manifest.source_id.length > 0)) ||
@@ -184,7 +185,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
     checkIdentitySet(chunk.provenance.chunk_ids, new Set([chunk.chunk_id]), 'chunk identity provenance');
   }
   const tables = records.filter(record => record.record_type === 'table');
-  if (manifest.schema_version.startsWith('0.15.')) {
+  if (!manifest.schema_version.startsWith('0.14.')) {
     const owners = new Map();
     for (const block of blocks) for (const id of block.provenance.span_ids) {
       if (!owners.has(id)) owners.set(id, new Set());
@@ -220,13 +221,92 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   }
   const pageOutcomes = records.filter(record => record.record_type === 'route_trace' && record.trace_kind === 'page_route')
     .map(record => ({ pageIndex: record.page_index, ...record.coverage }));
-  if (manifest.schema_version.startsWith('0.15.')) {
+  if (/^0\.(16|17)\./u.test(manifest.schema_version)) {
+    const validBox = box => object(box) && ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(box[key])) && box.x0 <= box.x1 && box.y0 <= box.y1;
+    for (const span of spans) {
+      const paint = span.paint;
+      if (!object(paint) || !(paint.rendering_mode === null || (integer(paint.rendering_mode) && paint.rendering_mode <= 7)) ||
+          !['painting', 'non_painting', 'unknown'].includes(paint.paint_state) || !['unclipped', 'inside', 'outside', 'partial', 'unknown'].includes(paint.clip_state) ||
+          !(paint.clip_bbox === null || validBox(paint.clip_bbox)) ||
+          (paint.clip_state === 'unclipped' && paint.clip_bbox !== null) ||
+          (['inside', 'outside', 'partial'].includes(paint.clip_state) && paint.clip_bbox === null) ||
+          (paint.paint_state === 'painting' && (paint.rendering_mode === null || [3, 7].includes(paint.rendering_mode))) ||
+          (paint.paint_state === 'non_painting' && ![3, 7].includes(paint.rendering_mode))) fail('Invalid paint evidence');
+      if (manifest.schema_version.startsWith('0.17.')) {
+        const scope = span.content_scope;
+        if (!(scope === null || (object(scope) && scope.page_index === span.page_index &&
+            integer(scope.stream_generation) && scope.stream_generation <= 65535 && integer(scope.invocation_index) && scope.invocation_index <= 0xffffffff &&
+            (scope.stream_object_num === null ? scope.stream_generation === 0 && scope.invocation_index === 0 :
+              integer(scope.stream_object_num) && scope.stream_object_num > 0 && scope.stream_object_num <= 0xffffffff && scope.invocation_index > 0)))) fail('Invalid content scope');
+      }
+    }
+    const requests = new Map(records.filter(record => record.record_type === 'specialist_request').map(record => [record.request_id, record]));
+    const attempts = new Map(records.filter(record => record.record_type === 'specialist_attempt').map(record => [record.attempt_id, record]));
+    const attemptStatuses = ['not_invoked', 'completed', 'empty', 'unavailable', 'failed', 'timeout', 'invalid_output'];
+    // Specialist context is a view of the same page's public artifacts.
+    for (const record of records.filter(record => record.record_type.startsWith('specialist_'))) {
+      for (const [field, items, sourceIndex, idField] of [['span_ids', 'spans', spanIndex, 'span_id'], ['block_ids', 'blocks', blockIndex, 'block_id']]) {
+        if (record[field] !== undefined && (!Array.isArray(record[field]) || new Set(record[field]).size !== record[field].length ||
+            record[field].some(id => !sourceIndex.has(id) || sourceIndex.get(id).record.page_index !== record.page_index))) fail('Invalid specialist artifact references');
+        if (record[items] === undefined) continue;
+        if (!Array.isArray(record[items])) fail('Invalid specialist context');
+        const seen = new Set();
+        for (const item of record[items]) {
+          const original = object(item) ? sourceIndex.get(item[idField])?.record : undefined;
+          if (!original || seen.has(item[idField]) || original.page_index !== record.page_index || item.text !== original.text ||
+              // Public bboxes use two decimals; specialist context uses three.
+              !validBox(item.bbox) || ['x0', 'y0', 'x1', 'y1'].some(key => Math.abs(item.bbox[key] - original.bbox[key]) > 0.0055 + Number.EPSILON * Math.max(1, Math.abs(original.bbox[key])))) fail('Invalid specialist context');
+          if (items === 'spans' && (!object(item.paint) || ['rendering_mode', 'paint_state', 'clip_state'].some(key => item.paint[key] !== original.paint[key]) ||
+              (original.paint.clip_bbox === null ? item.paint.clip_bbox !== null : !validBox(item.paint.clip_bbox) ||
+                ['x0', 'y0', 'x1', 'y1'].some(key => item.paint.clip_bbox[key] !== original.paint.clip_bbox[key])))) fail('Inconsistent specialist paint evidence');
+          if (items === 'spans' && manifest.schema_version.startsWith('0.17.') &&
+              (original.content_scope === null ? item.content_scope !== null : !object(item.content_scope) ||
+                ['page_index', 'stream_object_num', 'stream_generation', 'invocation_index'].some(key => item.content_scope[key] !== original.content_scope[key]))) fail('Inconsistent specialist content scope');
+          seen.add(item[idField]);
+        }
+        if (record[field] !== undefined) checkIdentitySet(record[field], seen, 'specialist context identity');
+      }
+    }
+    for (const record of records.filter(record => ['specialist_attempt', 'specialist_response', 'specialist_result'].includes(record.record_type) && record.specialist_kind === 'ocr')) {
+      const request = requests.get(record.request_id);
+      if (!integer(record.page_index) || record.page_index >= manifest.page_count ||
+          !(record.region_index === null || integer(record.region_index)) || !request ||
+          request.page_index !== record.page_index || request.region_index !== record.region_index || request.requested_kind !== 'ocr') fail('Invalid OCR request scope');
+      if (record.selected_attempt_id !== undefined && record.selected_attempt_id !== null) {
+        const selected = attempts.get(record.selected_attempt_id);
+        if (!selected || selected.specialist_kind !== 'ocr' || selected.selected !== true || !['completed', 'empty'].includes(selected.attempt_status) ||
+            selected.page_index !== record.page_index || selected.region_index !== record.region_index || selected.request_id !== record.request_id ||
+            (record.record_type === 'specialist_result' && selected.attempt_status !== 'completed')) fail('Invalid selected OCR attempt');
+      }
+      if (record.record_type === 'specialist_result' && (record.status !== 'completed' || typeof record.selected_attempt_id !== 'string')) fail('Invalid completed OCR result');
+      if (record.record_type === 'specialist_response') {
+        const scoped = [...attempts.values()].filter(attempt => attempt.request_id === record.request_id && attempt.specialist_kind === 'ocr');
+        // Responses describe the last attempt; an earlier completed winner may
+        // still be selected after a later retry fails.
+        const last = scoped.at(-1);
+        const status = ['failed', 'timeout', 'invalid_output'].includes(last?.attempt_status) ? 'failed' : (last?.attempt_status ?? 'not_invoked');
+        if (record.attempt_count !== scoped.length || record.status !== status) fail('Invalid OCR response summary');
+      }
+      if (record.record_type !== 'specialist_attempt') continue;
+      if (typeof record.selected !== 'boolean' || !attemptStatuses.includes(record.attempt_status) ||
+          (record.selected && !['completed', 'empty'].includes(record.attempt_status))) fail('Invalid OCR attempt status');
+      if (!object(record.config) || !['max_image_pixels', 'max_image_bytes', 'max_regions_per_page', 'max_attempts_per_page'].every(key => integer(record.config[key]))) fail('Invalid OCR execution budgets');
+      const crop = record.crop;
+      if (crop === null && record.region_index === null) continue;
+      if (!object(crop) || !validBox(crop.bbox) || !integer(crop.dpi) || crop.dpi < 1 || !integer(crop.pixel_width) || !integer(crop.pixel_height) ||
+          !(crop.image_sha256 === null || (typeof crop.image_sha256 === 'string' && /^[a-f0-9]{64}$/u.test(crop.image_sha256))) || !(crop.image_byte_length === null || integer(crop.image_byte_length))) fail('Invalid OCR crop evidence');
+      if (['completed', 'empty'].includes(record.attempt_status) && (crop.pixel_width < 1 || crop.pixel_height < 1 || crop.image_sha256 === null || crop.image_byte_length === null || crop.image_byte_length < 24 ||
+          BigInt(crop.pixel_width) * BigInt(crop.pixel_height) > BigInt(record.config.max_image_pixels) || crop.image_byte_length > record.config.max_image_bytes)) fail('OCR crop exceeds its declared budgets');
+    }
+  }
+  if (!manifest.schema_version.startsWith('0.14.')) {
     const statuses = new Set(['text_available', 'empty_unverified', 'recovery_required', 'recovery_failed', 'recovered']);
     const recoveryStates = new Set(['not_required', 'not_invoked', 'completed', 'empty', 'unavailable', 'failed', 'timeout', 'invalid_output']);
     const failedStates = new Set(['unavailable', 'failed', 'timeout', 'invalid_output']);
     const pageRoutes = new Set();
     for (const record of records.filter(record => record.record_type === 'route_trace' && ['page_route', 'region_route'].includes(record.trace_kind))) {
       const assessment = record.coverage;
+      if (/^0\.(16|17)\./u.test(manifest.schema_version) && (!object(assessment) || !['non_painting_span_count', 'clipped_out_span_count', 'uncertain_paint_span_count'].every(key => integer(assessment[key])))) fail('Invalid paint coverage counts');
       if (!integer(record.page_index) || record.page_index >= manifest.page_count ||
           !object(assessment) || !statuses.has(assessment.status) || assessment.completeness !== 'unverified' ||
           !recoveryStates.has(assessment.recovery_state) || typeof assessment.requested_recovery !== 'boolean' ||
@@ -353,6 +433,8 @@ export async function extractPdfDocument(buffer, options) {
   if (!options || typeof options.binaryPath !== 'string' || !options.binaryPath) throw new TypeError('binaryPath is required');
   const timeoutMs = options.timeoutMs ?? 45_000;
   const maxOutputBytes = options.maxOutputBytes ?? 25 * 1024 * 1024;
+  const ocrArgs = ocrArguments(options.ocrLimits);
+  if (options.allowPartial !== undefined && typeof options.allowPartial !== 'boolean') throw new TypeError('allowPartial must be a boolean');
   if (!integer(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647 || !integer(maxOutputBytes) || maxOutputBytes < 1) throw new RangeError('Invalid extraction limits');
   if (options.signal?.aborted) throw new PdfExtractionError('aborted', 'Extraction was aborted');
   // Own a snapshot before awaiting I/O: a caller can reuse or mutate its buffer.
@@ -364,8 +446,9 @@ export async function extractPdfDocument(buffer, options) {
     tempDir = await mkdtemp(join(tmpdir(), 'pdf-parser-extract-'));
     const inputPath = join(tempDir, 'input.pdf');
     await writeFile(inputPath, inputBytes, { mode: 0o600 });
-    const args = ['extract-adaptive', '--input', inputPath, '--source-id', inputSha256, '--format', 'artifact-jsonl'];
+    const args = ['extract-adaptive', '--input', inputPath, '--source-id', inputSha256, '--format', 'artifact-jsonl', ...ocrArgs];
     if (!options.enableOcr) args.push('--no-ocr');
+    if (options.allowPartial) args.push('--allow-partial');
     const rawJsonl = await runParser(options.binaryPath, args, { timeoutMs, maxOutputBytes, signal: options.signal });
     return parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId: inputSha256 });
   } catch (error) {

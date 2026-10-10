@@ -74,7 +74,31 @@ asynchronous I/O, supplies the input SHA-256 as source identity, uses a private
 0600 temporary PDF and removes scratch files on completion/failure. Default
 limits are 45 seconds and 25 MiB. OCR is disabled by default;
 `enableOcr:true` uses already-configured local OCR tools. Cancellation, timeout,
-oversized output and process failures remain explicit.
+oversized output and process failures remain explicit. Specialist failure rejects
+the result by default; `allowPartial:true` explicitly permits retaining partial
+artifacts and unresolved recovery assessments.
+
+Both batch and streaming options accept positive integer OCR budgets:
+
+```js
+const options = {
+  binaryPath,
+  enableOcr: true,
+  allowPartial: true,
+  ocrLimits: {
+    maxImagePixels: 40_000_000,
+    maxImageBytes: 32 * 1024 * 1024,
+    maxRegionsPerPage: 8,
+    maxAttemptsPerPage: 16,
+  },
+};
+```
+
+These forward `--ocr-max-image-pixels`, `--ocr-max-image-bytes`,
+`--ocr-max-regions` and `--ocr-max-attempts`. Caps bound accepted rasters and
+per-page invocation counts; child RSS and temporary disk growth are outside
+these budgets. Crop records retain actual PDF-space bounds, accepted PNG SHA-256
+and byte length. Rotation is explicitly unsupported for OCR crops.
 
 The result retains the manifest, raw JSONL, all protocol records, spans, blocks
 and parser chunks. Its `sourceText` is exact block text in artifact order joined
@@ -105,7 +129,7 @@ text hash/view and the record ids; do not resolve them against another run by
 phrase alone.
 
 `parseArtifactJsonl(rawJsonl, {inputSha256, expectedSourceId})` validates manifest-first batch
-ordering, schema `0.14.x`/`0.15.x`, input/provenance identity, text hashes, range boundaries,
+ordering, schema `0.14.x`/`0.15.x`/`0.16.x`/`0.17.x`, input/provenance identity, text hashes, range boundaries,
 full source-map coverage, referenced artifact sets and page relationships. It
 rejects truncated/malformed streams, forged synthetic text and mismatched source
 views. This is a batch reader; use `extractPdfPages` for lifecycle streams.
@@ -115,7 +139,7 @@ views. This is a batch reader; use `extractPdfPages` for lifecycle streams.
 extraction adapter always binds it to the input hash supplied to the CLI.
 For `0.14.x` only, chunks can carry an internal label when manifest/provenance
 source identity is null. The reader retains that label as metadata; it cannot
-override manifest, input hash or provenance identity. Current `0.15.x` records
+override manifest, input hash or provenance identity. Current `0.15.x`–`0.17.x` records
 must agree with the manifest, including null when no source id was supplied.
 
 Specialist records retain their legacy shared provenance labels; uniqueness is
@@ -123,7 +147,7 @@ checked with their actual request/attempt/response/result ids. Some current tabl
 provenance block references describe pre-reconciliation indices. The adapter
 preserves those raw values and reports missing references as
 `unresolvedProvenanceLinks`, rather than using them for source-text locators.
-Core span/block/chunk maps remain strict. In schema `0.15.x`, `document.tables`
+Core span/block/chunk maps remain strict. In schema `0.15.x`–`0.17.x`, `document.tables`
 exposes table/cell `reconciled_block_ids` checked against owning source spans.
 Span `reconciled_block_id` and ownership provenance must agree with block maps;
 cells must share their table's page. Use these authoritative fields for links.
@@ -148,8 +172,26 @@ Schema `0.15.x` adds `document.pageOutcomes` and page/region route `coverage`.
 These distinguish retained text, empty unverified output, required/failed
 recovery and recovered regions. The reader rejects out-of-document pages and
 contradictory recovery states. Preserve unresolved assessments in intake and
-retrieval policy. Paint/clipping evidence and regional OCR crops remain pending;
-these assessments do not establish quote verification or publishing authority.
+retrieval policy. Schema `0.16.x` adds span `paint`, three paint counters and
+page/region-scoped OCR crop evidence. The reader rejects inconsistent selected
+attempts, crop budgets and specialist context links. Paint describes operators
+and bbox clipping, with unknown states for unqualified cases; it does not prove
+pixel visibility. These assessments do not establish quote verification or
+publishing authority.
+
+Schema `0.17.x` adds nullable span `content_scope`. A known scope carries its
+page, PDF stream object reference and per-page Form invocation index. Repeated
+Form placements remain distinguishable even when they reuse local font names or
+MCIDs. Coincident identical text may still merge during reconciliation: public
+scope identifies the retained occurrence, while raw glyph inventory distinguishes
+the contributing invocations. The adapter rejects out-of-page or malformed scopes and inconsistent
+specialist context. A locator's `sourceSpanId` resolves to the retained span and
+its scope; null scope explicitly withholds that attribution.
+
+ActualText replacements are preserved once per scope in `sourceText` and parser
+chunks. Unequal glyph/character counts retain span-bbox precision; no exact
+character geometry is inferred from a semantic replacement. Explicit/inferred
+separators survive reconstruction, with synthetic source-map gaps retained.
 
 ## Incremental pages and resource budgets
 
@@ -191,8 +233,8 @@ as `memory_limit`/`output_limit`, without a complete receipt.
 ## Adoption and verification
 
 Readers limited to `0.11.x`/`0.13.x` must add
-`0.15.x` with contract tests before changing their parser pin. The adapter retains
-`0.14.x` reader support. Applications must pair
+`0.17.x` with contract tests before changing their parser pin. The adapter retains
+`0.14.x`, `0.15.x` and `0.16.x` reader support. Applications must pair
 their adopted parser revision with the selected Zig 0.17/compiler/archive identities
 and run its baseline CPU/runtime smoke lane. Formula children must echo the new
 request schema version. Neither host is changed by this work.
@@ -211,3 +253,7 @@ It reports a skip when no built executable exists; that skip does not qualify
 the integration. Unit tests cover Unicode byte/unit translation, repeated
 phrases, zero/large overlap, forged mappings, process limits, cancellation and
 scratch cleanup. No host database, browser, deployment or paid model is exercised.
+The fidelity regressions also exercise ActualText, Unicode, font/paint changes,
+rotated word boundaries, Form resource collisions and repeated placements through
+batch/stream source text and locators. Forms are tested with external text tools
+both present and unavailable.

@@ -82,6 +82,15 @@ test('forwards the native allocation budget and validates it before starting', a
   }
 });
 
+test('stream forwards explicit OCR bounds and partial-result policy', async (t) => {
+  const result = await run(t, fixture(), { allowPartial: true, ocrLimits: { maxRegionsPerPage: 2, maxAttemptsPerPage: 3 } });
+  const { args } = JSON.parse(await readFile(result.audit, 'utf8'));
+  assert.equal(args[args.indexOf('--ocr-max-regions') + 1], '2');
+  assert.equal(args[args.indexOf('--ocr-max-attempts') + 1], '3');
+  assert.ok(args.includes('--allow-partial'));
+  await assert.rejects(extractPdfPages(input, { binaryPath: result.path, onPage() {}, ocrLimits: { maxRegionsPerPage: 0 } }), RangeError);
+});
+
 for (const [diagnostic, code] of [['MemoryBudgetExceeded', 'memory_limit'], ['OutputLimitExceeded', 'output_limit']]) {
   test(`classifies native ${code} without a terminal receipt`, async (t) => {
     const driver = await fake(t, `process.stderr.write('error: ${diagnostic}'); process.exitCode=1;`);

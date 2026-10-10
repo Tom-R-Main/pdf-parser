@@ -56,6 +56,138 @@ function currentFixture() {
   return records;
 }
 
+function paintFixture() {
+  const records = currentFixture();
+  for (const record of records) record.schema_version = '0.16.0';
+  for (const span of records.filter(record => record.record_type === 'span')) span.paint = {
+    rendering_mode: 0, paint_state: 'painting', clip_state: 'unclipped', clip_bbox: null,
+  };
+  Object.assign(records[7].coverage, { non_painting_span_count: 0, clipped_out_span_count: 0, uncertain_paint_span_count: 0 });
+  const envelope = (type, id) => ({ schema_name: type, schema_version: '0.16.0', record_type: type,
+    document_id: 'doc', source_id: inputSha256, provenance: { ...records[0].provenance, artifact_id: id } });
+  Object.assign(records[0].artifact_counts, { specialist_requests: 1, specialist_attempts: 1, specialist_responses: 1 });
+  records.push({ ...envelope('specialist_request', 'ocr-request'), request_id: 'ocr-request', page_index: 0, region_index: 0, requested_kind: 'ocr' });
+  records.push({ ...envelope('specialist_attempt', 'ocr-attempt'), attempt_id: 'ocr-attempt', request_id: 'ocr-request', page_index: 0, region_index: 0,
+    specialist_kind: 'ocr', attempt_status: 'completed', selected: true,
+    config: { max_image_pixels: 100, max_image_bytes: 1024, max_regions_per_page: 1, max_attempts_per_page: 1 },
+    crop: { bbox, dpi: 200, pixel_width: 10, pixel_height: 10, image_sha256: 'a'.repeat(64), image_byte_length: 100 } });
+  records.push({ ...envelope('specialist_response', 'ocr-response'), response_id: 'ocr-response', request_id: 'ocr-request', page_index: 0, region_index: 0,
+    specialist_kind: 'ocr', status: 'completed', attempt_count: 1, selected_attempt_id: 'ocr-attempt' });
+  return records;
+}
+
+function scopeFixture() {
+  const records = paintFixture();
+  for (const record of records) record.schema_version = '0.17.0';
+  for (const span of records.filter(record => record.record_type === 'span')) span.content_scope = {
+    page_index: span.page_index, stream_object_num: null, stream_generation: 0, invocation_index: 0,
+  };
+  return records;
+}
+
+test('content scopes retain page roots and repeated Form identities', () => {
+  const records = scopeFixture();
+  records[1].content_scope = { page_index: 0, stream_object_num: 42, stream_generation: 2, invocation_index: 1 };
+  records[2].content_scope = { ...records[1].content_scope, invocation_index: 2 };
+  assert.equal(parse(records).spans[1].content_scope.invocation_index, 2);
+});
+for (const [name, mutate] of [
+  ['missing scope', r => { delete r[1].content_scope; }],
+  ['wrong page', r => { r[1].content_scope.page_index = 1; }],
+  ['page invocation', r => { r[1].content_scope.invocation_index = 1; }],
+  ['Form without invocation', r => { r[1].content_scope.stream_object_num = 42; }],
+  ['bad generation', r => { r[1].content_scope.stream_generation = 65536; }],
+  ['forged scope context', r => { r[8].spans = [{ span_id: 'span-0', text: r[1].text, bbox, paint: r[1].paint,
+    content_scope: { ...r[1].content_scope, stream_object_num: 42, invocation_index: 1 } }]; }],
+]) test(`scope contract rejects ${name}`, () => {
+  const records = scopeFixture();
+  mutate(records);
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
+test('paint and crop evidence remain separate from visual completeness', () => {
+  const document = parse(paintFixture());
+  assert.equal(document.spans[0].paint.paint_state, 'painting');
+  assert.equal(document.pageOutcomes[0].completeness, 'unverified');
+});
+
+test('OCR response can report a failed retry while retaining an earlier completed winner', () => {
+  const records = paintFixture();
+  const retry = structuredClone(records[9]);
+  retry.attempt_id = retry.provenance.artifact_id = 'ocr-retry';
+  retry.attempt_status = 'failed';
+  retry.selected = false;
+  records.splice(10, 0, retry);
+  records[0].artifact_counts.specialist_attempts = 2;
+  records[11].attempt_count = 2;
+  records[11].status = 'failed';
+  assert.equal(parse(records).records.at(-1).selected_attempt_id, 'ocr-attempt');
+});
+
+test('completed OCR results require a completed selected OCR attempt', () => {
+  const records = paintFixture();
+  const result = structuredClone(records[10]);
+  result.record_type = result.schema_name = 'specialist_result';
+  result.specialist_result_id = result.provenance.artifact_id = 'ocr-result';
+  records.push(result);
+  records[0].artifact_counts.specialist_results = 1;
+  assert.ok(parse(records));
+  records[9].attempt_status = 'empty';
+  records[10].status = 'empty';
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
+test('OCR responses preserve legacy failed summary with detailed timeout and invalid-output attempts', () => {
+  for (const status of ['timeout', 'invalid_output']) {
+    const records = paintFixture();
+    records[9].attempt_status = status;
+    records[9].selected = false;
+    records[10].status = 'failed';
+    records[10].selected_attempt_id = null;
+    assert.ok(parse(records));
+  }
+});
+for (const [name, mutate] of [
+  ['missing paint', r => { delete r[1].paint; }],
+  ['unknown rendering mode', r => { r[1].paint.rendering_mode = 8; }],
+  ['nonpainting mode called painting', r => { r[1].paint.rendering_mode = 3; }],
+  ['unbounded inside clip', r => { r[1].paint.clip_state = 'inside'; }],
+  ['invalid clip geometry', r => { r[1].paint.clip_state = 'outside'; r[1].paint.clip_bbox = { ...bbox, x0: 100 }; }],
+  ['missing paint counts', r => { delete r[7].coverage.non_painting_span_count; }],
+  ['crop without request', r => { r[9].request_id = 'unknown'; }],
+  ['crop on wrong scope', r => { r[9].region_index = 1; }],
+  ['crop exceeds pixel budget', r => { r[9].crop.pixel_width = 11; }],
+  ['crop exceeds byte budget', r => { r[9].crop.image_byte_length = 1025; }],
+  ['crop without hash', r => { r[9].crop.image_sha256 = null; }],
+  ['crop missing budgets', r => { delete r[9].config.max_image_pixels; }],
+  ['unknown selected attempt', r => { r[10].selected_attempt_id = 'unknown'; }],
+  ['unselected chosen attempt', r => { r[9].selected = false; }],
+  ['selected wrong specialist', r => { r[9].specialist_kind = 'formula'; }],
+  ['selected failed attempt', r => { r[9].attempt_status = 'failed'; }],
+  ['nonboolean selection', r => { r[9].selected = 'true'; }],
+  ['unknown attempt status', r => { r[9].attempt_status = 'made_up'; }],
+  ['wrong response status', r => { r[10].status = 'failed'; }],
+  ['wrong response count', r => { r[10].attempt_count = 2; }],
+  ['foreign specialist span', r => { r[8].span_ids = ['span-999']; }],
+  ['forged specialist span context', r => { r[8].spans = [{ span_id: 'span-0', text: 'forged', bbox }]; }],
+  ['forged specialist paint context', r => { r[8].spans = [{ span_id: 'span-0', text: r[1].text, bbox, paint: { ...r[1].paint, paint_state: 'unknown' } }]; }],
+  ['foreign specialist block', r => { r[8].block_ids = ['block-999']; }],
+]) test(`paint contract rejects ${name}`, () => {
+  const records = paintFixture();
+  mutate(records);
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
+test('specialist context matches paint and tolerates only declared bbox rounding', () => {
+  const records = paintFixture();
+  const context = { span_id: 'span-0', text: records[1].text, bbox: { ...bbox, x0: bbox.x0 + 0.004 }, paint: structuredClone(records[1].paint) };
+  records[8].spans = [context];
+  records[8].span_ids = ['span-0'];
+  assert.ok(parse(records));
+  context.bbox.x0 = bbox.x0 + 0.006;
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
 test('current schema exposes authoritative table ownership and unverified page outcomes', () => {
   const document = parse(currentFixture());
   assert.deepEqual(document.tables[0].reconciled_block_ids, ['block-0']);
@@ -79,6 +211,18 @@ test('malformed table rows remain protocol errors through the subprocess adapter
   records[6].rows = [null];
   const { binaryPath } = await fakeParser(t, `process.stdout.write(${JSON.stringify(serialize(records))});`);
   await assert.rejects(extractPdfDocument(bytes, { binaryPath }), { code: 'protocol' });
+});
+
+test('batch forwards explicit OCR budgets and partial-result policy', async (t) => {
+  const { dir, binaryPath } = await fakeParser(t, `import {writeFileSync} from 'node:fs';
+    writeFileSync(new URL('./args.json',import.meta.url),JSON.stringify(process.argv.slice(2)));
+    process.stdout.write(${JSON.stringify(serialize(fixture()))});`);
+  await extractPdfDocument(bytes, { binaryPath, allowPartial: true, ocrLimits: { maxImagePixels: 1000, maxImageBytes: 2048, maxRegionsPerPage: 2, maxAttemptsPerPage: 3 } });
+  const args = JSON.parse(await readFile(join(dir, 'args.json'), 'utf8'));
+  for (const [flag, value] of [['--ocr-max-image-pixels', '1000'], ['--ocr-max-image-bytes', '2048'], ['--ocr-max-regions', '2'], ['--ocr-max-attempts', '3']]) assert.equal(args[args.indexOf(flag) + 1], value);
+  assert.ok(args.includes('--allow-partial'));
+  for (const limits of [{ maxImagePixels: 0 }, { maxImageBytes: 1.5 }, { maxImagesPixels: 100 }]) await assert.rejects(extractPdfDocument(bytes, { binaryPath, ocrLimits: limits }), RangeError);
+  await assert.rejects(extractPdfDocument(bytes, { binaryPath, allowPartial: 'yes' }), TypeError);
 });
 
 for (const [name, mutate] of [

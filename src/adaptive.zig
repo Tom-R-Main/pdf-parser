@@ -118,6 +118,10 @@ pub const TraceRecord = struct {
 pub const OcrAttempt = struct {
     attempt_index: u16,
     page_index: u32,
+    region_index: ?u32 = null,
+    crop_bbox: ?BBox = null,
+    crop_image_sha256: ?[32]u8 = null,
+    crop_image_byte_length: ?usize = null,
     status: ocr.AttemptStatus,
     page_bbox: BBox = .{},
     failure_stage: ?ocr.AttemptStage = null,
@@ -127,6 +131,10 @@ pub const OcrAttempt = struct {
     lang: []u8,
     grayscale: bool,
     timeout_ms: u32,
+    max_image_pixels: usize = 40_000_000,
+    max_image_bytes: usize = 32 * 1024 * 1024,
+    max_regions_per_page: usize = 8,
+    max_attempts_per_page: usize = 16,
     duration_ms: u64 = 0,
     pixel_width: u32 = 0,
     pixel_height: u32 = 0,
@@ -527,7 +535,8 @@ pub fn extractDocument(
 
         const raw_recall_text = document.extractTextRawRecall(page_idx, allocator) catch try allocator.alloc(u8, 0);
         defer allocator.free(raw_recall_text);
-        var native_result = try native_layout.analyze(allocator, geometry.glyphs, page_bbox, raw_recall_text);
+        const semantic_glyphs = geometry.semantic_glyphs orelse geometry.glyphs;
+        var native_result = try native_layout.analyze(allocator, semantic_glyphs, page_bbox, raw_recall_text);
         defer native_result.deinit();
         const fallback_page_text = if (fallback_page_index) |index| index.get(page_idx) else null;
         if (fallback_page_text) |reference_text| {
@@ -542,14 +551,14 @@ pub fn extractDocument(
         try layout_pages.ensureUnusedCapacity(allocator, 1);
         var readable_spans: []layout.TextSpan = undefined;
         if (native_result.quality.quality_pass) {
-            readable_spans = try native_layout.buildLineSpans(allocator, geometry.glyphs, &native_result, page_index);
+            readable_spans = try native_layout.buildLineSpans(allocator, semantic_glyphs, &native_result, page_index);
         } else if (fallback_page_text) |page_text| {
             readable_spans = try fallbackTextSpans(allocator, page_text, page_index, page_bbox);
         } else {
             // Keep the best native readable reconstruction available when the
             // external comparator is unavailable, while preserving the failed
             // quality result as a hard routing signal below.
-            readable_spans = try native_layout.buildLineSpans(allocator, geometry.glyphs, &native_result, page_index);
+            readable_spans = try native_layout.buildLineSpans(allocator, semantic_glyphs, &native_result, page_index);
         }
         layout_pages.appendAssumeCapacity(readable_spans);
         try trace_records.append(allocator, .{
@@ -606,110 +615,65 @@ pub fn extractDocument(
             0,
         );
 
+        // Image routes precede recognition so attempts retain the exact routed
+        // region identity even when native text makes the page score look good.
+        const image_route_start = region_routes.items.len;
+        const regional_ocr = usesRegionalOcr(page_route, native_result.quality.quality_pass);
+        if (regional_ocr) {
+            for (image_boxes) |image| {
+                const score = complexity.scoreRegion(page_input, image.bbox);
+                const route = RegionRoute.fromScore(.{ .region_index = region_index, .score = score });
+                try region_routes.append(allocator, route);
+                try appendRouteTraces(allocator, &trace_records, page_index, region_index, route.route, route.reason_mask, route.span_count, 0);
+                region_index += 1;
+            }
+        }
+        const image_route_end = region_routes.items.len;
         var page_ocr_spans: ?[]layout.TextSpan = null;
-        if (page_route.route.needs_ocr) {
-            if (!options.enable_ocr) {
-                _ = try appendOcrAttempt(allocator, &ocr_attempts, options.ocr_config, .{
-                    .attempt_index = 0,
-                    .page_index = page_index,
-                    .status = .not_invoked,
-                    .page_bbox = page_bbox,
-                    .diagnostic_code = .ocr_disabled,
-                });
-            } else {
-                var best_spans: ?[]layout.TextSpan = null;
-                errdefer if (best_spans) |owned| ocr.freeSpans(allocator, owned);
-                var best_attempt_index: ?usize = null;
-                const configured_attempts: usize = if (options.ocr_config.policy == .bounded)
-                    @max(1, @min(@as(usize, options.ocr_config.max_attempts), 2))
-                else
-                    1;
-
-                for (0..configured_attempts) |attempt_index| {
-                    var attempt_config = options.ocr_config;
-                    if (attempt_index > 0) {
-                        attempt_config.dpi = options.ocr_config.fallback_dpi;
-                        attempt_config.psm = options.ocr_config.fallback_psm;
-                    }
-
-                    var raster_outcome = try document.rasterizePageForOcrDetailed(allocator, page_idx, attempt_config);
-                    defer raster_outcome.deinit(allocator);
-                    if (raster_outcome.status != .completed or raster_outcome.input == null) {
-                        _ = try appendOcrAttempt(allocator, &ocr_attempts, attempt_config, .{
-                            .attempt_index = @intCast(attempt_index),
-                            .page_index = page_index,
-                            .status = raster_outcome.status,
-                            .page_bbox = page_bbox,
-                            .failure_stage = .rasterize,
-                            .duration_ms = raster_outcome.duration_ms,
-                            .exit_code = raster_outcome.exit_code,
-                            .diagnostic_code = raster_outcome.diagnostic_code,
-                            .stderr = raster_outcome.stderr,
-                        });
-                        break;
-                    }
-
-                    const ocr_input = raster_outcome.input.?;
-                    defer {
-                        runtime.deleteFileCwd(ocr_input.image_path);
-                        allocator.free(@constCast(ocr_input.image_path));
-                    }
-
-                    var recognition = try ocr.recognizeRegionDetailed(allocator, ocr_input, attempt_config);
-                    defer recognition.deinit(allocator);
-                    if (recognition.status != .completed and recognition.status != .empty) {
-                        _ = try appendOcrAttempt(allocator, &ocr_attempts, attempt_config, .{
-                            .attempt_index = @intCast(attempt_index),
-                            .page_index = page_index,
-                            .status = recognition.status,
-                            .page_bbox = page_bbox,
-                            .failure_stage = .recognize,
-                            .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
-                            .pixel_width = ocr_input.pixel_width,
-                            .pixel_height = ocr_input.pixel_height,
-                            .exit_code = recognition.exit_code,
-                            .diagnostic_code = recognition.diagnostic_code,
-                            .stderr = recognition.stderr,
-                        });
-                        break;
-                    }
-
-                    const raw_ocr_spans = recognition.spans;
-                    recognition.spans = &.{};
-                    const candidate_spans = try filterOcrSpansForPage(allocator, raw_ocr_spans, spans, image_boxes);
-                    errdefer ocr.freeSpans(allocator, candidate_spans);
-                    const recorded_index = try appendOcrAttempt(allocator, &ocr_attempts, attempt_config, .{
-                        .attempt_index = @intCast(attempt_index),
+        var page_attempt_count: usize = 0;
+        if (!regional_ocr and page_route.route.needs_ocr) {
+            const selected = try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, page_bbox, null, spans, image_boxes, &page_attempt_count);
+            if (selected) |owned| {
+                errdefer ocr.freeSpans(allocator, owned);
+                try ocr_pages.append(allocator, owned);
+                page_ocr_spans = owned;
+            }
+        } else if (regional_ocr) {
+            var combined: std.ArrayList(layout.TextSpan) = .empty;
+            defer combined.deinit(allocator);
+            errdefer for (combined.items) |span| allocator.free(@constCast(span.text));
+            var requested_regions: usize = 0;
+            for (region_routes.items[image_route_start..image_route_end]) |route| {
+                if (!route.route.needs_ocr) continue;
+                if (requested_regions >= options.ocr_config.max_regions_per_page) {
+                    _ = try appendOcrAttempt(allocator, &ocr_attempts, options.ocr_config, .{
+                        .attempt_index = 0,
                         .page_index = page_index,
-                        .status = if (candidate_spans.len > 0) .completed else .empty,
-                        .page_bbox = page_bbox,
-                        .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
-                        .pixel_width = ocr_input.pixel_width,
-                        .pixel_height = ocr_input.pixel_height,
-                        .spans = candidate_spans,
-                        .exit_code = recognition.exit_code,
-                        .stderr = if (recognition.stderr.len > 0) recognition.stderr else raster_outcome.stderr,
+                        .region_index = route.region_index,
+                        .status = .not_invoked,
+                        .page_bbox = route.bbox,
+                        .crop_bbox = route.bbox,
+                        .diagnostic_code = .ocr_region_limit,
                     });
-
-                    if (best_attempt_index == null or betterOcrAttempt(ocr_attempts.items[recorded_index], ocr_attempts.items[best_attempt_index.?])) {
-                        if (best_spans) |owned| ocr.freeSpans(allocator, owned);
-                        best_spans = candidate_spans;
-                        best_attempt_index = recorded_index;
-                    } else {
-                        ocr.freeSpans(allocator, candidate_spans);
-                    }
-
-                    if (attempt_index + 1 >= configured_attempts or !shouldRetryOcrAttempt(ocr_attempts.items[recorded_index], options.ocr_config)) break;
+                    continue;
                 }
-
-                if (best_attempt_index) |selected_index| {
-                    ocr_attempts.items[selected_index].selected = true;
-                    const selected_spans = best_spans.?;
-                    try ocr_pages.append(allocator, selected_spans);
-                    best_spans = null;
-                    page_ocr_spans = selected_spans;
+                requested_regions += 1;
+                if (try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, route.bbox, route.region_index, spans, image_boxes, &page_attempt_count)) |owned| {
+                    // Transfer strings only after capacity succeeds; free the
+                    // temporary array while combined owns its span strings.
+                    errdefer ocr.freeSpans(allocator, owned);
+                    try combined.appendSlice(allocator, owned);
+                    allocator.free(owned);
                 }
             }
+            if (combined.items.len > 0) {
+                const owned = try combined.toOwnedSlice(allocator);
+                errdefer ocr.freeSpans(allocator, owned);
+                try ocr_pages.append(allocator, owned);
+                page_ocr_spans = owned;
+            }
+        }
+        if (page_route.route.needs_ocr or image_route_end > image_route_start) {
             try trace_records.append(allocator, .{
                 .page_index = page_index,
                 .stage = .ocr_recognize,
@@ -951,6 +915,7 @@ pub fn extractDocument(
                 .specialist = specialist,
             });
             if (!page_view_quality_pass) suppressLayoutSpecialists(&route.route, &route.reason_mask);
+            if (regional_ocr) suppressDerivedOcr(&route, page_input, region_routes.items[image_route_start..image_route_end]);
             try region_routes.append(allocator, route);
             try appendRouteTraces(
                 allocator,
@@ -985,6 +950,7 @@ pub fn extractDocument(
                 .specialist = specialist,
             });
             if (!page_view_quality_pass) suppressLayoutSpecialists(&route.route, &route.reason_mask);
+            if (regional_ocr) suppressDerivedOcr(&route, page_input, region_routes.items[image_route_start..image_route_end]);
             try region_routes.append(allocator, route);
             try appendRouteTraces(
                 allocator,
@@ -1524,9 +1490,191 @@ fn spanSubsumesOcr(represented: layout.TextSpan, ocr_span: layout.TextSpan) bool
     return before_ok and after_ok;
 }
 
+fn usesRegionalOcr(route: PageRoute, native_quality_pass: bool) bool {
+    return route.image_count > 0 and route.span_count > 0 and native_quality_pass and
+        route.signals.bad_unicode < 0.35 and route.signals.hidden_ocr < 0.45;
+}
+
+fn suppressDerivedOcr(route: *RegionRoute, input: complexity.PageInput, image_routes: []const RegionRoute) void {
+    if (!route.route.needs_ocr or route.image_count == 0) return;
+    // Score the original native evidence: newly recognized spans may carry an
+    // OCR font name or lower confidence, neither of which requests another OCR
+    // pass over the same crop. Missing ToUnicode alone is not broken text.
+    const native_score = complexity.scoreRegion(input, route.bbox);
+    if (native_score.signals.hidden_ocr >= 0.45 or native_score.signals.bad_unicode >= 0.35) return;
+    // Only suppress an image-driven duplicate when every intersecting image
+    // already has its own requested crop. A crop elsewhere on the page cannot
+    // explain a hidden or damaged text region.
+    var matched_image = false;
+    for (input.images) |image| {
+        if (overlapArea(route.bbox, image.bbox) <= 0) continue;
+        var owned = false;
+        for (image_routes) |owner| {
+            if (owner.page_index == route.page_index and owner.route.needs_ocr and
+                owner.bbox.x0 <= image.bbox.x0 and owner.bbox.y0 <= image.bbox.y0 and
+                owner.bbox.x1 >= image.bbox.x1 and owner.bbox.y1 >= image.bbox.y1)
+            {
+                owned = true;
+                break;
+            }
+        }
+        if (!owned) return;
+        matched_image = true;
+    }
+    if (!matched_image) return;
+    route.route.needs_ocr = false;
+    route.reason_mask &= ~reasonBit(.ocr_route_stub);
+}
+
+fn recognizeOcrTarget(
+    document: anytype,
+    allocator: std.mem.Allocator,
+    attempts: *std.ArrayList(OcrAttempt),
+    options: ExtractOptions,
+    page_idx: usize,
+    page_bbox: BBox,
+    region_id: ?u32,
+    spans: []const layout.TextSpan,
+    image_boxes: []const complexity.ImageBox,
+    attempt_count: *usize,
+) !?[]layout.TextSpan {
+    const page_index: u32 = @intCast(page_idx);
+    if (!options.enable_ocr) {
+        _ = try appendOcrAttempt(allocator, attempts, options.ocr_config, .{
+            .attempt_index = 0,
+            .page_index = page_index,
+            .status = .not_invoked,
+            .page_bbox = page_bbox,
+            .region_index = region_id,
+            .crop_bbox = if (region_id != null) page_bbox else null,
+            .diagnostic_code = .ocr_disabled,
+        });
+    } else {
+        var best_spans: ?[]layout.TextSpan = null;
+        errdefer if (best_spans) |owned| ocr.freeSpans(allocator, owned);
+        var best_attempt_index: ?usize = null;
+        const configured_attempts: usize = if (options.ocr_config.policy == .bounded)
+            @max(1, @min(@as(usize, options.ocr_config.max_attempts), 2))
+        else
+            1;
+
+        for (0..configured_attempts) |attempt_index| {
+            var attempt_config = options.ocr_config;
+            if (attempt_index > 0) {
+                attempt_config.dpi = options.ocr_config.fallback_dpi;
+                attempt_config.psm = options.ocr_config.fallback_psm;
+            }
+
+            if (attempt_count.* >= options.ocr_config.max_attempts_per_page) {
+                _ = try appendOcrAttempt(allocator, attempts, attempt_config, .{
+                    .attempt_index = @intCast(attempt_index),
+                    .page_index = page_index,
+                    .region_index = region_id,
+                    .page_bbox = page_bbox,
+                    .crop_bbox = if (region_id != null) page_bbox else null,
+                    .status = .not_invoked,
+                    .diagnostic_code = .ocr_attempt_limit,
+                });
+                break;
+            }
+            attempt_count.* += 1;
+            var raster_outcome = if (region_id != null)
+                try document.rasterizeOcrRegionDetailed(allocator, page_idx, page_bbox, attempt_config)
+            else
+                try document.rasterizePageForOcrDetailed(allocator, page_idx, attempt_config);
+            defer raster_outcome.deinit(allocator);
+            if (raster_outcome.status != .completed or raster_outcome.input == null) {
+                _ = try appendOcrAttempt(allocator, attempts, attempt_config, .{
+                    .attempt_index = @intCast(attempt_index),
+                    .page_index = page_index,
+                    .status = raster_outcome.status,
+                    .page_bbox = page_bbox,
+                    .region_index = region_id,
+                    .crop_bbox = if (region_id != null) page_bbox else null,
+                    .failure_stage = .rasterize,
+                    .duration_ms = raster_outcome.duration_ms,
+                    .exit_code = raster_outcome.exit_code,
+                    .diagnostic_code = raster_outcome.diagnostic_code,
+                    .stderr = raster_outcome.stderr,
+                });
+                break;
+            }
+
+            const ocr_input = raster_outcome.input.?;
+            defer {
+                runtime.deleteFileCwd(ocr_input.image_path);
+                allocator.free(@constCast(ocr_input.image_path));
+            }
+
+            var recognition = try ocr.recognizeRegionDetailed(allocator, ocr_input, attempt_config);
+            defer recognition.deinit(allocator);
+            if (recognition.status != .completed and recognition.status != .empty) {
+                _ = try appendOcrAttempt(allocator, attempts, attempt_config, .{
+                    .attempt_index = @intCast(attempt_index),
+                    .page_index = page_index,
+                    .status = recognition.status,
+                    .page_bbox = page_bbox,
+                    .region_index = region_id,
+                    .failure_stage = .recognize,
+                    .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
+                    .pixel_width = ocr_input.pixel_width,
+                    .pixel_height = ocr_input.pixel_height,
+                    .crop_bbox = if (region_id != null) ocr_input.pdf_bbox else null,
+                    .crop_image_sha256 = if (region_id != null) ocr_input.image_sha256 else null,
+                    .crop_image_byte_length = if (region_id != null) ocr_input.image_byte_length else null,
+                    .exit_code = recognition.exit_code,
+                    .diagnostic_code = recognition.diagnostic_code,
+                    .stderr = recognition.stderr,
+                });
+                break;
+            }
+
+            const raw_ocr_spans = recognition.spans;
+            recognition.spans = &.{};
+            const candidate_spans = try filterOcrSpansForPage(allocator, raw_ocr_spans, spans, image_boxes);
+            errdefer ocr.freeSpans(allocator, candidate_spans);
+            const recorded_index = try appendOcrAttempt(allocator, attempts, attempt_config, .{
+                .attempt_index = @intCast(attempt_index),
+                .page_index = page_index,
+                .status = if (candidate_spans.len > 0) .completed else .empty,
+                .page_bbox = page_bbox,
+                .region_index = region_id,
+                .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
+                .pixel_width = ocr_input.pixel_width,
+                .pixel_height = ocr_input.pixel_height,
+                .crop_bbox = if (region_id != null) ocr_input.pdf_bbox else null,
+                .crop_image_sha256 = if (region_id != null) ocr_input.image_sha256 else null,
+                .crop_image_byte_length = if (region_id != null) ocr_input.image_byte_length else null,
+                .spans = candidate_spans,
+                .exit_code = recognition.exit_code,
+                .stderr = if (recognition.stderr.len > 0) recognition.stderr else raster_outcome.stderr,
+            });
+
+            if (best_attempt_index == null or betterOcrAttempt(attempts.items[recorded_index], attempts.items[best_attempt_index.?])) {
+                if (best_spans) |owned| ocr.freeSpans(allocator, owned);
+                best_spans = candidate_spans;
+                best_attempt_index = recorded_index;
+            } else {
+                ocr.freeSpans(allocator, candidate_spans);
+            }
+
+            if (attempt_index + 1 >= configured_attempts or !shouldRetryOcrAttempt(attempts.items[recorded_index], options.ocr_config)) break;
+        }
+
+        if (best_attempt_index) |selected_index| {
+            attempts.items[selected_index].selected = true;
+            const selected_spans = best_spans.?;
+            best_spans = null;
+            return selected_spans;
+        }
+    }
+
+    return null;
+}
+
 fn selectedOcrPageQualityPass(attempts: []const OcrAttempt, page_index: u32) bool {
     for (attempts) |attempt| {
-        if (attempt.page_index == page_index and attempt.selected) {
+        if (attempt.page_index == page_index and attempt.region_index == null and attempt.selected) {
             return attempt.status == .completed and attempt.span_count > 0 and attempt.character_count > 0;
         }
     }
@@ -1841,6 +1989,26 @@ fn appendLayoutBlockSpans(
     }
 
     for (block.lines) |line| {
+        // A reconstructed line must not erase distinct operator evidence.
+        // Keep its original spans when paint differs across that line.
+        var distinct_paint = false;
+        for (line.words) |word| {
+            for (word.spans) |span| {
+                if (!std.meta.eql(span.paint, line.bounds.paint) or !std.meta.eql(span.content_scope, line.bounds.content_scope)) distinct_paint = true;
+            }
+        }
+        if (distinct_paint) {
+            for (line.words) |word| {
+                for (word.spans) |source_span| {
+                    var span = source_span;
+                    span.text = try allocator.dupe(u8, source_span.text);
+                    errdefer allocator.free(@constCast(span.text));
+                    span.font = stableFont(source_span.font);
+                    try spans.append(allocator, span);
+                }
+            }
+            continue;
+        }
         const text = try lineTextOwned(allocator, &line);
         errdefer allocator.free(text);
         if (text.len == 0) {
@@ -1857,6 +2025,12 @@ fn appendLayoutBlockSpans(
             .block_id = line.bounds.block_id,
             .line_id = line.bounds.line_id,
             .mcid = line.bounds.mcid,
+            .actual_text = line.bounds.actual_text,
+            .unicode_map_error = line.bounds.unicode_map_error,
+            .writing_mode = line.bounds.writing_mode,
+            .paint = line.bounds.paint,
+            .content_scope = line.bounds.content_scope,
+            .leading_boundary = line.bounds.leading_boundary,
         }));
     }
 }
@@ -2408,6 +2582,10 @@ fn freeTextSpans(allocator: std.mem.Allocator, spans: []layout.TextSpan) void {
 const AppendOcrAttemptOptions = struct {
     attempt_index: u16,
     page_index: u32,
+    region_index: ?u32 = null,
+    crop_bbox: ?BBox = null,
+    crop_image_sha256: ?[32]u8 = null,
+    crop_image_byte_length: ?usize = null,
     status: ocr.AttemptStatus,
     page_bbox: BBox = .{},
     failure_stage: ?ocr.AttemptStage = null,
@@ -2446,6 +2624,10 @@ fn appendOcrAttempt(
     try attempts.append(allocator, .{
         .attempt_index = options.attempt_index,
         .page_index = options.page_index,
+        .region_index = options.region_index,
+        .crop_bbox = options.crop_bbox,
+        .crop_image_sha256 = options.crop_image_sha256,
+        .crop_image_byte_length = options.crop_image_byte_length,
         .status = options.status,
         .page_bbox = options.page_bbox,
         .failure_stage = options.failure_stage,
@@ -2455,6 +2637,10 @@ fn appendOcrAttempt(
         .lang = lang,
         .grayscale = config.rasterize_grayscale,
         .timeout_ms = config.timeout_ms,
+        .max_image_pixels = config.max_image_pixels,
+        .max_image_bytes = config.max_image_bytes,
+        .max_regions_per_page = config.max_regions_per_page,
+        .max_attempts_per_page = config.max_attempts_per_page,
         .duration_ms = options.duration_ms,
         .pixel_width = options.pixel_width,
         .pixel_height = options.pixel_height,
@@ -2919,4 +3105,111 @@ test "adaptive owned lists are safe across every allocation failure" {
         adaptiveOwnedListCleanupAllocationProbe,
         .{},
     );
+}
+
+test "regional OCR attempts preserve route identity and enforce per-page invocation cap" {
+    const FakeDocument = struct {
+        calls: usize = 0,
+        pub fn rasterizeOcrRegionDetailed(self: *@This(), _: std.mem.Allocator, _: usize, _: BBox, _: ocr.OcrConfig) !ocr.RasterizeOutcome {
+            self.calls += 1;
+            return .{ .status = .unavailable, .diagnostic_code = .rasterizer_unavailable };
+        }
+        pub fn rasterizePageForOcrDetailed(self: *@This(), _: std.mem.Allocator, _: usize, _: ocr.OcrConfig) !ocr.RasterizeOutcome {
+            self.calls += 1;
+            return .{ .status = .unavailable, .diagnostic_code = .rasterizer_unavailable };
+        }
+    };
+    var doc = FakeDocument{};
+    const allocator = std.testing.allocator;
+    var attempts: std.ArrayList(OcrAttempt) = .empty;
+    defer {
+        freeOcrAttemptItems(allocator, attempts.items);
+        attempts.deinit(allocator);
+    }
+    var count: usize = 0;
+    const bbox = BBox{ .x0 = 10, .y0 = 20, .x1 = 50, .y1 = 60 };
+    try std.testing.expectEqual(@as(?[]layout.TextSpan, null), try recognizeOcrTarget(&doc, allocator, &attempts, .{ .enable_ocr = false }, 2, bbox, 37, &.{}, &.{}, &count));
+    try std.testing.expectEqual(@as(usize, 0), doc.calls);
+    try std.testing.expectEqual(@as(?u32, 37), attempts.items[0].region_index);
+    try std.testing.expectEqual(ocr.DiagnosticCode.ocr_disabled, attempts.items[0].diagnostic_code.?);
+    _ = try recognizeOcrTarget(&doc, allocator, &attempts, .{ .ocr_config = .{ .max_attempts_per_page = 0 } }, 2, bbox, 38, &.{}, &.{}, &count);
+    try std.testing.expectEqual(@as(usize, 0), doc.calls);
+    try std.testing.expectEqual(@as(?u32, 38), attempts.items[1].region_index);
+    try std.testing.expectEqual(ocr.DiagnosticCode.ocr_attempt_limit, attempts.items[1].diagnostic_code.?);
+    _ = try recognizeOcrTarget(&doc, allocator, &attempts, .{ .ocr_config = .{ .max_attempts_per_page = 1 } }, 2, bbox, 39, &.{}, &.{}, &count);
+    try std.testing.expectEqual(@as(usize, 1), doc.calls);
+    try std.testing.expectEqual(@as(?u32, 39), attempts.items[2].region_index);
+    try std.testing.expectEqual(ocr.AttemptStatus.unavailable, attempts.items[2].status);
+    _ = try recognizeOcrTarget(&doc, allocator, &attempts, .{ .ocr_config = .{ .max_attempts_per_page = 1 } }, 2, bbox, 40, &.{}, &.{}, &count);
+    try std.testing.expectEqual(@as(usize, 1), doc.calls);
+    try std.testing.expectEqual(ocr.DiagnosticCode.ocr_attempt_limit, attempts.items[3].diagnostic_code.?);
+    try std.testing.expect(!attempts.items[3].selected);
+}
+
+test "native-good minority hidden text without images keeps its independent OCR route" {
+    var hidden = testSpan("Hidden text", 10, 10, 110, 20);
+    hidden.paint = .{ .rendering_mode = 3, .paint_state = .non_painting };
+    const spans = [_]layout.TextSpan{
+        testSpan("Readable native paragraph with substantial ordinary text", 10, 100, 500, 300),
+        testSpan("Readable native paragraph with substantial ordinary text", 10, 300, 500, 500),
+        testSpan("Readable native paragraph with substantial ordinary text", 10, 500, 500, 700),
+        hidden,
+    };
+    const input = complexity.PageInput{ .page_index = 0, .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, .spans = &spans };
+    const page_route = PageRoute.fromScore(complexity.scorePage(input));
+    try std.testing.expect(page_route.signals.hidden_ocr < 0.45);
+    try std.testing.expect(!usesRegionalOcr(page_route, true));
+    var region = RegionRoute.fromScore(.{ .region_index = 0, .score = complexity.scoreRegion(input, hidden.bbox) });
+    try std.testing.expect(region.route.needs_ocr);
+    suppressDerivedOcr(&region, input, &.{});
+    try std.testing.expect(region.route.needs_ocr);
+}
+
+test "a crop does not explain independent hidden or bad-Unicode recovery" {
+    var hidden = testSpan("Hidden text", 10, 10, 110, 20);
+    hidden.paint = .{ .rendering_mode = 3, .paint_state = .non_painting };
+    const images = [_]complexity.ImageBox{.{ .bbox = .{ .x0 = 300, .y0 = 400, .x1 = 500, .y1 = 600 } }};
+    const input = complexity.PageInput{ .page_index = 0, .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, .spans = &.{hidden}, .images = &images };
+    const crop = RegionRoute.fromScore(.{ .region_index = 6, .score = complexity.scoreRegion(input, images[0].bbox) });
+    var target = RegionRoute.fromScore(.{ .region_index = 7, .score = complexity.scoreRegion(input, hidden.bbox) });
+    try std.testing.expect(target.route.needs_ocr);
+    suppressDerivedOcr(&target, input, &.{crop});
+    try std.testing.expect(target.route.needs_ocr);
+    hidden.paint = .{};
+    hidden.unicode_map_error = true;
+    const broken_input = complexity.PageInput{ .page_index = 0, .bbox = input.bbox, .spans = &.{hidden}, .images = &images };
+    var broken = RegionRoute.fromScore(.{ .region_index = 8, .score = complexity.scoreRegion(broken_input, hidden.bbox) });
+    try std.testing.expect(broken.route.needs_ocr);
+    suppressDerivedOcr(&broken, broken_input, &.{crop});
+    try std.testing.expect(broken.route.needs_ocr);
+    var duplicate = crop;
+    suppressDerivedOcr(&duplicate, input, &.{crop});
+    try std.testing.expect(!duplicate.route.needs_ocr);
+    var unowned = crop;
+    suppressDerivedOcr(&unowned, input, &.{});
+    try std.testing.expect(unowned.route.needs_ocr);
+}
+
+test "recognized crop metadata does not request OCR again over readable native text" {
+    var native = testSpan("Native cover text", 60, 730, 190, 750);
+    native.font.has_to_unicode = false;
+    const images = [_]complexity.ImageBox{.{ .bbox = .{ .x0 = 46, .y0 = 30, .x1 = 566, .y1 = 720 } }};
+    const original = complexity.PageInput{ .page_index = 0, .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, .spans = &.{native}, .images = &images };
+    const owner = RegionRoute.fromScore(.{ .region_index = 0, .score = complexity.scoreRegion(original, images[0].bbox) });
+    var recognized = testSpan("Recovered image text", 65, 590, 450, 625);
+    recognized.source = .fresh_ocr;
+    recognized.font.name = "TesseractOCR";
+    recognized.confidence = 0.8;
+    const enriched = complexity.PageInput{ .page_index = 0, .bbox = original.bbox, .spans = &.{ native, recognized }, .images = &images };
+    var derived = RegionRoute.fromScore(.{ .region_index = 1, .score = complexity.scoreRegion(enriched, .{ .x0 = 60, .y0 = 580, .x1 = 450, .y1 = 750 }) });
+    try std.testing.expect(derived.route.needs_ocr);
+    try std.testing.expect(derived.signals.hidden_ocr >= 0.45);
+    try std.testing.expect(derived.signals.bad_unicode >= 0.35);
+    suppressDerivedOcr(&derived, original, &.{owner});
+    try std.testing.expect(!derived.route.needs_ocr);
+    native.unicode_map_error = true;
+    const damaged = complexity.PageInput{ .page_index = 0, .bbox = original.bbox, .spans = &.{native}, .images = &images };
+    var substantive = RegionRoute.fromScore(.{ .region_index = 2, .score = complexity.scoreRegion(enriched, derived.bbox) });
+    suppressDerivedOcr(&substantive, damaged, &.{owner});
+    try std.testing.expect(substantive.route.needs_ocr);
 }

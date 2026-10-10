@@ -8,9 +8,10 @@
 const std = @import("std");
 const complexity = @import("complexity.zig");
 const layout = @import("layout.zig");
+const reconcile = @import("reconcile.zig");
 const runtime = @import("runtime.zig");
 
-pub const schema_version = "0.15.0";
+pub const schema_version = "0.17.0";
 
 pub const SpecialistKind = enum {
     ocr,
@@ -48,6 +49,8 @@ pub const RenderContext = struct {
     document_id: []const u8 = "document",
     source_id: ?[]const u8 = null,
     input_sha256: ?[]const u8 = null,
+    span_base: u32 = 0,
+    block_base: u32 = 0,
 };
 
 pub const StreamMeta = struct {
@@ -187,7 +190,8 @@ pub fn countRequests(result: anytype) usize {
         count += requestKindCount(route.route, route.reason_mask);
     }
     for (result.trace_records, 0..) |record, trace_index| {
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const kind = maybe_kind orelse continue;
             if (requestAlreadyCovered(result, kind, record.page_index, record.region_index)) continue;
             if (traceRequestSeenEarlier(result, trace_index, kind, record.page_index, record.region_index)) continue;
             count += 1;
@@ -199,6 +203,9 @@ pub fn countRequests(result: anytype) usize {
 pub fn countResponses(result: anytype) usize {
     var count: usize = 0;
     for (result.page_routes) |route| {
+        if (route.route.needs_ocr) count += 1;
+    }
+    for (result.region_routes) |route| {
         if (route.route.needs_ocr) count += 1;
     }
     count += result.formula_attempts.len;
@@ -213,7 +220,14 @@ pub fn countResults(result: anytype) usize {
     var count: usize = 0;
     for (result.page_routes) |route| {
         if (!route.route.needs_ocr) continue;
-        if (selectedAttemptIndex(result, route.page_index)) |attempt_index| {
+        if (selectedAttemptIndex(result, route.page_index, null)) |attempt_index| {
+            const attempt = result.ocr_attempts[attempt_index];
+            if (attempt.status == .completed and countFreshOcrSpans(result, route.page_index, route.bbox, null) > 0) count += 1;
+        }
+    }
+    for (result.region_routes) |route| {
+        if (!route.route.needs_ocr) continue;
+        if (selectedAttemptIndex(result, route.page_index, route.region_index)) |attempt_index| {
             const attempt = result.ocr_attempts[attempt_index];
             if (attempt.status == .completed and countFreshOcrSpans(result, route.page_index, route.bbox, null) > 0) count += 1;
         }
@@ -398,8 +412,9 @@ pub fn writeRouteTraceSpecialistFields(writer: anytype, route: anytype, page_ind
 pub fn writeRouteTraceSpecialistFieldsWithReason(writer: anytype, route: anytype, reason_mask: u32, page_index: u32, region_index: ?u32) !void {
     try writer.writeAll(",\"specialist_request_ids\":[");
     var first = true;
-    if (requestKindForScope(route, reason_mask, region_index)) |kind|
-        try writeRequestIdValue(writer, kind, page_index, region_index, &first);
+    for (requestKindsForScope(route, reason_mask, region_index)) |maybe_kind| {
+        if (maybe_kind) |kind| try writeRequestIdValue(writer, kind, page_index, region_index, &first);
+    }
     try writer.writeAll("],\"specialist_status\":\"");
     try writer.writeAll(if (first) "none" else "requested");
     try writer.writeByte('"');
@@ -413,14 +428,14 @@ pub fn writeEntityRequestForBlock(
 ) !void {
     try writeRecordHeader(writer, "specialist_request");
     try writeDocumentFields(writer, context);
-    try writer.print(",\"request_id\":\"specialist-request-entity-block-{d}\",\"request_index\":{}", .{ block.id, request_index });
+    try writer.print(",\"request_id\":\"specialist-request-entity-block-{d}\",\"request_index\":{}", .{ context.block_base + block.id, request_index });
     try writer.print(",\"page_index\":{},\"region_index\":null,\"bbox\":", .{block.page_index});
     try writeBBoxJson(writer, block.bbox);
     try writer.writeAll(",\"route\":\"entity_extract\",\"route_reasons\":[],\"signals\":null,\"requested_kind\":\"entity\",\"requested_outputs\":[\"entity\"]");
     try writer.writeAll(",\"span_ids\":[],\"spans\":[],\"block_ids\":[");
-    try writer.print("\"block-{d}\"", .{block.id});
+    try writer.print("\"block-{d}\"", .{context.block_base + block.id});
     try writer.writeAll("],\"blocks\":[");
-    try writeBlockContext(writer, block, block.id);
+    try writeBlockContext(writer, block, context.block_base + block.id);
     try writer.writeAll("],\"ruling_lines\":[],\"crop_image_path\":null,\"debug_asset_ids\":[]");
     try writeProvenance(writer, context, "specialist-request-entity", block.page_index, block.bbox, "lifecycle", 1.0);
     try writer.writeByte('}');
@@ -447,6 +462,11 @@ fn writeRequests(
     }
     for (result.region_routes) |route| {
         if (!matchesPage(page_filter, route.page_index)) continue;
+        if (routeNeedsKindOrReason(route.route, .ocr, route.reason_mask)) {
+            try writeRecordSeparator(writer, jsonl, wrote);
+            try writeRequestRecord(writer, result, context, .ocr, request_index, route.page_index, route.region_index, route.bbox, route.route, route.reason_mask, route.signals, null, event_index, span_lookup, block_lookup);
+            request_index += 1;
+        }
         if (primaryRegionKind(route.route, route.reason_mask)) |kind| {
             try writeRecordSeparator(writer, jsonl, wrote);
             try writeRequestRecord(writer, result, context, kind, request_index, route.page_index, route.region_index, route.bbox, route.route, route.reason_mask, route.signals, null, event_index, span_lookup, block_lookup);
@@ -455,7 +475,8 @@ fn writeRequests(
     }
     for (result.trace_records, 0..) |record, trace_index| {
         if (!matchesPage(page_filter, record.page_index)) continue;
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const kind = maybe_kind orelse continue;
             if (requestAlreadyCovered(result, kind, record.page_index, record.region_index)) continue;
             if (traceRequestSeenEarlier(result, trace_index, kind, record.page_index, record.region_index)) continue;
             const bbox = traceBBox(result, record) orelse layout.BBox{ .x0 = 0, .y0 = 0, .x1 = 0, .y1 = 0 };
@@ -469,7 +490,8 @@ fn writeRequests(
 fn traceRequestSeenEarlier(result: anytype, end_index: usize, kind: SpecialistKind, page_index: u32, region_index: ?u32) bool {
     for (result.trace_records[0..end_index]) |record| {
         if (record.page_index != page_index or record.region_index != region_index) continue;
-        if (requestKindForScope(record.route, record.reason_mask, record.region_index)) |prior_kind| {
+        for (requestKindsForScope(record.route, record.reason_mask, record.region_index)) |maybe_kind| {
+            const prior_kind = maybe_kind orelse continue;
             if (prior_kind == kind and !requestAlreadyCovered(result, kind, page_index, region_index)) return true;
         }
     }
@@ -502,10 +524,15 @@ fn writeOcrResponses(
     wrote: *bool,
     span_lookup: ?*const SpanPageLookup,
 ) !void {
-    for (result.page_routes, 0..) |route, index| {
+    for (result.page_routes) |route| {
         if (!matchesPage(page_filter, route.page_index) or !route.route.needs_ocr) continue;
         try writeRecordSeparator(writer, jsonl, wrote);
-        try writeOcrResponseRecord(writer, result, context, @intCast(index), route, event_index, span_lookup);
+        try writeOcrResponseRecord(writer, result, context, route, event_index, span_lookup);
+    }
+    for (result.region_routes) |route| {
+        if (!matchesPage(page_filter, route.page_index) or !route.route.needs_ocr) continue;
+        try writeRecordSeparator(writer, jsonl, wrote);
+        try writeOcrResponseRecord(writer, result, context, route, event_index, span_lookup);
     }
 }
 
@@ -519,14 +546,21 @@ fn writeOcrResults(
     wrote: *bool,
     span_lookup: ?*const SpanPageLookup,
 ) !void {
-    for (result.page_routes, 0..) |route, index| {
+    for (result.page_routes) |route| {
         if (!matchesPage(page_filter, route.page_index) or !route.route.needs_ocr) continue;
-        const attempt_index = selectedAttemptIndex(result, route.page_index) orelse continue;
+        const attempt_index = selectedAttemptIndex(result, route.page_index, null) orelse continue;
         const attempt = result.ocr_attempts[attempt_index];
         if (attempt.status != .completed) continue;
         if (countFreshOcrSpans(result, route.page_index, route.bbox, span_lookup) == 0) continue;
         try writeRecordSeparator(writer, jsonl, wrote);
-        try writeOcrResultRecord(writer, result, context, @intCast(index), route, event_index, span_lookup);
+        try writeOcrResultRecord(writer, result, context, route, event_index, span_lookup);
+    }
+    for (result.region_routes) |route| {
+        if (!matchesPage(page_filter, route.page_index) or !route.route.needs_ocr) continue;
+        const attempt_index = selectedAttemptIndex(result, route.page_index, route.region_index) orelse continue;
+        if (result.ocr_attempts[attempt_index].status != .completed or countFreshOcrSpans(result, route.page_index, route.bbox, span_lookup) == 0) continue;
+        try writeRecordSeparator(writer, jsonl, wrote);
+        try writeOcrResultRecord(writer, result, context, route, event_index, span_lookup);
     }
 }
 
@@ -651,7 +685,7 @@ fn writeFormulaResults(
         const bbox = formulaAttemptBBox(result, attempt) orelse layout.BBox{};
         const formula_span_count = countFormulaModelSpans(result, attempt.page_index, bbox);
         try writer.print("\",\"specialist_kind\":\"formula\",\"status\":\"completed\",\"source_kind\":\"formula_model\",\"selected_attempt_id\":\"specialist-attempt-formula-region-{d}-0\",\"confidence\":{d:.3},\"artifact_counts\":{{\"spans\":{},\"tables\":0,\"blocks\":0,\"formulas\":{},\"entities\":0}},\"span_ids\":", .{ attempt.region_index, formulaAttemptConfidence(result, attempt.request_id), formula_span_count, artifact_count });
-        try writeSpanIdArray(writer, result, attempt.page_index, bbox, .formula_model, null);
+        try writeSpanIdArray(writer, context, result, attempt.page_index, bbox, .formula_model, null);
         try writer.writeAll(",\"table_ids\":[],\"block_ids\":[],\"formula_ids\":[");
         var first = true;
         for (result.formula_artifacts) |artifact| {
@@ -789,13 +823,13 @@ fn writeRequestRecord(
     try writer.writeAll("\",\"requested_outputs\":");
     try writeRequestedOutputs(writer, kind);
     try writer.writeAll(",\"span_ids\":");
-    try writeSpanIdArray(writer, result, page_index, bbox, .all, span_lookup);
+    try writeSpanIdArray(writer, context, result, page_index, bbox, .all, span_lookup);
     try writer.writeAll(",\"spans\":");
-    try writeSpanContextArray(writer, result, page_index, bbox, .all, span_lookup);
+    try writeSpanContextArray(writer, context, result, page_index, bbox, .all, span_lookup);
     try writer.writeAll(",\"block_ids\":");
-    try writeBlockIdArray(writer, result, page_index, bbox, block_lookup);
+    try writeBlockIdArray(writer, context, result, page_index, bbox, block_lookup);
     try writer.writeAll(",\"blocks\":");
-    try writeBlockContextArray(writer, result, page_index, bbox, block_lookup);
+    try writeBlockContextArray(writer, context, result, page_index, bbox, block_lookup);
     try writer.writeAll(",\"ruling_lines\":[],\"crop_image_path\":");
     if (crop_image_path) |path| {
         try writer.writeByte('"');
@@ -817,12 +851,12 @@ fn writeOcrAttemptRecord(writer: anytype, context: RenderContext, attempt: anyty
         index.* += 1;
     }
     try writeDocumentFields(writer, context);
-    try writer.print(",\"page_index\":{},\"attempt_id\":\"specialist-attempt-ocr-page-{d}-{d}\",\"request_id\":", .{
-        attempt.page_index,
-        attempt.page_index,
-        attempt.attempt_index,
-    });
-    try writeRequestId(writer, .ocr, attempt.page_index, null);
+    try writer.print(",\"page_index\":{},\"region_index\":", .{attempt.page_index});
+    try writeOptionalIndex(writer, attempt.region_index);
+    try writer.writeAll(",\"attempt_id\":");
+    try writeOcrAttemptId(writer, attempt);
+    try writer.writeAll(",\"request_id\":");
+    try writeRequestId(writer, .ocr, attempt.page_index, attempt.region_index);
     try writer.writeAll(",\"specialist_id\":\"");
     try writer.writeAll(@tagName(attempt.backend));
     try writer.writeAll("\",\"specialist_kind\":\"ocr\",\"attempt_index\":");
@@ -849,7 +883,10 @@ fn writeOcrAttemptRecord(writer: anytype, context: RenderContext, attempt: anyty
     try writer.print("{}", .{attempt.grayscale});
     try writer.writeAll(",\"timeout_ms\":");
     try writer.print("{}", .{attempt.timeout_ms});
-    try writer.writeAll("},\"execution\":{\"duration_ms\":");
+    try writer.print(",\"max_image_pixels\":{},\"max_image_bytes\":{},\"max_regions_per_page\":{},\"max_attempts_per_page\":{}", .{ attempt.max_image_pixels, attempt.max_image_bytes, attempt.max_regions_per_page, attempt.max_attempts_per_page });
+    try writer.writeAll("},\"crop\":");
+    try writeOcrCrop(writer, attempt);
+    try writer.writeAll(",\"execution\":{\"duration_ms\":");
     try writer.print("{}", .{attempt.duration_ms});
     try writer.writeAll(",\"exit_code\":");
     if (attempt.exit_code) |code| try writer.print("{}", .{code}) else try writer.writeAll("null");
@@ -875,9 +912,45 @@ fn writeOcrAttemptRecord(writer: anytype, context: RenderContext, attempt: anyty
     try writer.writeByte('}');
 }
 
-fn writeOcrResponseRecord(writer: anytype, result: anytype, context: RenderContext, response_index: u32, route: anytype, event_index: ?*u64, span_lookup: ?*const SpanPageLookup) !void {
-    const response_attempt_index = lastAttemptIndex(result, route.page_index);
-    const selected_index = selectedAttemptIndex(result, route.page_index);
+fn routeRegionIndex(route: anytype) ?u32 {
+    return if (@hasField(@TypeOf(route), "region_index")) route.region_index else null;
+}
+
+fn writeOptionalIndex(writer: anytype, index: ?u32) !void {
+    if (index) |value| try writer.print("{}", .{value}) else try writer.writeAll("null");
+}
+
+fn writeOcrAttemptId(writer: anytype, attempt: anytype) !void {
+    if (attempt.region_index) |region| {
+        try writer.print("\"specialist-attempt-ocr-page-{d}-region-{d}-{d}\"", .{ attempt.page_index, region, attempt.attempt_index });
+    } else try writer.print("\"specialist-attempt-ocr-page-{d}-{d}\"", .{ attempt.page_index, attempt.attempt_index });
+}
+
+fn writeOcrScopedId(writer: anytype, prefix: []const u8, page_index: u32, region_index: ?u32) !void {
+    try writer.print("\"specialist-{s}-ocr-page-{d}", .{ prefix, page_index });
+    if (region_index) |region| try writer.print("-region-{d}", .{region});
+    try writer.writeByte('"');
+}
+
+fn writeOcrCrop(writer: anytype, attempt: anytype) !void {
+    if (attempt.crop_bbox) |bbox| {
+        try writer.writeAll("{\"bbox\":");
+        try writeBBoxJson(writer, bbox);
+        try writer.print(",\"dpi\":{},\"pixel_width\":{},\"pixel_height\":{},\"image_sha256\":", .{ attempt.dpi, attempt.pixel_width, attempt.pixel_height });
+        if (attempt.crop_image_sha256) |digest| {
+            const hex = std.fmt.bytesToHex(digest, .lower);
+            try writer.print("\"{s}\"", .{hex});
+        } else try writer.writeAll("null");
+        try writer.writeAll(",\"image_byte_length\":");
+        if (attempt.crop_image_byte_length) |length| try writer.print("{}", .{length}) else try writer.writeAll("null");
+        try writer.writeByte('}');
+    } else try writer.writeAll("null");
+}
+
+fn writeOcrResponseRecord(writer: anytype, result: anytype, context: RenderContext, route: anytype, event_index: ?*u64, span_lookup: ?*const SpanPageLookup) !void {
+    const region_index = routeRegionIndex(route);
+    const response_attempt_index = lastAttemptIndex(result, route.page_index, region_index);
+    const selected_index = selectedAttemptIndex(result, route.page_index, region_index);
     const confidence = if (response_attempt_index) |index| result.ocr_attempts[index].mean_confidence else averageFreshOcrConfidence(result, route.page_index, route.bbox, span_lookup);
     const status = if (response_attempt_index) |index| responseStatusName(result.ocr_attempts[index].status) else "not_invoked";
     try writeRecordHeader(writer, "specialist_response");
@@ -886,23 +959,25 @@ fn writeOcrResponseRecord(writer: anytype, result: anytype, context: RenderConte
         index.* += 1;
     }
     try writeDocumentFields(writer, context);
-    try writer.print(",\"page_index\":{}", .{route.page_index});
-    try writer.writeAll(",\"response_id\":\"specialist-response-ocr-");
-    try writer.print("{d}\",\"request_id\":", .{response_index});
-    try writeRequestId(writer, .ocr, route.page_index, null);
+    try writer.print(",\"page_index\":{},\"region_index\":", .{route.page_index});
+    try writeOptionalIndex(writer, region_index);
+    try writer.writeAll(",\"response_id\":");
+    try writeOcrScopedId(writer, "response", route.page_index, region_index);
+    try writer.writeAll(",\"request_id\":");
+    try writeRequestId(writer, .ocr, route.page_index, region_index);
     try writer.writeAll(",\"specialist_id\":\"");
     if (response_attempt_index) |index| try writer.writeAll(@tagName(result.ocr_attempts[index].backend)) else try writer.writeAll("none");
     try writer.writeAll("\",\"specialist_kind\":\"ocr\",\"status\":\"");
     try writer.writeAll(status);
-    try writer.print("\",\"confidence\":{d:.3},\"attempt_count\":{},\"selected_attempt_id\":", .{ confidence, attemptCountForPage(result, route.page_index) });
+    try writer.print("\",\"confidence\":{d:.3},\"attempt_count\":{},\"selected_attempt_id\":", .{ confidence, attemptCountForScope(result, route.page_index, region_index) });
     if (selected_index) |index| {
         const attempt = result.ocr_attempts[index];
-        try writer.print("\"specialist-attempt-ocr-page-{d}-{d}\"", .{ attempt.page_index, attempt.attempt_index });
+        try writeOcrAttemptId(writer, attempt);
     } else {
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"spans\":");
-    try writeSpanContextArray(writer, result, route.page_index, route.bbox, .fresh_ocr, span_lookup);
+    try writeSpanContextArray(writer, context, result, route.page_index, route.bbox, .fresh_ocr, span_lookup);
     try writer.writeAll(",\"tables\":[],\"blocks\":[],\"formulas\":[],\"entities\":[],\"debug_assets\":[],\"warnings\":[");
     if (response_attempt_index) |index| {
         const attempt = result.ocr_attempts[index];
@@ -922,9 +997,10 @@ fn writeOcrResponseRecord(writer: anytype, result: anytype, context: RenderConte
     try writer.writeByte('}');
 }
 
-fn writeOcrResultRecord(writer: anytype, result: anytype, context: RenderContext, result_index: u32, route: anytype, event_index: ?*u64, span_lookup: ?*const SpanPageLookup) !void {
+fn writeOcrResultRecord(writer: anytype, result: anytype, context: RenderContext, route: anytype, event_index: ?*u64, span_lookup: ?*const SpanPageLookup) !void {
     const confidence = averageFreshOcrConfidence(result, route.page_index, route.bbox, span_lookup);
-    const selected_index = selectedAttemptIndex(result, route.page_index) orelse return;
+    const region_index = routeRegionIndex(route);
+    const selected_index = selectedAttemptIndex(result, route.page_index, region_index) orelse return;
     const attempt = result.ocr_attempts[selected_index];
     try writeRecordHeader(writer, "specialist_result");
     if (event_index) |index| {
@@ -932,40 +1008,44 @@ fn writeOcrResultRecord(writer: anytype, result: anytype, context: RenderContext
         index.* += 1;
     }
     try writeDocumentFields(writer, context);
-    try writer.print(",\"page_index\":{},\"specialist_result_id\":\"specialist-result-ocr-{d}\",\"request_id\":", .{ route.page_index, result_index });
-    try writeRequestId(writer, .ocr, route.page_index, null);
+    try writer.print(",\"page_index\":{},\"region_index\":", .{route.page_index});
+    try writeOptionalIndex(writer, region_index);
+    try writer.writeAll(",\"specialist_result_id\":");
+    try writeOcrScopedId(writer, "result", route.page_index, region_index);
+    try writer.writeAll(",\"request_id\":");
+    try writeRequestId(writer, .ocr, route.page_index, region_index);
     try writer.writeAll(",\"specialist_id\":\"");
     try writer.writeAll(@tagName(attempt.backend));
-    try writer.writeAll("\",\"specialist_kind\":\"ocr\",\"status\":\"completed\",\"source_kind\":\"fresh_ocr\",\"selected_attempt_id\":\"");
-    try writer.print("specialist-attempt-ocr-page-{d}-{d}\"", .{ attempt.page_index, attempt.attempt_index });
+    try writer.writeAll("\",\"specialist_kind\":\"ocr\",\"status\":\"completed\",\"source_kind\":\"fresh_ocr\",\"selected_attempt_id\":");
+    try writeOcrAttemptId(writer, attempt);
     try writer.print(",\"confidence\":{d:.3},\"artifact_counts\":{{\"spans\":{},\"tables\":0,\"blocks\":0,\"formulas\":0,\"entities\":0}}", .{ confidence, countFreshOcrSpans(result, route.page_index, route.bbox, span_lookup) });
     try writer.writeAll(",\"span_ids\":");
-    try writeSpanIdArray(writer, result, route.page_index, route.bbox, .fresh_ocr, span_lookup);
+    try writeSpanIdArray(writer, context, result, route.page_index, route.bbox, .fresh_ocr, span_lookup);
     try writer.writeAll(",\"table_ids\":[],\"block_ids\":[],\"formula_ids\":[],\"entity_ids\":[]");
     try writeProvenance(writer, context, "specialist-result-ocr", route.page_index, route.bbox, "fresh_ocr", confidence);
     try writer.writeByte('}');
 }
 
-fn selectedAttemptIndex(result: anytype, page_index: u32) ?usize {
+fn selectedAttemptIndex(result: anytype, page_index: u32, region_index: ?u32) ?usize {
     for (result.ocr_attempts, 0..) |attempt, index| {
-        if (attempt.page_index != page_index) continue;
+        if (attempt.page_index != page_index or attempt.region_index != region_index) continue;
         if (attempt.selected) return index;
     }
     return null;
 }
 
-fn lastAttemptIndex(result: anytype, page_index: u32) ?usize {
+fn lastAttemptIndex(result: anytype, page_index: u32, region_index: ?u32) ?usize {
     var last_index: ?usize = null;
     for (result.ocr_attempts, 0..) |attempt, index| {
-        if (attempt.page_index == page_index) last_index = index;
+        if (attempt.page_index == page_index and attempt.region_index == region_index) last_index = index;
     }
     return last_index;
 }
 
-fn attemptCountForPage(result: anytype, page_index: u32) usize {
+fn attemptCountForScope(result: anytype, page_index: u32, region_index: ?u32) usize {
     var count: usize = 0;
     for (result.ocr_attempts) |attempt| {
-        if (attempt.page_index == page_index) count += 1;
+        if (attempt.page_index == page_index and attempt.region_index == region_index) count += 1;
     }
     return count;
 }
@@ -988,6 +1068,12 @@ fn diagnosticMessage(code: anytype) []const u8 {
         .rasterizer_failed => "OCR rasterizer exited unsuccessfully",
         .rasterizer_timeout => "OCR rasterizer timed out",
         .rasterizer_output_limit => "OCR rasterizer exceeded its output limit",
+        .rasterizer_pixel_limit => "OCR raster image exceeded its pixel limit",
+        .rasterizer_image_byte_limit => "OCR raster image exceeded its byte limit",
+        .rasterizer_rotation_unsupported => "Regional OCR does not support this page rotation",
+        .invalid_crop_geometry => "Regional OCR crop geometry is invalid",
+        .ocr_region_limit => "OCR region count exceeded its page limit",
+        .ocr_attempt_limit => "OCR attempt count exceeded its page limit",
         .invalid_raster_image => "OCR rasterizer produced an invalid image",
         .tesseract_unavailable => "Tesseract executable is unavailable",
         .tesseract_failed => "Tesseract exited unsuccessfully",
@@ -1013,19 +1099,14 @@ fn writeDiagnosticRecord(writer: anytype, code: anytype, stderr_excerpt: []const
 }
 
 fn requestKindCount(route: complexity.RouteDecision, reason_mask: u32) usize {
-    return if (primaryRegionKind(route, reason_mask) == null) 0 else 1;
+    return @as(usize, @intFromBool(routeNeedsKindOrReason(route, .ocr, reason_mask))) + @as(usize, @intFromBool(primaryRegionKind(route, reason_mask) != null));
 }
 
-fn primaryRequestKind(route: complexity.RouteDecision, reason_mask: u32) ?SpecialistKind {
-    if (routeNeedsKindOrReason(route, .ocr, reason_mask)) return .ocr;
-    return primaryRegionKind(route, reason_mask);
-}
-
-fn requestKindForScope(route: complexity.RouteDecision, reason_mask: u32, region_index: ?u32) ?SpecialistKind {
-    if (region_index == null) {
-        return if (routeNeedsKindOrReason(route, .ocr, reason_mask)) .ocr else null;
-    }
-    return primaryRequestKind(route, reason_mask);
+fn requestKindsForScope(route: complexity.RouteDecision, reason_mask: u32, region_index: ?u32) [2]?SpecialistKind {
+    return .{
+        if (routeNeedsKindOrReason(route, .ocr, reason_mask)) .ocr else null,
+        if (region_index != null) primaryRegionKind(route, reason_mask) else null,
+    };
 }
 
 fn primaryRegionKind(route: complexity.RouteDecision, reason_mask: u32) ?SpecialistKind {
@@ -1048,7 +1129,7 @@ fn routeNeedsKind(route: complexity.RouteDecision, kind: SpecialistKind) bool {
 fn routeNeedsKindOrReason(route: complexity.RouteDecision, kind: SpecialistKind, reason_mask: u32) bool {
     if (routeNeedsKind(route, kind)) return true;
     return switch (kind) {
-        .ocr => hasReason(reason_mask, 9) or hasReason(reason_mask, 2),
+        .ocr => hasReason(reason_mask, 9),
         .table => hasReason(reason_mask, 11) or hasReason(reason_mask, 7),
         .formula => hasReason(reason_mask, 12) or hasReason(reason_mask, 8),
         .layout => hasReason(reason_mask, 10) or hasReason(reason_mask, 6),
@@ -1186,59 +1267,79 @@ fn writeRequestedOutputs(writer: anytype, kind: SpecialistKind) !void {
 
 const SpanFilter = enum { all, fresh_ocr, formula_model };
 
-fn writeSpanIdArray(writer: anytype, result: anytype, page_index: u32, bbox: layout.BBox, filter: SpanFilter, span_lookup: ?*const SpanPageLookup) !void {
+fn writeSpanIdArray(writer: anytype, context: RenderContext, result: anytype, page_index: u32, bbox: layout.BBox, filter: SpanFilter, span_lookup: ?*const SpanPageLookup) !void {
     try writer.writeByte('[');
     var first = true;
     const range = spanScanRange(result, page_index, span_lookup);
     for (result.reconciled.spans[range.start..range.end], range.start..) |span, index| {
         if (!includeSpan(span, page_index, bbox, filter)) continue;
         if (!first) try writer.writeByte(',');
-        try writer.print("\"span-{d}\"", .{index});
+        try writer.print("\"span-{d}\"", .{context.span_base + @as(u32, @intCast(index))});
         first = false;
     }
     try writer.writeByte(']');
 }
 
-fn writeSpanContextArray(writer: anytype, result: anytype, page_index: u32, bbox: layout.BBox, filter: SpanFilter, span_lookup: ?*const SpanPageLookup) !void {
+pub fn writePaintEvidence(writer: anytype, paint: layout.PaintEvidence) !void {
+    try writer.writeAll(",\"paint\":{\"rendering_mode\":");
+    if (paint.rendering_mode) |mode| try writer.print("{}", .{mode}) else try writer.writeAll("null");
+    try writer.print(",\"paint_state\":\"{s}\",\"clip_state\":\"{s}\",\"clip_bbox\":", .{ @tagName(paint.paint_state), @tagName(paint.clip_state) });
+    if (paint.clip_bbox) |bbox| try writeBBoxJson(writer, bbox) else try writer.writeAll("null");
+    try writer.writeByte('}');
+}
+
+pub fn writeContentScope(writer: anytype, scope: ?@import("form_scope.zig").Scope) !void {
+    try writer.writeAll(",\"content_scope\":");
+    if (scope) |value| {
+        try writer.print("{{\"page_index\":{},\"stream_object_num\":", .{value.page_index});
+        if (value.stream_object_num) |number| try writer.print("{}", .{number}) else try writer.writeAll("null");
+        try writer.print(",\"stream_generation\":{},\"invocation_index\":{}}}", .{ value.stream_generation, value.invocation_index });
+    } else try writer.writeAll("null");
+}
+
+fn writeSpanContextArray(writer: anytype, context: RenderContext, result: anytype, page_index: u32, bbox: layout.BBox, filter: SpanFilter, span_lookup: ?*const SpanPageLookup) !void {
     try writer.writeByte('[');
     var first = true;
     const range = spanScanRange(result, page_index, span_lookup);
     for (result.reconciled.spans[range.start..range.end], range.start..) |span, index| {
         if (!includeSpan(span, page_index, bbox, filter)) continue;
         if (!first) try writer.writeByte(',');
-        try writer.print("{{\"span_id\":\"span-{d}\",\"text\":\"", .{index});
+        try writer.print("{{\"span_id\":\"span-{d}\",\"text\":\"", .{context.span_base + @as(u32, @intCast(index))});
         try writeJsonEscaped(writer, span.span.text);
         try writer.writeAll("\",\"bbox\":");
         try writeBBoxJson(writer, span.span.bbox);
         try writer.writeAll(",\"source_kind\":\"");
         try writer.writeAll(sourceKindName(span.chosen_source));
-        try writer.print("\",\"confidence\":{d:.3}}}", .{span.confidence});
+        try writer.print("\",\"confidence\":{d:.3}", .{span.confidence});
+        try writePaintEvidence(writer, span.span.paint);
+        try writeContentScope(writer, span.span.content_scope);
+        try writer.writeByte('}');
         first = false;
     }
     try writer.writeByte(']');
 }
 
-fn writeBlockIdArray(writer: anytype, result: anytype, page_index: u32, bbox: layout.BBox, block_lookup: ?*const BlockPageLookup) !void {
+fn writeBlockIdArray(writer: anytype, context: RenderContext, result: anytype, page_index: u32, bbox: layout.BBox, block_lookup: ?*const BlockPageLookup) !void {
     try writer.writeByte('[');
     var first = true;
     const range = blockScanRange(result, page_index, block_lookup);
     for (result.reconciled.blocks[range.start..range.end]) |block| {
         if (block.page_index != page_index or !boxesIntersect(block.bbox, bbox)) continue;
         if (!first) try writer.writeByte(',');
-        try writer.print("\"block-{d}\"", .{block.id});
+        try writer.print("\"block-{d}\"", .{context.block_base + block.id});
         first = false;
     }
     try writer.writeByte(']');
 }
 
-fn writeBlockContextArray(writer: anytype, result: anytype, page_index: u32, bbox: layout.BBox, block_lookup: ?*const BlockPageLookup) !void {
+fn writeBlockContextArray(writer: anytype, context: RenderContext, result: anytype, page_index: u32, bbox: layout.BBox, block_lookup: ?*const BlockPageLookup) !void {
     try writer.writeByte('[');
     var first = true;
     const range = blockScanRange(result, page_index, block_lookup);
     for (result.reconciled.blocks[range.start..range.end]) |block| {
         if (block.page_index != page_index or !boxesIntersect(block.bbox, bbox)) continue;
         if (!first) try writer.writeByte(',');
-        try writeBlockContext(writer, block, block.id);
+        try writeBlockContext(writer, block, context.block_base + block.id);
         first = false;
     }
     try writer.writeByte(']');
@@ -1290,7 +1391,7 @@ fn includeSpan(span: anytype, page_index: u32, bbox: layout.BBox, filter: SpanFi
     if (span.span.page_index != page_index or !boxesIntersect(span.span.bbox, bbox)) return false;
     return switch (filter) {
         .all => true,
-        .fresh_ocr => span.chosen_source == .fresh_ocr or span.span.source == .fresh_ocr,
+        .fresh_ocr => reconcile.hasSource(span.source_mask, .fresh_ocr),
         .formula_model => span.chosen_source == .formula_model or span.span.source == .formula_model,
     };
 }
@@ -1474,6 +1575,29 @@ test "specialist route metadata records stable ids" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "specialist-request-formula-region-7") == null);
 }
 
+test "mixed OCR and specialist route metadata names both emitted requests" {
+    for ([_]complexity.RouteDecision{
+        .{ .needs_ocr = true, .needs_table_model = true },
+        .{ .needs_ocr = true, .needs_formula_model = true },
+        .{ .needs_ocr = true, .needs_layout_model = true },
+    }, [_][]const u8{ "table", "formula", "layout" }) |route, kind| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        const writer = runtime.arrayListWriter(&output, std.testing.allocator);
+        try writer.writeAll("{\"route\":true");
+        try writeRouteTraceSpecialistFields(writer, route, 2, 7);
+        try writer.writeByte('}');
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output.items, .{});
+        defer parsed.deinit();
+        const ids = parsed.value.object.get("specialist_request_ids").?.array.items;
+        try std.testing.expectEqual(@as(usize, 2), ids.len);
+        try std.testing.expectEqualStrings("specialist-request-ocr-region-7", ids[0].string);
+        const second = try std.fmt.allocPrint(std.testing.allocator, "specialist-request-{s}-region-7", .{kind});
+        defer std.testing.allocator.free(second);
+        try std.testing.expectEqualStrings(second, ids[1].string);
+    }
+}
+
 test "entity request writer exposes entity protocol shape" {
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(std.testing.allocator);
@@ -1501,6 +1625,49 @@ test "region routing consolidates table formula and layout to one request" {
     };
     try std.testing.expectEqual(@as(usize, 1), requestKindCount(route, 0));
     try std.testing.expectEqual(SpecialistKind.table, primaryRegionKind(route, 0).?);
+}
+
+test "mixed trace fallback emits each request once with matching count and links" {
+    const Route = struct {
+        page_index: u32,
+        region_index: u32 = 7,
+        bbox: layout.BBox,
+        route: complexity.RouteDecision,
+        reason_mask: u32 = 0,
+        signals: complexity.SignalScores = .{},
+    };
+    const Trace = struct {
+        page_index: u32,
+        region_index: ?u32,
+        route: complexity.RouteDecision,
+        reason_mask: u32 = 0,
+    };
+    const route = complexity.RouteDecision{ .needs_ocr = true, .needs_table_model = true };
+    const traces = [_]Trace{
+        .{ .page_index = 2, .region_index = 7, .route = route },
+        .{ .page_index = 2, .region_index = 7, .route = route },
+    };
+    const result = .{
+        .page_routes = @as([]const Route, &.{}),
+        .region_routes = @as([]const Route, &.{}),
+        .trace_records = &traces,
+        .reconciled = .{
+            .spans = @as([]const reconcile.ReconciledSpan, &.{}),
+            .blocks = @as([]const reconcile.ReconciledBlock, &.{}),
+        },
+    };
+    try std.testing.expectEqual(@as(usize, 2), countRequests(&result));
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try writeRequestsArray(runtime.arrayListWriter(&output, std.testing.allocator), &result, .{});
+    const json = try std.fmt.allocPrint(std.testing.allocator, "[{s}]", .{output.items});
+    defer std.testing.allocator.free(json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    const requests = parsed.value.array.items;
+    try std.testing.expectEqual(@as(usize, 2), requests.len);
+    try std.testing.expectEqualStrings("specialist-request-ocr-region-7", requests[0].object.get("request_id").?.string);
+    try std.testing.expectEqualStrings("specialist-request-table-region-7", requests[1].object.get("request_id").?.string);
 }
 
 test "page specialist request writer scopes requests and spans to page" {

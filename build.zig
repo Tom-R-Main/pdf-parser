@@ -437,6 +437,28 @@ pub fn build(b: *std.Build) void {
     });
     benchmark_eval_step.dependOn(&benchmark_font_quality_cmd.step);
 
+    // Native decoding and adaptive reconstruction are separate quality lanes.
+    // Both must satisfy the same text floors before public artifacts qualify.
+    const benchmark_adaptive_quality_cmd = b.addRunArtifact(exe);
+    benchmark_adaptive_quality_cmd.step.dependOn(b.getInstallStep());
+    benchmark_adaptive_quality_cmd.addArgs(&.{
+        "benchmark",            "--manifest",                 "benchmark/eval/gates/born-digital.tsv",
+        "--suite-id",           "adaptive-born-digital-gate", "--tools",
+        "pdf-parser:adaptive",  "--thresholds",               "benchmark/eval/gates/born-digital-thresholds.json",
+        "--fail-on-regression", "--fail-on-skipped",
+    });
+    benchmark_eval_step.dependOn(&benchmark_adaptive_quality_cmd.step);
+
+    const benchmark_adaptive_font_quality_cmd = b.addRunArtifact(exe);
+    benchmark_adaptive_font_quality_cmd.step.dependOn(b.getInstallStep());
+    benchmark_adaptive_font_quality_cmd.addArgs(&.{
+        "benchmark",            "--manifest",              "benchmark/eval/gates/hard-fonts.tsv",
+        "--suite-id",           "adaptive-hard-font-gate", "--tools",
+        "pdf-parser:adaptive",  "--thresholds",            "benchmark/eval/gates/hard-fonts-thresholds.json",
+        "--fail-on-regression", "--fail-on-skipped",
+    });
+    benchmark_eval_step.dependOn(&benchmark_adaptive_font_quality_cmd.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_simd_unit_tests.step);

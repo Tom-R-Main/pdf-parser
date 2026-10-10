@@ -10,6 +10,7 @@
 //! 5. Explicit error budgets - caller controls tolerance
 
 const std = @import("std");
+const form_scope = @import("form_scope.zig");
 const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const native_os = builtin.target.os.tag;
@@ -122,10 +123,14 @@ pub const NativePageGeometry = struct {
     allocator: std.mem.Allocator,
     spans: []TextSpan,
     glyphs: []GlyphSpan,
+    // Authoritative semantic projection, when marked content replaces glyph
+    // text. Raw glyphs remain available for diagnostic evidence.
+    semantic_glyphs: ?[]GlyphSpan = null,
 
     pub fn deinit(self: *NativePageGeometry) void {
         Document.freeTextSpans(self.allocator, self.spans);
         Document.freeGlyphSpans(self.allocator, self.glyphs);
+        if (self.semantic_glyphs) |glyphs| Document.freeGlyphSpans(self.allocator, glyphs);
     }
 };
 
@@ -932,7 +937,9 @@ pub const Document = struct {
 
         {
             var nw: NullWriter = .{};
-            try extractContentStream(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &nw);
+            var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
+            const context = self.contentContext(page_num, scratch_allocator, &traversal);
+            try extractContentStreamContext(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &nw, &context);
         }
         try collector.flush();
 
@@ -974,14 +981,18 @@ pub const Document = struct {
         var collector = interpreter.SpanCollector.init(allocator, @intCast(page_num));
         errdefer collector.deinit();
         var null_writer: NullWriter = .{};
-        try extractContentStream(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &null_writer);
+        var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
+        const context = self.contentContext(page_num, scratch_allocator, &traversal);
+        try extractContentStreamContext(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &null_writer, &context);
         try collector.flush();
 
         const spans = try collector.toOwnedSlice();
         errdefer Document.freeTextSpans(allocator, spans);
+        const semantic_glyphs = if (collector.actual_text_runs.items.len > 0) try collector.toOwnedSemanticGlyphSlice() else null;
+        errdefer if (semantic_glyphs) |glyphs| Document.freeGlyphSpans(allocator, glyphs);
         const glyphs = try collector.toOwnedGlyphSlice();
         collector.deinit();
-        return .{ .allocator = allocator, .spans = spans, .glyphs = glyphs };
+        return .{ .allocator = allocator, .spans = spans, .glyphs = glyphs, .semantic_glyphs = semantic_glyphs };
     }
 
     /// Glyph-first native layout for a page. The raw recall text is used only
@@ -997,12 +1008,29 @@ pub const Document = struct {
         var geometry = try self.extractNativePageGeometryFromContent(page_num, allocator, scratch_allocator, content);
         defer geometry.deinit();
         const page = self.pages.items[page_num];
-        return native_layout.analyze(allocator, geometry.glyphs, .{
+        return native_layout.analyze(allocator, geometry.semantic_glyphs orelse geometry.glyphs, .{
             .x0 = page.media_box[0],
             .y0 = page.media_box[1],
             .x1 = page.media_box[2],
             .y1 = page.media_box[3],
         }, raw);
+    }
+
+    fn contentContext(self: *Document, page_num: usize, scratch_allocator: std.mem.Allocator, traversal: *form_scope.Traversal) ExtractionContext {
+        return .{
+            .parse_allocator = self.parsing_arena.allocator(),
+            .scratch_allocator = scratch_allocator,
+            .data = self.data,
+            .xref_table = &self.xref_table,
+            .object_cache = &self.object_cache,
+            .font_cache = &self.font_cache,
+            .page_num = page_num,
+            .depth = 0,
+            .security = self.securityHandler(),
+            .resources = self.pages.items[page_num].resources,
+            .traversal = traversal,
+            .scope = form_scope.Scope.page(@intCast(page_num)),
+        };
     }
 
     /// Analyze page layout (columns, paragraphs, reading order)
@@ -1232,7 +1260,9 @@ pub const Document = struct {
 
                 {
                     var nw: NullWriter = .{};
-                    extractContentStream(content, .{ .structured = &extractor }, &self.font_cache, page_num, scratch_allocator, &nw) catch |err| {
+                    var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
+                    const context = self.contentContext(page_num, scratch_allocator, &traversal);
+                    extractContentStreamContext(content, .{ .structured = &extractor }, &self.font_cache, page_num, scratch_allocator, &nw, &context) catch |err| {
                         if (err == error.OutOfMemory) return err;
                         if (full_context_text) |inventory| {
                             full_context_text = null;
@@ -1253,7 +1283,7 @@ pub const Document = struct {
                 try result.ensureTotalCapacity(allocator, mcids.items.len * 50);
 
                 for (mcids.items) |mcr| {
-                    if (extractor.getTextForMcid(mcr.mcid)) |text| {
+                    if (extractor.getTextForScopedMcid(mcr.stream_ref, mcr.mcid)) |text| {
                         if (result.items.len > 0 and text.len > 0) {
                             try result.append(allocator, ' ');
                         }
@@ -1483,7 +1513,9 @@ pub const Document = struct {
 
     fn extractTextStreamOrderFromContentInto(self: *Document, page_num: usize, scratch_allocator: std.mem.Allocator, content: []const u8, writer: anytype) !void {
         self.ensurePageFonts(page_num);
-        try extractTextFromContent(scratch_allocator, content, page_num, &self.font_cache, writer);
+        var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
+        const context = self.contentContext(page_num, scratch_allocator, &traversal);
+        try extractContentStreamContext(content, .{ .stream = .{ .resources = context.resources, .ctx = &context } }, &self.font_cache, page_num, scratch_allocator, writer, &context);
     }
 
     fn extractTextNativeLayoutFromContent(
@@ -1498,7 +1530,7 @@ pub const Document = struct {
         var geometry = try self.extractNativePageGeometryFromContent(page_num, allocator, scratch_allocator, content);
         defer geometry.deinit();
         const page = self.pages.items[page_num];
-        var native_result = try native_layout.analyze(allocator, geometry.glyphs, .{
+        var native_result = try native_layout.analyze(allocator, geometry.semantic_glyphs orelse geometry.glyphs, .{
             .x0 = page.media_box[0],
             .y0 = page.media_box[1],
             .x1 = page.media_box[2],
@@ -1549,6 +1581,7 @@ pub const Document = struct {
         content: []const u8,
         selection_metrics: ?*StructuredSelectionMetrics,
     ) ![]u8 {
+        self.ensurePageFonts(page_num);
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(allocator);
         try output.ensureTotalCapacity(allocator, 2048);
@@ -1687,8 +1720,7 @@ pub const Document = struct {
                 ) catch continue;
 
                 if (content.len == 0) continue;
-                self.ensurePageFonts(page_num);
-                try extractTextFromContent(scratch_allocator, content, page_num, &self.font_cache, runtime.arrayListWriter(&result, allocator));
+                try self.extractTextStreamOrderFromContentInto(page_num, scratch_allocator, content, runtime.arrayListWriter(&result, allocator));
             }
         }
 
@@ -2261,11 +2293,12 @@ pub const Document = struct {
             };
             if (geometry) |*page_geometry| {
                 defer page_geometry.deinit();
+                const canonical_glyphs = page_geometry.semantic_glyphs orelse page_geometry.glyphs;
                 const raw_or_empty: []const u8 = if (raw) |raw_text| raw_text else "";
                 const page = self.pages.items[page_idx];
                 var native_result = native_layout.analyze(
                     allocator,
-                    page_geometry.glyphs,
+                    canonical_glyphs,
                     .{
                         .x0 = page.media_box[0],
                         .y0 = page.media_box[1],
@@ -2286,7 +2319,7 @@ pub const Document = struct {
                     defer result.deinit();
                     var reading_source = try buildGlyphSearchSource(
                         allocator,
-                        page_geometry.glyphs,
+                        canonical_glyphs,
                         result.ordered_glyph_indices,
                         result.boundaries,
                     );
@@ -2311,7 +2344,7 @@ pub const Document = struct {
 
                 var content_source = try buildGlyphSearchSource(
                     allocator,
-                    page_geometry.glyphs,
+                    canonical_glyphs,
                     null,
                     null,
                 );
@@ -2486,7 +2519,7 @@ pub const Document = struct {
             try evidence.append(allocator, .{
                 .source_start = source_start,
                 .source_end = text.items.len,
-                .glyph_index = glyph_index,
+                .glyph_index = if (glyph.semantic_replacement) null else glyph.raw_glyph_start orelse glyph_index,
                 .bbox = glyph.bbox,
             });
         }
@@ -3177,16 +3210,45 @@ pub const Document = struct {
 
     pub fn rasterizePageForOcrDetailed(self: *Document, allocator: std.mem.Allocator, page_idx: usize, config: ocr.OcrConfig) !ocr.RasterizeOutcome {
         if (page_idx >= self.pages.items.len) return error.PageNotFound;
+        const page = self.pages.items[page_idx];
+        return self.rasterizeOcrDetailed(allocator, page_idx, .{ .x0 = page.media_box[0], .y0 = page.media_box[1], .x1 = page.media_box[2], .y1 = page.media_box[3] }, config, false);
+    }
+
+    /// Caller owns the ephemeral image path and must delete and free it after
+    /// recognition. Rotated pages are unsupported until coordinate mapping is
+    /// fixture-proven. Limits bound accepted raster pixels/bytes, not process RSS.
+    pub fn rasterizeOcrRegionDetailed(self: *Document, allocator: std.mem.Allocator, page_idx: usize, bbox: layout.BBox, config: ocr.OcrConfig) !ocr.RasterizeOutcome {
+        return self.rasterizeOcrDetailed(allocator, page_idx, bbox, config, true);
+    }
+
+    fn rasterizeOcrDetailed(self: *Document, allocator: std.mem.Allocator, page_idx: usize, bbox: layout.BBox, config: ocr.OcrConfig, regional: bool) !ocr.RasterizeOutcome {
+        if (page_idx >= self.pages.items.len) return error.PageNotFound;
         const source_path = self.source_path orelse return .{
             .status = .unavailable,
             .diagnostic_code = .rasterizer_requires_file,
         };
+
+        const page = self.pages.items[page_idx];
+        if (@mod(page.rotation, 360) != 0) return .{ .status = .unavailable, .diagnostic_code = .rasterizer_rotation_unsupported };
+        const crop = @import("ocr/crop.zig");
+        const page_bbox = layout.BBox{ .x0 = page.media_box[0], .y0 = page.media_box[1], .x1 = page.media_box[2], .y1 = page.media_box[3] };
+        const geometry = crop.geometry(page_bbox, bbox, if (regional) config.crop_padding_points else 0, config.dpi) orelse return .{ .status = .invalid_output, .diagnostic_code = .invalid_crop_geometry };
+        if (!crop.withinPixelLimit(geometry.width, geometry.height, config.max_image_pixels)) return .{ .status = .invalid_output, .diagnostic_code = .rasterizer_pixel_limit };
+        if (config.max_image_bytes < 24) return .{ .status = .invalid_output, .diagnostic_code = .rasterizer_image_byte_limit };
 
         const page_number = try std.fmt.allocPrint(allocator, "{}", .{page_idx + 1});
         defer allocator.free(page_number);
 
         const dpi_arg = try std.fmt.allocPrint(allocator, "{}", .{config.dpi});
         defer allocator.free(dpi_arg);
+        const x_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.x});
+        defer allocator.free(x_arg);
+        const y_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.y});
+        defer allocator.free(y_arg);
+        const width_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.width});
+        defer allocator.free(width_arg);
+        const height_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.height});
+        defer allocator.free(height_arg);
 
         const prefix = try std.fmt.allocPrint(allocator, ".pdf-parser-ocr-{x}-{x}", .{
             page_idx,
@@ -3213,6 +3275,14 @@ pub const Document = struct {
             page_number,
             "-l",
             page_number,
+            "-x",
+            x_arg,
+            "-y",
+            y_arg,
+            "-W",
+            width_arg,
+            "-H",
+            height_arg,
             source_path,
             prefix,
         };
@@ -3227,6 +3297,14 @@ pub const Document = struct {
             page_number,
             "-l",
             page_number,
+            "-x",
+            x_arg,
+            "-y",
+            y_arg,
+            "-W",
+            width_arg,
+            "-H",
+            height_arg,
             source_path,
             prefix,
         };
@@ -3276,30 +3354,33 @@ pub const Document = struct {
             },
         }
 
-        const dimensions = readPngDimensions(allocator, image_path) catch |err| switch (err) {
+        const dimensions = crop.readIdentity(allocator, image_path, config.max_image_bytes, config.max_image_pixels) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => return .{
                 .status = .invalid_output,
                 .stderr = result.stderr,
                 .duration_ms = elapsedMilliseconds(started_ns),
-                .diagnostic_code = .invalid_raster_image,
+                .diagnostic_code = switch (err) {
+                    error.ImageByteLimitExceeded => .rasterizer_image_byte_limit,
+                    error.ImagePixelLimitExceeded => .rasterizer_pixel_limit,
+                    else => .invalid_raster_image,
+                },
             },
         };
-        const page = self.pages.items[page_idx];
+        if (regional and (dimensions.width != geometry.width or dimensions.height != geometry.height)) return .{ .status = .invalid_output, .stderr = result.stderr, .duration_ms = elapsedMilliseconds(started_ns), .diagnostic_code = .invalid_raster_image };
         keep_image_path = true;
         return .{
             .status = .completed,
             .input = .{
                 .page_index = @intCast(page_idx),
-                .pdf_bbox = .{
-                    .x0 = page.media_box[0],
-                    .y0 = page.media_box[1],
-                    .x1 = page.media_box[2],
-                    .y1 = page.media_box[3],
-                },
+                // Preserve the established full-page OCR mapping. Regional
+                // crops map through their actual outward pixel boundaries.
+                .pdf_bbox = if (regional) geometry.pdf_bbox else page_bbox,
                 .image_path = image_path,
                 .pixel_width = dimensions.width,
                 .pixel_height = dimensions.height,
+                .image_sha256 = dimensions.sha256,
+                .image_byte_length = dimensions.byte_length,
             },
             .stderr = result.stderr,
             .duration_ms = elapsedMilliseconds(started_ns),
@@ -3360,58 +3441,100 @@ pub const Document = struct {
 
         if (content.len == 0) return allocator.alloc(ImageInfo, 0);
 
-        const page = self.pages.items[page_idx];
-
         // Parse content stream for Do operators and track CTM
         var images: std.ArrayList(ImageInfo) = .empty;
         errdefer images.deinit(allocator);
+        var traversal = form_scope.Traversal{ .page_index = @intCast(page_idx) };
+        const context = self.contentContext(page_idx, scratch_allocator, &traversal);
+        try self.collectPageImagesFromContent(page_idx, allocator, scratch_allocator, content, &context, @import("paint.zig").identity, &images);
+        return images.toOwnedSlice(allocator);
+    }
+
+    fn collectPageImagesFromContent(self: *Document, page_idx: usize, allocator: std.mem.Allocator, scratch_allocator: std.mem.Allocator, content: []const u8, context: *const ExtractionContext, initial_ctm: [6]f64, images: *std.ArrayList(ImageInfo)) anyerror!void {
+        var page = self.pages.items[page_idx];
+        page.resources = context.resources;
 
         var lexer = interpreter.ContentLexer.init(scratch_allocator, content);
         var operands: [128]interpreter.Operand = undefined;
         var operand_count: usize = 0;
 
-        // Simple CTM tracking (only handles cm and basic state)
-        var ctm: [6]f64 = .{ 1, 0, 0, 1, 0, 0 }; // identity
+        const paint_mod = @import("paint.zig");
+        var ctm = initial_ctm;
+        var ctm_stack: std.ArrayList([6]f64) = .empty;
+        defer ctm_stack.deinit(allocator);
 
         while (try lexer.next()) |token| {
             if (pushOperand(&operands, &operand_count, token)) continue;
 
             const op = token.operator;
             if (op.len > 0) {
-                if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
+                if (std.mem.eql(u8, op, "q")) {
+                    try ctm_stack.append(allocator, ctm);
+                } else if (std.mem.eql(u8, op, "Q")) {
+                    if (ctm_stack.pop()) |saved| ctm = saved;
+                } else if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
                     // Concatenate matrix
                     const new: [6]f64 = .{
                         operands[0].number, operands[1].number,
                         operands[2].number, operands[3].number,
                         operands[4].number, operands[5].number,
                     };
-                    ctm = multiplyMatrix(new, ctm);
+                    ctm = paint_mod.concat(ctm, new);
                 } else if (std.mem.eql(u8, op, "Do") and operand_count >= 1 and operands[0] == .name) {
                     // Check if this XObject is an Image
                     if (self.resolveXObjectImage(page, operands[0].name)) |img_info| {
-                        // Transform unit square by CTM to get image rect
-                        const w: f64 = @floatFromInt(img_info.width);
-                        const h: f64 = @floatFromInt(img_info.height);
-                        _ = h;
-                        _ = w;
+                        // Images paint a unit square; affine transforms can
+                        // rotate, reflect or shear every corner independently.
+                        const points = [_][2]f64{
+                            transformPoint(ctm, .{ 0, 0 }),
+                            transformPoint(ctm, .{ 1, 0 }),
+                            transformPoint(ctm, .{ 0, 1 }),
+                            transformPoint(ctm, .{ 1, 1 }),
+                        };
+                        var rect = [4]f64{ points[0][0], points[0][1], points[0][0], points[0][1] };
+                        for (points[1..]) |point| {
+                            rect[0] = @min(rect[0], point[0]);
+                            rect[1] = @min(rect[1], point[1]);
+                            rect[2] = @max(rect[2], point[0]);
+                            rect[3] = @max(rect[3], point[1]);
+                        }
+                        if (context.initial.graphics.clip_bbox) |clip| {
+                            rect[0] = @max(rect[0], clip.x0);
+                            rect[1] = @max(rect[1], clip.y0);
+                            rect[2] = @min(rect[2], clip.x1);
+                            rect[3] = @min(rect[3], clip.y1);
+                            if (rect[0] >= rect[2] or rect[1] >= rect[3]) {
+                                operand_count = 0;
+                                continue;
+                            }
+                        }
                         try images.append(allocator, .{
-                            .rect = .{
-                                ctm[4], // x0
-                                ctm[5], // y0
-                                ctm[4] + ctm[0], // x1 (x0 + scale_x)
-                                ctm[5] + ctm[3], // y1 (y0 + scale_y)
-                            },
+                            .rect = rect,
                             .width = img_info.width,
                             .height = img_info.height,
                         });
+                    } else if (try resolveForm(context, operands[0].name)) |form| {
+                        const traversal = context.traversal orelse return error.MissingFormTraversal;
+                        const scope = try traversal.enter(.{ .object_num = form.reference.num, .generation = form.reference.gen });
+                        defer traversal.leave();
+                        var arena = std.heap.ArenaAllocator.init(scratch_allocator);
+                        defer arena.deinit();
+                        const scratch = arena.allocator();
+                        const form_content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
+                        var child = context.*;
+                        child.scratch_allocator = scratch;
+                        child.scope = scope;
+                        if (form.stream.dict.get("Resources")) |resource_object| child.resources = try resolveContextDict(context, resource_object);
+                        var parent_state = context.initial.graphics;
+                        parent_state.ctm = ctm;
+                        child.initial.graphics = try formGraphicsState(parent_state, form.stream.dict);
+                        try self.collectPageImagesFromContent(page_idx, allocator, scratch, form_content, &child, child.initial.graphics.ctm, images);
                     }
                 }
             }
 
             operand_count = 0;
         }
-
-        return images.toOwnedSlice(allocator);
     }
 
     fn multiplyMatrix(a: [6]f64, b: [6]f64) [6]f64 {
@@ -3845,7 +3968,7 @@ pub const Document = struct {
 
 /// Decode a PDF string that may be UTF-16BE (BOM-prefixed) into UTF-8.
 /// If the string starts with \xFE\xFF it's UTF-16BE; otherwise it's
-/// PDFDocEncoding (≈ Latin-1 for the printable range).
+/// PDFDocEncoding, including its punctuation, accents and ligatures.
 /// Caller owns the returned slice.
 pub fn decodePdfString(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     // Check for UTF-16BE BOM
@@ -3908,32 +4031,25 @@ pub fn decodePdfString(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         return result.toOwnedSlice(allocator);
     }
 
-    // Not UTF-16BE — treat as PDFDocEncoding (Latin-1 compatible for ASCII).
-    // For bytes 128-255, encode as UTF-8.
+    // Preserve the byte fast path only where PDFDocEncoding is identity.
     var needs_encoding = false;
-    for (raw) |c| {
-        if (c >= 0x80) {
+    for (raw) |byte| {
+        if (encoding.pdf_doc_encoding[byte] != byte or byte >= 0x80 or byte == 0) {
             needs_encoding = true;
             break;
         }
     }
-
-    if (!needs_encoding) {
-        return allocator.dupe(u8, raw);
-    }
+    if (!needs_encoding) return allocator.dupe(u8, raw);
 
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
-    try result.ensureTotalCapacity(allocator, raw.len * 2);
-
-    for (raw) |c| {
-        if (c < 0x80) {
-            try result.append(allocator, c);
-        } else {
-            // Latin-1 to UTF-8
-            try result.append(allocator, 0xC0 | (c >> 6));
-            try result.append(allocator, 0x80 | (c & 0x3F));
-        }
+    for (raw) |byte| {
+        const mapped = encoding.pdf_doc_encoding[byte];
+        // Zero is the table's undefined sentinel; an explicit NUL is retained.
+        const codepoint: u21 = if (mapped == 0 and byte != 0) 0xfffd else mapped;
+        var encoded: [4]u8 = undefined;
+        const length = try std.unicode.utf8Encode(codepoint, &encoded);
+        try result.appendSlice(allocator, encoded[0..length]);
     }
 
     return result.toOwnedSlice(allocator);
@@ -3951,8 +4067,22 @@ const ExtractionContext = struct {
     depth: u8, // Recursion depth for nested Form XObjects
     security: ?*const encryption.SecurityHandler,
     selection_metrics: ?*StructuredSelectionMetrics = null,
+    resources: ?Object.Dict = null,
+    traversal: ?*form_scope.Traversal = null,
+    scope: ?form_scope.Scope = null,
+    initial: FormTextState = .{},
+};
 
-    const MAX_DEPTH: u8 = 10; // Prevent infinite recursion
+const FormTextState = struct {
+    graphics: @import("paint.zig").State = .{},
+    font: ?*const encoding.FontEncoding = null,
+    font_name: ?[]const u8 = null,
+    font_size: f64 = 12,
+    leading: f64 = 0,
+    char_spacing: f64 = 0,
+    word_spacing: f64 = 0,
+    horizontal_scale: f64 = 100,
+    rise: f64 = 0,
 };
 
 const TextSelection = enum {
@@ -4010,6 +4140,7 @@ const ActualTextScope = struct {
 const PoppedActualText = struct {
     text: []u8,
     seen: bool,
+    suppressed_by_ancestor: bool,
 };
 
 /// Try to buffer a token as an operand. Returns true if consumed (not an operator).
@@ -4266,21 +4397,6 @@ fn lookupFont(
     return font_cache.getPtr(key);
 }
 
-/// Extract text from content stream using pre-resolved fonts
-fn extractTextFromContent(
-    allocator: std.mem.Allocator,
-    content: []const u8,
-    page_num: usize,
-    font_cache: *const std.StringHashMap(encoding.FontEncoding),
-    writer: anytype,
-) !void {
-    // Simple path without Form XObject support - null ctx skips Do handling
-    try extractContentStream(content, .{ .stream = .{
-        .resources = null,
-        .ctx = null,
-    } }, font_cache, page_num, allocator, writer);
-}
-
 /// Extract text with full context (supports Form XObjects)
 fn extractTextFromContentFull(
     content: []const u8,
@@ -4288,10 +4404,15 @@ fn extractTextFromContentFull(
     ctx: *const ExtractionContext,
     writer: anytype,
 ) !void {
-    try extractContentStream(content, .{ .stream = .{
+    var traversal = form_scope.Traversal{ .page_index = @intCast(ctx.page_num) };
+    var frame = ctx.*;
+    frame.resources = resources;
+    if (frame.traversal == null) frame.traversal = &traversal;
+    if (frame.scope == null) frame.scope = form_scope.Scope.page(@intCast(ctx.page_num));
+    try extractContentStreamContext(content, .{ .stream = .{
         .resources = resources,
-        .ctx = ctx,
-    } }, ctx.font_cache, ctx.page_num, ctx.scratch_allocator, writer);
+        .ctx = &frame,
+    } }, ctx.font_cache, ctx.page_num, ctx.scratch_allocator, writer, &frame);
 }
 
 /// Unified content stream extraction. All three extraction paths go through this.
@@ -4303,25 +4424,65 @@ fn extractContentStream(
     allocator: std.mem.Allocator,
     writer: anytype,
 ) !void {
+    try extractContentStreamContext(content, mode, font_cache, page_num, allocator, writer, if (mode == .stream) mode.stream.ctx else null);
+}
+
+fn extractContentStreamContext(
+    content: []const u8,
+    mode: ExtractionMode,
+    font_cache: *const std.StringHashMap(encoding.FontEncoding),
+    page_num: usize,
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    context: ?*const ExtractionContext,
+) anyerror!void {
+    const initial = if (context) |ctx| ctx.initial else FormTextState{};
     var lexer = interpreter.ContentLexer.init(allocator, content);
     var operands: [128]interpreter.Operand = undefined;
     var operand_count: usize = 0;
 
-    var current_font: ?*const encoding.FontEncoding = null;
+    var current_font: ?*const encoding.FontEncoding = initial.font;
+    var current_font_name: ?[]const u8 = initial.font_name;
     var prev_x: f64 = 0;
     var prev_y: f64 = 0;
     var current_x: f64 = 0;
     var current_y: f64 = 0;
     var line_start_x: f64 = 0;
     var line_start_y: f64 = 0;
-    var font_size: f64 = 12;
-    var text_leading: f64 = 0;
-    var char_spacing: f64 = 0;
-    var word_spacing: f64 = 0;
-    var horizontal_scale: f64 = 100;
-    var text_rise: f64 = 0;
+    var font_size: f64 = initial.font_size;
+    var text_leading: f64 = initial.leading;
+    var char_spacing: f64 = initial.char_spacing;
+    var word_spacing: f64 = initial.word_spacing;
+    var horizontal_scale: f64 = initial.horizontal_scale;
+    var text_rise: f64 = initial.rise;
     var text_matrix: [6]f64 = .{ 1, 0, 0, 1, 0, 0 };
     var in_text = false;
+    const paint_mod = @import("paint.zig");
+    const inherited_actual_text = if (mode == .bounds) mode.bounds.current_actual_text else null;
+    var paint_tracker: paint_mod.Tracker = .{ .state = initial.graphics };
+    defer paint_tracker.deinit(allocator);
+    const SavedTextState = struct {
+        font: ?*const encoding.FontEncoding,
+        font_name: ?[]const u8,
+        font_size: f64,
+        leading: f64,
+        char_spacing: f64,
+        word_spacing: f64,
+        horizontal_scale: f64,
+        rise: f64,
+    };
+    var saved_text_states: std.ArrayList(SavedTextState) = .empty;
+    defer saved_text_states.deinit(allocator);
+    if (mode == .bounds) {
+        const collector = mode.bounds;
+        collector.setGraphicsState(paint_tracker.state);
+        if (context) |ctx| collector.setContentScope(ctx.scope);
+        collector.setFont(initial.font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
+        collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
+        collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
+        collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+        collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
+    }
     // Track the font size of the last shown text for newline threshold.
     // Superscripts/subscripts switch to a smaller Tf *before* their Tm, so
     // using raw font_size would make the threshold too small and produce
@@ -4346,6 +4507,148 @@ fn extractContentStream(
 
         // token is an operator
         const op = token.operator;
+        var named_properties: [4]interpreter.Operand = undefined;
+        if (std.mem.eql(u8, op, "BDC") and operand_count == 2 and operands[1] == .name) {
+            const ctx = context orelse return error.MissingMarkedContentResources;
+            const resources = ctx.resources orelse return error.MissingMarkedContentResources;
+            const properties = try resolveContextDict(ctx, resources.get("Properties") orelse return error.MissingMarkedContentProperty);
+            const property = try resolveContextDict(ctx, properties.get(operands[1].name) orelse return error.MissingMarkedContentProperty);
+            var count: usize = 0;
+            if (property.get("ActualText")) |value| {
+                named_properties[count] = .{ .name = "ActualText" };
+                named_properties[count + 1] = switch (try resolveContextObject(ctx, value)) {
+                    .string => |text| .{ .string = text },
+                    .hex_string => |text| .{ .hex_string = text },
+                    else => return error.InvalidMarkedContentProperty,
+                };
+                count += 2;
+            }
+            if (property.get("MCID")) |value| {
+                const mcid = switch (try resolveContextObject(ctx, value)) {
+                    .integer => |number| number,
+                    else => return error.InvalidMarkedContentProperty,
+                };
+                if (mcid < 0 or mcid > std.math.maxInt(i32)) return error.InvalidMarkedContentProperty;
+                named_properties[count] = .{ .name = "MCID" };
+                named_properties[count + 1] = .{ .number = @floatFromInt(mcid) };
+                count += 2;
+            }
+            operands[1] = .{ .array = named_properties[0..count] };
+        }
+        const glyph_count_before = if (mode == .bounds) mode.bounds.glyphs.items.len else 0;
+        if (mode != .bounds) {
+            if (std.mem.eql(u8, op, "q")) {
+                try paint_tracker.save(allocator);
+                try saved_text_states.append(allocator, .{
+                    .font = current_font,
+                    .font_name = current_font_name,
+                    .font_size = font_size,
+                    .leading = text_leading,
+                    .char_spacing = char_spacing,
+                    .word_spacing = word_spacing,
+                    .horizontal_scale = horizontal_scale,
+                    .rise = text_rise,
+                });
+            } else if (std.mem.eql(u8, op, "Q")) {
+                paint_tracker.restore();
+                if (saved_text_states.pop()) |saved| {
+                    current_font = saved.font;
+                    current_font_name = saved.font_name;
+                    font_size = saved.font_size;
+                    text_leading = saved.leading;
+                    char_spacing = saved.char_spacing;
+                    word_spacing = saved.word_spacing;
+                    horizontal_scale = saved.horizontal_scale;
+                    text_rise = saved.rise;
+                }
+            } else if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
+                var matrix: [6]f64 = undefined;
+                for (operands[0..6], &matrix) |operand, *value| {
+                    value.* = operand.asNumber();
+                    if (operand != .number or !std.math.isFinite(value.*)) return error.InvalidFormMatrix;
+                }
+                paint_tracker.state.ctm = paint_mod.concat(paint_tracker.state.ctm, matrix);
+            }
+        }
+        if (mode == .bounds) {
+            const collector = mode.bounds;
+            if (std.mem.eql(u8, op, "q")) {
+                try collector.flush();
+                try paint_tracker.save(allocator);
+                try saved_text_states.append(allocator, .{
+                    .font = current_font,
+                    .font_name = collector.current_font_name,
+                    .font_size = font_size,
+                    .leading = text_leading,
+                    .char_spacing = char_spacing,
+                    .word_spacing = word_spacing,
+                    .horizontal_scale = horizontal_scale,
+                    .rise = text_rise,
+                });
+            } else if (std.mem.eql(u8, op, "Q")) {
+                try collector.flush();
+                paint_tracker.restore();
+                if (saved_text_states.pop()) |saved| {
+                    current_font = saved.font;
+                    current_font_name = saved.font_name;
+                    font_size = saved.font_size;
+                    text_leading = saved.leading;
+                    char_spacing = saved.char_spacing;
+                    word_spacing = saved.word_spacing;
+                    horizontal_scale = saved.horizontal_scale;
+                    text_rise = saved.rise;
+                    collector.setFont(saved.font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
+                    collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
+                    collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
+                    collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+                    collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
+                }
+            } else if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
+                try collector.flush();
+                var valid = true;
+                for (operands[0..6]) |operand| {
+                    if (operand != .number or !std.math.isFinite(operand.asNumber())) valid = false;
+                }
+                const next_ctm = paint_mod.concat(paint_tracker.state.ctm, .{
+                    operands[0].asNumber(), operands[1].asNumber(), operands[2].asNumber(),
+                    operands[3].asNumber(), operands[4].asNumber(), operands[5].asNumber(),
+                });
+                for (next_ctm) |value| {
+                    if (!std.math.isFinite(value)) valid = false;
+                }
+                if (valid) paint_tracker.state.ctm = next_ctm else paint_tracker.state.geometry_known = false;
+            } else if (std.mem.eql(u8, op, "cm")) {
+                try collector.flush();
+                paint_tracker.state.geometry_known = false;
+            } else if (std.mem.eql(u8, op, "Tr") and operand_count >= 1) {
+                try collector.flush();
+                const value = operands[0].asNumber();
+                paint_tracker.state.rendering_mode = if (operands[0] == .number and std.math.isFinite(value) and value >= 0 and value <= 7 and @floor(value) == value) @intFromFloat(value) else null;
+            } else if (std.mem.eql(u8, op, "Tr")) {
+                try collector.flush();
+                paint_tracker.state.rendering_mode = null;
+            } else if (std.mem.eql(u8, op, "re") and operand_count >= 4) {
+                var valid = true;
+                for (operands[0..4]) |operand| {
+                    if (operand != .number or !std.math.isFinite(operand.asNumber())) valid = false;
+                }
+                if (valid) paint_tracker.rectangle(operands[0].asNumber(), operands[1].asNumber(), operands[2].asNumber(), operands[3].asNumber()) else paint_tracker.path_unknown = true;
+            } else if (std.mem.eql(u8, op, "re")) {
+                paint_tracker.path_unknown = true;
+            } else if (std.mem.eql(u8, op, "W") or std.mem.eql(u8, op, "W*")) {
+                paint_tracker.pending_clip = true;
+            } else if (std.mem.eql(u8, op, "m") or std.mem.eql(u8, op, "l") or std.mem.eql(u8, op, "c") or std.mem.eql(u8, op, "v") or std.mem.eql(u8, op, "y")) {
+                paint_tracker.path_unknown = true;
+                paint_tracker.path_rect = null;
+            } else if (std.mem.eql(u8, op, "n") or std.mem.eql(u8, op, "S") or std.mem.eql(u8, op, "s") or std.mem.eql(u8, op, "f") or std.mem.eql(u8, op, "F") or std.mem.eql(u8, op, "f*") or std.mem.eql(u8, op, "B") or std.mem.eql(u8, op, "B*") or std.mem.eql(u8, op, "b") or std.mem.eql(u8, op, "b*")) {
+                if (paint_tracker.pending_clip) try collector.flush();
+                paint_tracker.endPath();
+            } else if (std.mem.eql(u8, op, "ET")) {
+                try collector.flush();
+                paint_tracker.endText();
+            }
+            collector.setGraphicsState(paint_tracker.state);
+        }
         if (op.len > 0) switch (op[0]) {
             'B' => switch (mode) {
                 .stream => {
@@ -4357,6 +4660,7 @@ fn extractContentStream(
                         current_y = 0;
                         line_start_x = 0;
                         line_start_y = 0;
+                        text_matrix = .{ 1, 0, 0, 1, 0, 0 };
                     } else if (std.mem.eql(u8, op, "BDC")) {
                         try pushActualTextScope(allocator, &actual_text_scopes, &actual_text_depth, operands[0..operand_count], if (operand_count >= 2) 1 else 0);
                     } else if (std.mem.eql(u8, op, "BMC")) {
@@ -4376,12 +4680,12 @@ fn extractContentStream(
                     } else if (std.mem.eql(u8, op, "BDC")) {
                         try pushActualTextScope(allocator, &actual_text_scopes, &actual_text_depth, operands[0..operand_count], if (operand_count >= 2) 1 else 0);
                         try collector.flush();
-                        try collector.setActualText(currentActualText(actual_text_scopes[0..actual_text_depth]));
                         collector.setMcid(extractMcidFromOperands(operands[0..operand_count], if (operand_count >= 2) 1 else 0));
+                        try collector.setActualText(effectiveActualText(actual_text_scopes[0..actual_text_depth], inherited_actual_text));
                     } else if (std.mem.eql(u8, op, "BMC")) {
                         try pushEmptyActualTextScope(&actual_text_scopes, &actual_text_depth);
                         try collector.flush();
-                        try collector.setActualText(currentActualText(actual_text_scopes[0..actual_text_depth]));
+                        try collector.setActualText(effectiveActualText(actual_text_scopes[0..actual_text_depth], inherited_actual_text));
                         collector.setMcid(null);
                     }
                 },
@@ -4411,7 +4715,7 @@ fn extractContentStream(
                     } else if (std.mem.eql(u8, op, "EMC")) {
                         if (popActualTextScope(allocator, &actual_text_scopes, &actual_text_depth)) |actual| {
                             defer allocator.free(actual.text);
-                            if (actual.seen) try writer.writeAll(actual.text);
+                            if (actual.seen and !actual.suppressed_by_ancestor) try writer.writeAll(actual.text);
                         }
                     }
                 },
@@ -4424,7 +4728,7 @@ fn extractContentStream(
                         if (popActualTextScope(allocator, &actual_text_scopes, &actual_text_depth)) |actual| {
                             allocator.free(actual.text);
                         }
-                        try collector.setActualText(currentActualText(actual_text_scopes[0..actual_text_depth]));
+                        try collector.setActualText(effectiveActualText(actual_text_scopes[0..actual_text_depth], inherited_actual_text));
                         collector.setMcid(null);
                     }
                 },
@@ -4434,19 +4738,50 @@ fn extractContentStream(
                     } else if (std.mem.eql(u8, op, "EMC")) {
                         if (popActualTextScope(allocator, &actual_text_scopes, &actual_text_depth)) |actual| {
                             defer allocator.free(actual.text);
-                            if (actual.seen) try extractor.addText(actual.text);
+                            if (actual.seen and !actual.suppressed_by_ancestor) try extractor.addText(actual.text);
                         }
                         extractor.endMarkedContent();
                     }
                 },
             },
-            'D' => switch (mode) {
-                .stream => |s| if (op.len == 2 and op[1] == 'o') {
-                    if (operand_count >= 1 and operands[0] == .name) {
-                        try handleDoOperator(operands[0].name, s.resources, s.ctx, writer);
-                    }
-                },
-                .bounds, .structured => {},
+            'D' => if (std.mem.eql(u8, op, "Do") and operand_count >= 1 and operands[0] == .name) {
+                const replaced = if (mode == .bounds) false else markActualTextSeen(actual_text_scopes[0..actual_text_depth]);
+                if (!replaced) {
+                    const state = FormTextState{
+                        .graphics = paint_tracker.state,
+                        .font = current_font,
+                        .font_name = current_font_name,
+                        .font_size = font_size,
+                        .leading = text_leading,
+                        .char_spacing = char_spacing,
+                        .word_spacing = word_spacing,
+                        .horizontal_scale = horizontal_scale,
+                        .rise = text_rise,
+                    };
+                    if (mode == .bounds) {
+                        const collector = mode.bounds;
+                        try collector.flush();
+                        const saved_scope = collector.current_scope;
+                        const saved_mcid = collector.current_mcid;
+                        const saved_matrix = collector.current_text_matrix;
+                        const saved_x = collector.current_x;
+                        const saved_y = collector.current_y;
+                        defer {
+                            collector.setContentScope(saved_scope);
+                            collector.setMcid(saved_mcid);
+                            collector.setGraphicsState(paint_tracker.state);
+                            collector.setFont(current_font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
+                            collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
+                            collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
+                            collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+                            collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
+                            collector.setTextMatrix(saved_matrix);
+                            collector.setPosition(saved_x, saved_y);
+                        }
+                        try handleFormOperator(operands[0].name, context, mode, state, writer);
+                        try collector.flush();
+                    } else try handleFormOperator(operands[0].name, context, mode, state, writer);
+                }
             },
             'T' => if (op.len == 2) switch (op[1]) {
                 'c' => if (operand_count >= 1) {
@@ -4486,7 +4821,9 @@ fn extractContentStream(
                     });
                 },
                 'f' => if (operand_count >= 2) {
+                    if (mode == .bounds) try mode.bounds.flush();
                     const font_name = if (operands[0] == .name) operands[0].name else null;
+                    current_font_name = font_name;
                     if (operands[0] == .name) {
                         current_font = lookupFont(font_cache, &key_buf, page_num, operands[0].name);
                     }
@@ -4495,6 +4832,8 @@ fn extractContentStream(
                         const has_to_unicode = if (current_font) |font| font.has_to_unicode else null;
                         mode.bounds.setFont(font_name, font_size, has_to_unicode);
                         mode.bounds.current_writing_mode = if (current_font) |font| font.wmode else 0;
+                        mode.bounds.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
+                        mode.bounds.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
                     }
                 },
                 'L' => if (in_text and operand_count >= 1) {
@@ -4516,11 +4855,11 @@ fn extractContentStream(
                             // superscript font doesn't shrink the line-break threshold
                             // below the displacement used for super/subscript positioning.
                             const ref_size = @max(font_size, last_text_font_size);
-                            if (@abs(displacement) > ref_size * 0.7 and prev_y != 0) {
+                            if (@abs(displacement) > ref_size * 0.7 and prev_y != 0 and currentActualText(actual_text_scopes[0..actual_text_depth]) == null) {
                                 try writer.writeByte('\n');
                             }
-                            current_x = line_start_x + tx;
-                            current_y = line_start_y + ty;
+                            current_x = line_start_x + text_matrix[0] * tx + text_matrix[2] * ty;
+                            current_y = line_start_y + text_matrix[1] * tx + text_matrix[3] * ty;
                             line_start_x = current_x;
                             line_start_y = current_y;
                             prev_y = current_y;
@@ -4528,8 +4867,8 @@ fn extractContentStream(
                             text_matrix[5] = current_y;
                         },
                         .bounds => |collector| {
-                            current_x = line_start_x + tx;
-                            current_y = line_start_y + ty;
+                            current_x = line_start_x + text_matrix[0] * tx + text_matrix[2] * ty;
+                            current_y = line_start_y + text_matrix[1] * tx + text_matrix[3] * ty;
                             line_start_x = current_x;
                             line_start_y = current_y;
                             text_matrix[4] = current_x;
@@ -4554,7 +4893,7 @@ fn extractContentStream(
                             const new_pos = if (wmode == 1) tx else ty;
                             const prev_pos = if (wmode == 1) prev_x else prev_y;
                             const ref_size = @max(font_size, last_text_font_size);
-                            if (@abs(new_pos - prev_pos) > ref_size * 0.7 and prev_pos != 0) {
+                            if (@abs(new_pos - prev_pos) > ref_size * 0.7 and prev_pos != 0 and currentActualText(actual_text_scopes[0..actual_text_depth]) == null) {
                                 try writer.writeByte('\n');
                             }
                             current_x = tx;
@@ -4593,12 +4932,13 @@ fn extractContentStream(
                     }
                 },
                 '*' => switch (mode) {
-                    .stream => if (in_text) try writer.writeByte('\n'),
+                    .stream => if (in_text and currentActualText(actual_text_scopes[0..actual_text_depth]) == null) try writer.writeByte('\n'),
                     .bounds => |collector| if (in_text) {
                         try collector.flush();
                         const leading = if (text_leading != 0) text_leading else font_size;
-                        current_x = line_start_x;
-                        current_y = line_start_y - leading;
+                        current_x = line_start_x - text_matrix[2] * leading;
+                        current_y = line_start_y - text_matrix[3] * leading;
+                        line_start_x = current_x;
                         line_start_y = current_y;
                         text_matrix[4] = current_x;
                         text_matrix[5] = current_y;
@@ -4664,7 +5004,7 @@ fn extractContentStream(
                 }
                 switch (mode) {
                     .stream => {
-                        try writer.writeByte('\n');
+                        if (currentActualText(actual_text_scopes[0..actual_text_depth]) == null) try writer.writeByte('\n');
                         if (markActualTextSeen(actual_text_scopes[0..actual_text_depth])) {
                             // ActualText replaces this glyph run at EMC.
                         } else {
@@ -4675,8 +5015,9 @@ fn extractContentStream(
                     .bounds => |collector| {
                         try collector.flush();
                         const leading = if (text_leading != 0) text_leading else font_size;
-                        current_x = line_start_x;
-                        current_y = line_start_y - leading;
+                        current_x = line_start_x - text_matrix[2] * leading;
+                        current_y = line_start_y - text_matrix[3] * leading;
+                        line_start_x = current_x;
                         line_start_y = current_y;
                         text_matrix[4] = current_x;
                         text_matrix[5] = current_y;
@@ -4698,9 +5039,11 @@ fn extractContentStream(
                     operand_count = 0;
                     continue;
                 }
+                word_spacing = operands[0].asNumber();
+                char_spacing = operands[1].asNumber();
                 switch (mode) {
                     .stream => {
-                        try writer.writeByte('\n');
+                        if (currentActualText(actual_text_scopes[0..actual_text_depth]) == null) try writer.writeByte('\n');
                         if (markActualTextSeen(actual_text_scopes[0..actual_text_depth])) {
                             // ActualText replaces this glyph run at EMC.
                         } else {
@@ -4710,9 +5053,11 @@ fn extractContentStream(
                     },
                     .bounds => |collector| {
                         try collector.flush();
+                        collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
                         const leading = if (text_leading != 0) text_leading else font_size;
-                        current_x = line_start_x;
-                        current_y = line_start_y - leading;
+                        current_x = line_start_x - text_matrix[2] * leading;
+                        current_y = line_start_y - text_matrix[3] * leading;
+                        line_start_x = current_x;
                         line_start_y = current_y;
                         text_matrix[4] = current_x;
                         text_matrix[5] = current_y;
@@ -4732,6 +5077,7 @@ fn extractContentStream(
             else => {},
         };
 
+        if (mode == .bounds and mode.bounds.glyphs.items.len > glyph_count_before and !mode.bounds.current_font_is_type3) paint_tracker.shownText();
         operand_count = 0;
     }
 
@@ -4739,7 +5085,7 @@ fn extractContentStream(
         switch (mode) {
             .bounds => |collector| {
                 try collector.flush();
-                try collector.setActualText(null);
+                try collector.setActualText(inherited_actual_text);
             },
             else => {},
         }
@@ -4747,7 +5093,7 @@ fn extractContentStream(
 }
 
 fn pushEmptyActualTextScope(scopes: *[32]ActualTextScope, depth: *usize) !void {
-    if (depth.* >= scopes.len) return;
+    if (depth.* >= scopes.len) return error.NestingTooDeep;
     scopes[depth.*] = .{};
     depth.* += 1;
 }
@@ -4759,7 +5105,7 @@ fn pushActualTextScope(
     operands: []const interpreter.Operand,
     property_start: usize,
 ) !void {
-    if (depth.* >= scopes.len) return;
+    if (depth.* >= scopes.len) return error.NestingTooDeep;
     var scope: ActualTextScope = .{};
     if (try extractActualTextFromOperands(allocator, operands, property_start)) |text| {
         scope.text = text;
@@ -4774,7 +5120,7 @@ fn popActualTextScope(allocator: std.mem.Allocator, scopes: *[32]ActualTextScope
     const scope = scopes[depth.*];
     scopes[depth.*] = .{};
     if (scope.text) |text| {
-        return .{ .text = text, .seen = scope.seen };
+        return .{ .text = text, .seen = scope.seen, .suppressed_by_ancestor = currentActualText(scopes[0..depth.*]) != null };
     }
     _ = allocator;
     return null;
@@ -4790,24 +5136,25 @@ fn cleanupActualTextScopes(allocator: std.mem.Allocator, scopes: []ActualTextSco
 }
 
 fn currentActualText(scopes: []const ActualTextScope) ?[]const u8 {
-    var index = scopes.len;
-    while (index > 0) {
-        index -= 1;
-        if (scopes[index].text) |text| return text;
-    }
+    // Deterministic extraction policy: an enclosing replacement owns the
+    // complete lexical scope; descendants cannot emit competing replacements.
+    for (scopes) |scope| if (scope.text) |text| return text;
     return null;
 }
 
+fn effectiveActualText(scopes: []const ActualTextScope, inherited: ?[]const u8) ?[]const u8 {
+    return inherited orelse currentActualText(scopes);
+}
+
 fn markActualTextSeen(scopes: []ActualTextScope) bool {
-    var index = scopes.len;
-    while (index > 0) {
-        index -= 1;
-        if (scopes[index].text != null) {
-            scopes[index].seen = true;
-            return true;
+    var found = false;
+    for (scopes) |*scope| {
+        if (scope.text != null) {
+            scope.seen = true;
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 fn extractActualTextFromOperands(
@@ -4850,85 +5197,155 @@ fn decodeActualTextOperand(allocator: std.mem.Allocator, operand: interpreter.Op
     };
 }
 
-/// Handle Do operator - extract text from Form XObjects
-fn handleDoOperator(
-    xobject_name: []const u8,
-    resources: ?Object.Dict,
-    maybe_ctx: ?*const ExtractionContext,
-    writer: anytype,
-) anyerror!void {
-    // No context means XObject resolution is unavailable; skip silently
+fn resolveContextObject(ctx: *const ExtractionContext, object: Object) !Object {
+    return switch (object) {
+        .reference => |reference| try pagetree.resolveRefWithSecurity(ctx.parse_allocator, ctx.data, ctx.xref_table, reference, @constCast(ctx.object_cache), ctx.security),
+        else => object,
+    };
+}
+
+fn resolveContextDict(ctx: *const ExtractionContext, object: Object) !Object.Dict {
+    return switch (try resolveContextObject(ctx, object)) {
+        .dict => |dict| dict,
+        else => error.InvalidFormResources,
+    };
+}
+
+const ResolvedForm = struct { reference: ObjRef, stream: Object.Stream };
+
+fn resolveForm(ctx: *const ExtractionContext, name: []const u8) !?ResolvedForm {
+    const resources = ctx.resources orelse return null;
+    const xobjects = try resolveContextDict(ctx, resources.get("XObject") orelse return null);
+    const object = xobjects.get(name) orelse return error.MissingFormXObject;
+    const resolved = try resolveContextObject(ctx, object);
+    const resolved_stream = switch (resolved) {
+        .stream => |value| value,
+        else => return error.InvalidFormXObject,
+    };
+    if (!std.mem.eql(u8, resolved_stream.dict.getName("Subtype") orelse "", "Form")) return null;
+    const reference = switch (object) {
+        .reference => |reference| reference,
+        else => return error.InvalidFormReference,
+    };
+    return .{ .reference = reference, .stream = resolved_stream };
+}
+
+fn formMatrix(dict: Object.Dict) ![6]f64 {
+    const object = dict.get("Matrix") orelse return @import("paint.zig").identity;
+    const array = switch (object) {
+        .array => |array| array,
+        else => return error.InvalidFormMatrix,
+    };
+    if (array.len != 6) return error.InvalidFormMatrix;
+    var matrix: [6]f64 = undefined;
+    for (array, &matrix) |value, *component| {
+        component.* = switch (value) {
+            .integer => |number| @floatFromInt(number),
+            .real => |number| number,
+            else => return error.InvalidFormMatrix,
+        };
+        if (!std.math.isFinite(component.*)) return error.InvalidFormMatrix;
+    }
+    return matrix;
+}
+
+fn formBBox(dict: Object.Dict) !layout.BBox {
+    const object = dict.get("BBox") orelse return error.InvalidFormBBox;
+    const array = switch (object) {
+        .array => |array| array,
+        else => return error.InvalidFormBBox,
+    };
+    if (array.len != 4) return error.InvalidFormBBox;
+    var box: [4]f64 = undefined;
+    for (array, &box) |value, *component| {
+        component.* = switch (value) {
+            .integer => |number| @floatFromInt(number),
+            .real => |number| number,
+            else => return error.InvalidFormBBox,
+        };
+        if (!std.math.isFinite(component.*)) return error.InvalidFormBBox;
+    }
+    if (box[0] > box[2] or box[1] > box[3]) return error.InvalidFormBBox;
+    return .{ .x0 = box[0], .y0 = box[1], .x1 = box[2], .y1 = box[3] };
+}
+
+fn loadFormFonts(allocator: std.mem.Allocator, ctx: *const ExtractionContext, resources: Object.Dict, fonts: *std.StringHashMap(encoding.FontEncoding)) !void {
+    const font_dict = try resolveContextDict(ctx, resources.get("Font") orelse return);
+    for (font_dict.entries) |entry| {
+        const dict = try resolveContextDict(ctx, entry.value);
+        const Resolver = struct {
+            context: *const ExtractionContext,
+            failure: ?anyerror = null,
+            fn resolve(raw_ctx: *const anyopaque, object: Object) Object {
+                const resolver: *@This() = @ptrCast(@alignCast(@constCast(raw_ctx)));
+                return resolveContextObject(resolver.context, object) catch |err| {
+                    resolver.failure = err;
+                    return .{ .null = {} };
+                };
+            }
+        };
+        var resolver = Resolver{ .context = ctx };
+        var font = try encoding.parseFontEncoding(allocator, dict, Resolver.resolve, &resolver);
+        if (resolver.failure) |err| {
+            font.deinit();
+            return err;
+        }
+        font.font_object_num = if (entry.value == .reference) entry.value.reference.num else null;
+        const key = try std.fmt.allocPrint(allocator, "{d}:{s}", .{ ctx.page_num, entry.key });
+        try fonts.put(key, font);
+    }
+}
+
+fn formGraphicsState(state: @import("paint.zig").State, dict: Object.Dict) !@import("paint.zig").State {
+    const paint_mod = @import("paint.zig");
+    var clip = paint_mod.Tracker{ .state = state };
+    clip.state.ctm = paint_mod.concat(state.ctm, try formMatrix(dict));
+    const bbox = try formBBox(dict);
+    clip.rectangle(bbox.x0, bbox.y0, bbox.x1 - bbox.x0, bbox.y1 - bbox.y0);
+    clip.pending_clip = true;
+    clip.endPath();
+    return clip.state;
+}
+
+/// Shared Form resolution, resources and graphics framing for every text lane.
+fn handleFormOperator(name: []const u8, maybe_ctx: ?*const ExtractionContext, mode: ExtractionMode, state: FormTextState, writer: anytype) anyerror!void {
     const ctx = maybe_ctx orelse return;
-
-    // Check recursion depth
-    if (ctx.depth >= ExtractionContext.MAX_DEPTH) return;
-
-    // Get XObject dictionary from resources
-    const res = resources orelse return;
-    const xobjects_obj = res.get("XObject") orelse return;
-
-    // Resolve XObject dictionary if it's a reference
-    const xobjects = switch (xobjects_obj) {
-        .dict => |d| d,
-        .reference => |ref| blk: {
-            const resolved = pagetree.resolveRefWithSecurity(ctx.parse_allocator, ctx.data, ctx.xref_table, ref, @constCast(ctx.object_cache), ctx.security) catch return;
-            break :blk switch (resolved) {
-                .dict => |d| d,
-                else => return,
-            };
-        },
-        else => return,
-    };
-
-    // Look up the specific XObject
-    const xobj = xobjects.get(xobject_name) orelse return;
-    const xobj_resolved = switch (xobj) {
-        .stream => |s| s,
-        .reference => |ref| blk: {
-            const resolved = pagetree.resolveRefWithSecurity(ctx.parse_allocator, ctx.data, ctx.xref_table, ref, @constCast(ctx.object_cache), ctx.security) catch return;
-            break :blk switch (resolved) {
-                .stream => |s| s,
-                else => return,
-            };
-        },
-        else => return,
-    };
-
-    // Check if it's a Form XObject
-    const subtype = xobj_resolved.dict.getName("Subtype") orelse return;
-    if (!std.mem.eql(u8, subtype, "Form")) return;
-
-    // Decompress the Form XObject content
-    const filter = xobj_resolved.dict.get("Filter");
-    const params = xobj_resolved.dict.get("DecodeParms");
-    const form_content = decompress.decompressStream(ctx.scratch_allocator, xobj_resolved.data, filter, params) catch return;
-    defer ctx.scratch_allocator.free(form_content);
+    const form = (try resolveForm(ctx, name)) orelse return;
+    const traversal = ctx.traversal orelse return error.MissingFormTraversal;
+    const scope = try traversal.enter(.{ .object_num = form.reference.num, .generation = form.reference.gen });
+    defer traversal.leave();
+    var arena = std.heap.ArenaAllocator.init(ctx.scratch_allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
     if (ctx.selection_metrics) |metrics| metrics.form_xobjects_decoded += 1;
-
-    // Get Form XObject's own resources (may inherit from parent)
-    const form_resources = xobj_resolved.dict.getDict("Resources") orelse resources;
-
-    // Recursively extract text with increased depth
-    const child_ctx = ExtractionContext{
-        .parse_allocator = ctx.parse_allocator,
-        .scratch_allocator = ctx.scratch_allocator,
-        .data = ctx.data,
-        .xref_table = ctx.xref_table,
-        .object_cache = ctx.object_cache,
-        .font_cache = ctx.font_cache,
-        .page_num = ctx.page_num,
-        .depth = ctx.depth + 1,
-        .security = ctx.security,
-        .selection_metrics = ctx.selection_metrics,
+    var child = ctx.*;
+    child.scratch_allocator = scratch;
+    child.scope = scope;
+    child.depth += 1;
+    child.initial = state;
+    child.initial.graphics = try formGraphicsState(state.graphics, form.stream.dict);
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(scratch);
+    if (form.stream.dict.get("Resources")) |resource_object| {
+        child.resources = try resolveContextDict(ctx, resource_object);
+        try loadFormFonts(scratch, ctx, child.resources.?, &fonts);
+        child.font_cache = &fonts;
+    }
+    const child_mode: ExtractionMode = switch (mode) {
+        .stream => .{ .stream = .{ .resources = child.resources, .ctx = &child } },
+        else => mode,
     };
-
-    extractContentStream(form_content, .{ .stream = .{
-        .resources = form_resources,
-        .ctx = &child_ctx,
-    } }, ctx.font_cache, ctx.page_num, ctx.scratch_allocator, writer) catch |err| {
-        if (err == error.OutOfMemory) return err;
-        // Domain errors (corrupt/unsupported stream): skip silently
-    };
+    if (mode == .structured) {
+        const saved_scope = mode.structured.stream_scope;
+        defer mode.structured.setStreamScope(saved_scope);
+        mode.structured.setStreamScope(form.reference);
+        try extractContentStreamContext(content, child_mode, child.font_cache, child.page_num, scratch, writer, &child);
+    } else {
+        try extractContentStreamContext(content, child_mode, child.font_cache, child.page_num, scratch, writer, &child);
+        // Permissively parsed Forms may omit ET. Font names still borrow the
+        // child content, so own the pending span before releasing its arena.
+        if (mode == .bounds) try mode.bounds.flush();
+    }
 }
 
 fn writeTextWithFont(operand: interpreter.Operand, font: ?*const encoding.FontEncoding, writer: anytype) !void {
@@ -5232,6 +5649,553 @@ test "ActualText preserves glyph-derived bbox in bounds mode" {
     try std.testing.expect(spans[0].actual_text);
     try std.testing.expect(spans[0].bbox.x1 > spans[0].bbox.x0);
     try std.testing.expectEqual(@as(?i32, 3), spans[0].mcid);
+}
+
+fn collectActualTextTest(allocator: std.mem.Allocator, content: []const u8) !interpreter.SpanCollector {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+    defer fonts.deinit();
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    errdefer collector.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStream(content, .{ .bounds = &collector }, &fonts, 0, scratch.allocator(), &writer);
+    try collector.flush();
+    return collector;
+}
+
+test "ActualText scope projects once across text font and paint runs while retaining raw evidence" {
+    const allocator = std.testing.allocator;
+    var collector = try collectActualTextTest(allocator, "BT /F1 10 Tf 10 20 Td /Span << /ActualText (semantic words) /MCID 4 >> BDC (raw) Tj /F2 15 Tf [(glyphs) -300 (more)] TJ 3 Tr (ink) Tj EMC ET");
+    defer collector.deinit();
+    const projected = try collector.toOwnedSemanticGlyphSlice();
+    defer Document.freeGlyphSpans(allocator, projected);
+    try std.testing.expectEqual(@as(usize, 1), collector.actual_text_runs.items.len);
+    try std.testing.expectEqual(@as(usize, 1), collector.spans.items.len);
+    try std.testing.expectEqual(@as(usize, 1), projected.len);
+    try std.testing.expectEqualStrings("semantic words", projected[0].text);
+    try std.testing.expectEqualStrings("semantic words", collector.spans.items[0].text);
+    try std.testing.expectEqual(@as(?i32, 4), projected[0].mcid);
+    try std.testing.expectEqual(@as(u8, 'r'), collector.glyphs.items[0].text[0]);
+    try std.testing.expectEqual(encoding.MappingSource.simple_encoding, collector.glyphs.items[0].mapping_source);
+    try std.testing.expectEqual(encoding.MappingSource.actual_text, projected[0].mapping_source);
+    try std.testing.expect(projected[0].semantic_replacement);
+    try std.testing.expectEqual(@as(u32, @intCast(collector.glyphs.items.len)), projected[0].raw_glyph_count);
+    try std.testing.expectEqual(.unknown, projected[0].paint.paint_state);
+    try std.testing.expectEqual(@as(?[]const u8, null), projected[0].font_name);
+    var union_bbox = collector.glyphs.items[0].bbox;
+    for (collector.glyphs.items[1..]) |glyph| {
+        union_bbox.x0 = @min(union_bbox.x0, glyph.bbox.x0);
+        union_bbox.y0 = @min(union_bbox.y0, glyph.bbox.y0);
+        union_bbox.x1 = @max(union_bbox.x1, glyph.bbox.x1);
+        union_bbox.y1 = @max(union_bbox.y1, glyph.bbox.y1);
+    }
+    try std.testing.expectEqual(union_bbox, projected[0].bbox);
+    try std.testing.expect(projected[0].text.ptr != collector.actual_text_runs.items[0].text.ptr);
+}
+
+test "ActualText empty replacements suppress raw ranges and nested outer scope owns replacement" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { content: []const u8, expected: []const u8, projected_count: usize }{
+        .{ .content = "BT /F1 10 Tf /Span << /ActualText () >> BDC (hidden) Tj EMC (shown) Tj ET", .expected = "shown", .projected_count = 5 },
+        .{ .content = "BT /F1 10 Tf /Span << /ActualText (Outer) >> BDC (a) Tj /Span << /ActualText (Inner) >> BDC (b) Tj EMC (c) Tj EMC ET", .expected = "Outer", .projected_count = 1 },
+        .{ .content = "BT /F1 10 Tf /Span << /ActualText () >> BDC (a) Tj /Span << /ActualText (Inner) >> BDC (b) Tj EMC (c) Tj EMC ET", .expected = "", .projected_count = 0 },
+    };
+    for (cases) |case| {
+        var collector = try collectActualTextTest(allocator, case.content);
+        defer collector.deinit();
+        const projected = try collector.toOwnedSemanticGlyphSlice();
+        defer Document.freeGlyphSpans(allocator, projected);
+        try std.testing.expectEqual(case.projected_count, projected.len);
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(allocator);
+        for (projected) |glyph| try text.appendSlice(allocator, glyph.text);
+        try std.testing.expectEqualStrings(case.expected, text.items);
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+        defer fonts.deinit();
+        text.clearRetainingCapacity();
+        try extractContentStream(case.content, .{ .stream = .{ .resources = null, .ctx = null } }, &fonts, 0, scratch.allocator(), runtime.arrayListWriter(&text, allocator));
+        try std.testing.expectEqualStrings(case.expected, text.items);
+    }
+}
+
+test "ActualText Unicode and multiline replacement stays one authoritative scope" {
+    const allocator = std.testing.allocator;
+    var collector = try collectActualTextTest(allocator, "BT /F1 10 Tf /Span << /ActualText <FEFF006503010020D83DDE00000A0042> >> BDC (x) Tj 20 TL T* (y) Tj EMC ET");
+    defer collector.deinit();
+    const projected = try collector.toOwnedSemanticGlyphSlice();
+    defer Document.freeGlyphSpans(allocator, projected);
+    try std.testing.expectEqual(@as(usize, 1), projected.len);
+    try std.testing.expectEqualStrings("e\u{301} 😀\nB", projected[0].text);
+    try std.testing.expectEqualStrings("e\u{301} 😀\nB", collector.spans.items[0].text);
+}
+
+test "ActualText child content cannot close an inherited enclosing replacement" {
+    const allocator = std.testing.allocator;
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    defer collector.deinit();
+    try collector.setActualText("Outer");
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+    defer fonts.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStream("BT /F1 10 Tf /Span << /ActualText (Inner) >> BDC (raw) Tj EMC ET", .{ .bounds = &collector }, &fonts, 0, scratch.allocator(), &writer);
+    try std.testing.expectEqual(@as(usize, 0), collector.actual_text_runs.items.len);
+    try std.testing.expectEqualStrings("Outer", collector.current_actual_text.?);
+    try collector.setActualText(null);
+    const projected = try collector.toOwnedSemanticGlyphSlice();
+    defer Document.freeGlyphSpans(allocator, projected);
+    try std.testing.expectEqual(@as(usize, 1), projected.len);
+    try std.testing.expectEqualStrings("Outer", projected[0].text);
+}
+
+test "ActualText identical sibling replacements retain distinct scope runs" {
+    const allocator = std.testing.allocator;
+    var collector = try collectActualTextTest(allocator, "BT /F1 10 Tf /Span << /ActualText (X) >> BDC (a) Tj EMC /Span << /ActualText (X) >> BDC (b) Tj EMC ET");
+    defer collector.deinit();
+    const projected = try collector.toOwnedSemanticGlyphSlice();
+    defer Document.freeGlyphSpans(allocator, projected);
+    try std.testing.expectEqual(@as(usize, 2), collector.actual_text_runs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), projected.len);
+    try std.testing.expectEqualStrings("X", projected[0].text);
+    try std.testing.expectEqualStrings("X", projected[1].text);
+    try std.testing.expectEqual(@as(?u32, 0), projected[0].raw_glyph_start);
+    try std.testing.expectEqual(@as(?u32, 1), projected[1].raw_glyph_start);
+    try std.testing.expectEqual(@as(?u32, 0), projected[0].semantic_run_id);
+    try std.testing.expectEqual(@as(?u32, 1), projected[1].semantic_run_id);
+}
+
+fn actualTextProjectionAllocationProbe(allocator: std.mem.Allocator) !void {
+    var collector = try collectActualTextTest(allocator, "BT /F1 10 Tf /Span << /ActualText (long semantic replacement) >> BDC (a) Tj /F2 12 Tf [(b) -300 (c)] TJ EMC /Span << /ActualText () >> BDC (d) Tj EMC (e) Tj ET");
+    defer collector.deinit();
+    const projected = try collector.toOwnedSemanticGlyphSlice();
+    defer Document.freeGlyphSpans(allocator, projected);
+    try std.testing.expectEqual(@as(usize, 2), projected.len);
+    try std.testing.expectEqualStrings("long semantic replacement", projected[0].text);
+    try std.testing.expectEqualStrings("e", projected[1].text);
+}
+
+test "ActualText semantic projection ownership survives every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, actualTextProjectionAllocationProbe, .{});
+}
+
+test "text line translations follow the linear text matrix" {
+    var collector = try collectActualTextTest(std.testing.allocator, "BT /F1 10 Tf 0 1 -1 0 100 100 Tm (A) Tj 0 -20 Td (B) Tj 20 TL T* (C) Tj ET");
+    defer collector.deinit();
+    try std.testing.expectEqual(@as(f64, 100), collector.glyphs.items[0].text_matrix[4]);
+    try std.testing.expectEqual(@as(f64, 120), collector.glyphs.items[1].text_matrix[4]);
+    try std.testing.expectEqual(@as(f64, 140), collector.glyphs.items[2].text_matrix[4]);
+    for (collector.glyphs.items) |glyph| try std.testing.expectEqual(@as(f64, 100), glyph.text_matrix[5]);
+}
+
+fn collectPaintTestGeometry(content: []const u8) !NativePageGeometry {
+    const allocator = std.testing.allocator;
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+    defer fonts.deinit();
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    defer collector.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStream(content, .{ .bounds = &collector }, &fonts, 0, scratch.allocator(), &writer);
+    try collector.flush();
+    const spans = try collector.toOwnedSlice();
+    errdefer Document.freeTextSpans(allocator, spans);
+    return .{ .allocator = allocator, .spans = spans, .glyphs = try collector.toOwnedGlyphSlice() };
+}
+
+fn formTraversalPdf(allocator: std.mem.Allocator, page_content: []const u8, form_content: []const u8, form_extra: []const u8) ![]u8 {
+    return formTraversalPdfWithPageFont(allocator, page_content, form_content, form_extra, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+}
+
+fn formTraversalPdfWithPageFont(allocator: std.mem.Allocator, page_content: []const u8, form_content: []const u8, form_extra: []const u8, page_font: []const u8) ![]u8 {
+    const page_stream = try std.fmt.allocPrint(allocator, "<< /Length {} >>\nstream\n{s}\nendstream", .{ page_content.len, page_content });
+    defer allocator.free(page_stream);
+    const form_stream = try std.fmt.allocPrint(allocator, "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] {s} /Length {} >>\nstream\n{s}\nendstream", .{ form_extra, form_content.len, form_content });
+    defer allocator.free(form_stream);
+    const objects = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 4 0 R /F2 8 0 R >> /XObject << /Fm 6 0 R /Im 10 0 R >> /Properties << /P1 << /ActualText (Page named) /MCID 0 >> >> >> /Contents 5 0 R >>",
+        page_font,
+        page_stream,
+        form_stream,
+        "<< /Font << /F1 8 0 R /F2 4 0 R >> /XObject << /Fm 6 0 R /Im 10 0 R >> /Properties << /P1 9 0 R >> >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /B] >> >>",
+        "<< /ActualText (Form named) /MCID 0 >>",
+        "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\n\x00\x00\x00\nendstream",
+    };
+    var pdf: std.ArrayList(u8) = .empty;
+    errdefer pdf.deinit(allocator);
+    var writer = runtime.arrayListWriter(&pdf, allocator);
+    try writer.writeAll("%PDF-1.4\n");
+    var offsets: [objects.len]usize = undefined;
+    for (objects, 0..) |object, index| {
+        offsets[index] = pdf.items.len;
+        try writer.print("{} 0 obj\n{s}\nendobj\n", .{ index + 1, object });
+    }
+    const xref_offset = pdf.items.len;
+    try writer.print("xref\n0 {}\n0000000000 65535 f \n", .{objects.len + 1});
+    for (offsets) |offset| try writer.print("{d:0>10} 00000 n \n", .{offset});
+    try writer.print("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", .{ objects.len + 1, xref_offset });
+    return pdf.toOwnedSlice(allocator);
+}
+
+test "Form traversal resolves scoped named ActualText and preserves inherited page resources" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "", "/Resources 7 0 R" }) |resources| {
+        const bytes = try formTraversalPdf(allocator, "BT /F1 12 Tf 20 280 Td /Span /P1 BDC (A) Tj EMC ET /Fm Do", "BT /F1 12 Tf 5 8 Td /Span /P1 BDC (A) Tj EMC ET", resources);
+        defer allocator.free(bytes);
+        const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+        defer doc.close();
+        const raw = try doc.extractTextRawRecall(0, allocator);
+        defer allocator.free(raw);
+        const expected = if (resources.len == 0) "Page namedPage named" else "Page namedForm named";
+        try std.testing.expectEqualStrings(expected, raw);
+        const fast_page = try doc.extractTextFast(0, allocator);
+        defer allocator.free(fast_page);
+        try std.testing.expectEqualStrings(expected, fast_page);
+        const fast_all = try doc.extractAllTextFast(allocator);
+        defer allocator.free(fast_all);
+        try std.testing.expectEqualStrings(expected, fast_all);
+        var geometry = try doc.extractNativePageGeometry(0, allocator);
+        defer geometry.deinit();
+        try std.testing.expectEqual(@as(usize, 2), geometry.spans.len);
+        try std.testing.expectEqualStrings("Page named", geometry.spans[0].text);
+        try std.testing.expectEqualStrings(if (resources.len == 0) "Page named" else "Form named", geometry.spans[1].text);
+        try std.testing.expectEqual(@as(?u32, 6), geometry.glyphs[1].content_scope.?.stream_object_num);
+        try std.testing.expectEqualStrings(if (resources.len == 0) "A" else "B", geometry.glyphs[1].text);
+    }
+}
+
+test "Form traversal cycles and unresolved properties fail all observable native lanes" {
+    const allocator = std.testing.allocator;
+    for ([_]struct { content: []const u8, failure: anyerror }{
+        .{ .content = "/Fm Do", .failure = error.FormCycleDetected },
+        .{ .content = "BT /F1 12 Tf /Span /Missing BDC (A) Tj EMC ET", .failure = error.MissingMarkedContentProperty },
+    }) |case| {
+        const bytes = try formTraversalPdf(allocator, "/Fm Do", case.content, "/Resources 7 0 R");
+        defer allocator.free(bytes);
+        const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+        defer doc.close();
+        try std.testing.expectError(case.failure, doc.extractNativePageGeometry(0, allocator));
+        try std.testing.expectError(case.failure, doc.extractTextRawRecall(0, allocator));
+        try std.testing.expectError(case.failure, doc.extractTextFast(0, allocator));
+        try std.testing.expectError(case.failure, doc.extractAllTextFast(allocator));
+    }
+}
+
+test "aggregate fast extraction resolves named properties separately on each page" {
+    const allocator = std.testing.allocator;
+    const content = "BT /F1 12 Tf 20 280 Td /Tag /Property BDC (WRONGVISIBLE) Tj EMC ET";
+    const stream_object = try std.fmt.allocPrint(allocator, "<< /Length {} >>\nstream\n{s}\nendstream", .{ content.len, content });
+    defer allocator.free(stream_object);
+    const objects = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources << /Font << /F1 5 0 R >> /Properties << /Property << /ActualText (Page one) /MCID 0 >> >> >> /Contents 6 0 R >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] /Resources 8 0 R /Contents 7 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        stream_object,
+        stream_object,
+        "<< /Font << /F1 5 0 R >> /Properties << /Property 9 0 R >> >>",
+        "<< /ActualText (Page two) /MCID 0 >>",
+    };
+    var pdf: std.ArrayList(u8) = .empty;
+    defer pdf.deinit(allocator);
+    var writer = runtime.arrayListWriter(&pdf, allocator);
+    try writer.writeAll("%PDF-1.4\n");
+    var offsets: [objects.len]usize = undefined;
+    for (objects, 0..) |object, index| {
+        offsets[index] = pdf.items.len;
+        try writer.print("{} 0 obj\n{s}\nendobj\n", .{ index + 1, object });
+    }
+    const xref_offset = pdf.items.len;
+    try writer.print("xref\n0 {}\n0000000000 65535 f \n", .{objects.len + 1});
+    for (offsets) |offset| try writer.print("{d:0>10} 00000 n \n", .{offset});
+    try writer.print("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n", .{ objects.len + 1, xref_offset });
+    const doc = try Document.openFromMemory(allocator, pdf.items, ErrorConfig.default());
+    defer doc.close();
+    for ([_][]const u8{ "Page one", "Page two" }, 0..) |expected, page_num| {
+        const page = try doc.extractTextFast(page_num, allocator);
+        defer allocator.free(page);
+        try std.testing.expectEqualStrings(expected, page);
+    }
+    const aggregate = try doc.extractAllTextFast(allocator);
+    defer allocator.free(aggregate);
+    try std.testing.expectEqualStrings("Page one\x0cPage two", aggregate);
+    const through_mode = try doc.extractAllTextWithMode(allocator, .fast);
+    defer allocator.free(through_mode);
+    try std.testing.expectEqualStrings(aggregate, through_mode);
+}
+
+fn formGeometryAllocationProbe(allocator: std.mem.Allocator, doc: *Document, content: []const u8) !void {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var geometry = try doc.extractNativePageGeometryFromContent(0, allocator, scratch.allocator(), content);
+    defer geometry.deinit();
+    try std.testing.expectEqual(@as(usize, 2), geometry.spans.len);
+}
+
+test "Form traversal resource frames free partial geometry on every allocation failure" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "q 1 0 0 1 20 50 cm /Fm Do Q q 1 0 0 1 100 50 cm /Fm Do Q", "BT /F1 12 Tf 5 8 Td (A) Tj ET", "/Resources 7 0 R /Matrix [2 0 0 2 10 20]");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const content = try doc.getPageContentForScratch(0, scratch.allocator());
+    var warmup = try doc.extractNativePageGeometryFromContent(0, allocator, scratch.allocator(), content);
+    warmup.deinit();
+    try std.testing.checkAllAllocationFailures(allocator, formGeometryAllocationProbe, .{ doc, content });
+}
+
+test "Form traversal invocation cap cannot publish extra placements" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Fm Do /Fm Do /Fm Do", "BT /F1 12 Tf (A) Tj ET", "");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    doc.ensurePageFonts(0);
+    const content = try doc.getPageContentForScratch(0, scratch.allocator());
+    var traversal = form_scope.Traversal{ .page_index = 0, .max_invocations = 2 };
+    const context = doc.contentContext(0, scratch.allocator(), &traversal);
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    defer collector.deinit();
+    var writer: NullWriter = .{};
+    try std.testing.expectError(error.FormInvocationLimitExceeded, extractContentStreamContext(content, .{ .bounds = &collector }, &doc.font_cache, 0, scratch.allocator(), &writer, &context));
+    try std.testing.expectEqual(@as(usize, 2), collector.glyphs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), traversal.depth);
+}
+
+test "Form traversal restores q Q fonts in recall geometry and structured modes" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Fm Do", "BT /F1 12 Tf /Span << /MCID 0 >> BDC (A) Tj q /F2 12 Tf (A) Tj Q (A) Tj EMC ET", "/Resources 7 0 R");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    const raw = try doc.extractTextRawRecall(0, allocator);
+    defer allocator.free(raw);
+    try std.testing.expectEqualStrings("BAB", raw);
+    var geometry = try doc.extractNativePageGeometry(0, allocator);
+    defer geometry.deinit();
+    for (geometry.glyphs, "BAB") |glyph, expected| try std.testing.expectEqual(expected, glyph.text[0]);
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const content = try doc.getPageContentForScratch(0, scratch.allocator());
+    var traversal = form_scope.Traversal{ .page_index = 0 };
+    const context = doc.contentContext(0, scratch.allocator(), &traversal);
+    var extractor = structtree.MarkedContentExtractor.init(allocator);
+    defer extractor.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStreamContext(content, .{ .structured = &extractor }, &doc.font_cache, 0, scratch.allocator(), &writer, &context);
+    try std.testing.expectEqualStrings("BAB", extractor.getTextForScopedMcid(.{ .num = 6, .gen = 0 }, 0).?);
+    try std.testing.expect(extractor.getTextForMcid(0) == null);
+}
+
+test "Form traversal cold recall resolves encoded page fonts and inherited Form resources" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdfWithPageFont(allocator, "BT /F1 12 Tf (A) Tj ET q BT /F2 12 Tf (A) Tj ET Q BT (A) Tj ET /Fm Do", "BT /F1 12 Tf (A) Tj ET", "", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /BaseEncoding /WinAnsiEncoding /Differences [65 /Z] >> >>");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    try std.testing.expectEqual(@as(u32, 0), doc.font_cache.count());
+    const cold = try doc.extractTextRawRecall(0, allocator);
+    defer allocator.free(cold);
+    try std.testing.expectEqualStrings("ZBZZ", cold);
+    var geometry = try doc.extractNativePageGeometry(0, allocator);
+    defer geometry.deinit();
+    for (geometry.glyphs, "ZBZZ") |glyph, expected| try std.testing.expectEqual(expected, glyph.text[0]);
+    const warm = try doc.extractTextRawRecall(0, allocator);
+    defer allocator.free(warm);
+    try std.testing.expectEqualStrings(cold, warm);
+}
+
+test "Form traversal image inventory applies nested placement matrix and Form bbox" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "q 1 0 0 1 20 50 cm /Fm Do Q", "q 60 0 0 80 10 10 cm /Im Do Q q 60 0 0 80 200 200 cm /Im Do Q", "/Resources 7 0 R /Matrix [2 0 0 2 10 20]");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    const images = try doc.getPageImages(0, allocator);
+    defer Document.freeImages(allocator, images);
+    try std.testing.expectEqual(@as(usize, 1), images.len);
+    try std.testing.expectEqualSlices(f64, &.{ 50, 90, 170, 250 }, &images[0].rect);
+}
+
+test "Form traversal owns pending span metadata before an unterminated child frame exits" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Fm Do", "BT /F1 12 Tf (A) Tj", "/Resources 7 0 R");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var geometry = try doc.extractNativePageGeometry(0, allocator);
+    defer geometry.deinit();
+    try std.testing.expectEqual(@as(usize, 1), geometry.spans.len);
+    try std.testing.expectEqualStrings("B", geometry.spans[0].text);
+    try std.testing.expectEqualStrings("F1", geometry.spans[0].font.name.?);
+    try std.testing.expectEqual(@as(?u32, 6), geometry.spans[0].content_scope.?.stream_object_num);
+}
+
+test "native paint modes preserve raw hidden text and restore q Q state" {
+    var geometry = try collectPaintTestGeometry("BT /Ordinary 10 Tf (A) Tj q 3 Tr /Ordinary 20 Tf (B) Tj Q (C) Tj 7 Tr (D) Tj ET");
+    defer geometry.deinit();
+    try std.testing.expectEqual(@as(usize, 4), geometry.spans.len);
+    const expected_modes = [_]u8{ 0, 3, 0, 7 };
+    for (geometry.spans, expected_modes, "ABCD") |span, mode, byte| {
+        try std.testing.expectEqual(@as(?u8, mode), span.paint.rendering_mode);
+        const expected_state: @TypeOf(span.paint.paint_state) = if (mode == 3 or mode == 7) .non_painting else .painting;
+        try std.testing.expectEqual(expected_state, span.paint.paint_state);
+        try std.testing.expectEqual(layout.SourceKind.native_pdf, span.source);
+        try std.testing.expectEqual(byte, span.text[0]);
+    }
+    try std.testing.expectEqual(@as(f64, 10), geometry.spans[2].font_size);
+    for (geometry.glyphs, geometry.spans) |glyph, span| try std.testing.expect(std.meta.eql(glyph.paint, span.paint));
+}
+
+test "native rectangular clip evidence retains inside outside and partial text" {
+    const cases = [_]struct { x: u8, expected: @TypeOf((layout.PaintEvidence{}).clip_state) }{
+        .{ .x = 5, .expected = .inside },
+        .{ .x = 30, .expected = .outside },
+        .{ .x = 18, .expected = .partial },
+    };
+    for (cases) |case| {
+        const content = try std.fmt.allocPrint(std.testing.allocator, "0 0 20 40 re W n BT /Ordinary 10 Tf 1 0 0 1 {d} 10 Tm (A) Tj ET", .{case.x});
+        defer std.testing.allocator.free(content);
+        var geometry = try collectPaintTestGeometry(content);
+        defer geometry.deinit();
+        try std.testing.expectEqual(@as(usize, 1), geometry.spans.len);
+        try std.testing.expectEqualStrings("A", geometry.spans[0].text);
+        try std.testing.expectEqual(case.expected, geometry.spans[0].paint.clip_state);
+        try std.testing.expectEqual(@as(f64, 20), geometry.spans[0].paint.clip_bbox.?.x1);
+    }
+}
+
+test "native transformed clip and glyph geometry share PDF user space" {
+    var geometry = try collectPaintTestGeometry("2 0 0 2 100 200 cm 0 0 40 40 re W* n BT /Ordinary 10 Tf 1 0 0 1 5 10 Tm (A) Tj ET");
+    defer geometry.deinit();
+    const span = geometry.spans[0];
+    try std.testing.expectEqual(.inside, span.paint.clip_state);
+    try std.testing.expectEqual(@as(f64, 110), span.bbox.x0);
+    try std.testing.expectEqual(@as(f64, 100), span.paint.clip_bbox.?.x0);
+    try std.testing.expectEqual(@as(f64, 280), span.paint.clip_bbox.?.y1);
+    try std.testing.expectEqual(@as(f64, 2), geometry.glyphs[0].text_matrix[0]);
+}
+
+test "native clip state changes only at path end and restores across q Q" {
+    var geometry = try collectPaintTestGeometry("q 0 0 20 40 re W BT /Ordinary 10 Tf 1 0 0 1 30 10 Tm (A) Tj ET n BT /Ordinary 10 Tf 1 0 0 1 30 10 Tm (B) Tj ET Q BT /Ordinary 10 Tf 1 0 0 1 30 10 Tm (C) Tj ET");
+    defer geometry.deinit();
+    try std.testing.expectEqual(@as(usize, 3), geometry.spans.len);
+    try std.testing.expectEqual(.unclipped, geometry.spans[0].paint.clip_state);
+    try std.testing.expectEqual(.outside, geometry.spans[1].paint.clip_state);
+    try std.testing.expectEqual(.unclipped, geometry.spans[2].paint.clip_state);
+}
+
+test "native arbitrary and text clips preserve uncertain state" {
+    const cases = [_][]const u8{
+        "0 0 m 20 0 l 20 20 l h W n BT /Ordinary 10 Tf (A) Tj ET",
+        "1 1 -1 1 0 0 cm 0 0 20 40 re W n BT /Ordinary 10 Tf (A) Tj ET",
+        "BT /Ordinary 10 Tf 7 Tr (X) Tj ET BT 0 Tr (A) Tj ET",
+        "0 0 20 40 re W n /Invalid 0 0 1 0 0 cm BT /Ordinary 10 Tf (A) Tj ET",
+    };
+    for (cases) |content| {
+        var geometry = try collectPaintTestGeometry(content);
+        defer geometry.deinit();
+        const span = geometry.spans[geometry.spans.len - 1];
+        try std.testing.expectEqual(.unknown, span.paint.clip_state);
+        try std.testing.expectEqual(@as(?layout.BBox, null), span.paint.clip_bbox);
+        try std.testing.expectEqualStrings("A", span.text);
+    }
+}
+
+test "native Type3 rendering modes remain uncertain and do not fabricate text clipping" {
+    const allocator = std.testing.allocator;
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+    defer fonts.deinit();
+    var type3 = encoding.FontEncoding.init(allocator);
+    type3.is_type3 = true;
+    try fonts.put("0:FType3", type3);
+    defer fonts.getPtr("0:FType3").?.deinit();
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    defer collector.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStream("BT 3 Tr /Ordinary 10 Tf (A) Tj /FType3 10 Tf 0 Tr (B) Tj 7 Tr (C) Tj ET BT 0 Tr /Ordinary 10 Tf (D) Tj ET", .{ .bounds = &collector }, &fonts, 0, scratch.allocator(), &writer);
+    try collector.flush();
+    const spans = collector.getSpans();
+    try std.testing.expectEqual(@as(usize, 4), spans.len);
+    try std.testing.expectEqual(.non_painting, spans[0].paint.paint_state);
+    try std.testing.expectEqual(.unknown, spans[1].paint.paint_state);
+    try std.testing.expectEqual(.non_painting, spans[2].paint.paint_state);
+    try std.testing.expectEqual(@as(?u8, 7), spans[2].paint.rendering_mode);
+    try std.testing.expectEqual(.painting, spans[3].paint.paint_state);
+    try std.testing.expectEqual(.unclipped, spans[3].paint.clip_state);
+}
+
+fn paintCollectorAllocationProbe(allocator: std.mem.Allocator) !void {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var fonts = std.StringHashMap(encoding.FontEncoding).init(allocator);
+    defer fonts.deinit();
+    var collector = interpreter.SpanCollector.init(allocator, 0);
+    defer collector.deinit();
+    var writer: NullWriter = .{};
+    try extractContentStream("q 0 0 100 100 re W n BT /Ordinary 10 Tf (A) Tj q 3 Tr (B) Tj Q (C) Tj ET Q", .{ .bounds = &collector }, &fonts, 0, scratch.allocator(), &writer);
+    try collector.flush();
+}
+
+test "native paint state ownership is safe across every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, paintCollectorAllocationProbe, .{});
+}
+
+test "image placement restores independent q Q transformations" {
+    const allocator = std.testing.allocator;
+    const data = try @import("testpdf.zig").generateImagePdf(allocator);
+    defer allocator.free(data);
+    const doc = try Document.openFromMemory(allocator, data, ErrorConfig.default());
+    defer doc.close();
+    const images = try doc.getPageImagesFromContent(0, allocator, allocator, "q 40 0 0 40 20 20 cm /Im1 Do Q q 40 0 0 40 120 20 cm /Im1 Do Q");
+    defer Document.freeImages(allocator, images);
+    try std.testing.expectEqual(@as(usize, 2), images.len);
+    try std.testing.expectEqual([4]f64{ 20, 20, 60, 60 }, images[0].rect);
+    try std.testing.expectEqual([4]f64{ 120, 20, 160, 60 }, images[1].rect);
+}
+
+test "image placement uses all affine corners and nested concatenation" {
+    const allocator = std.testing.allocator;
+    const data = try @import("testpdf.zig").generateImagePdf(allocator);
+    defer allocator.free(data);
+    const doc = try Document.openFromMemory(allocator, data, ErrorConfig.default());
+    defer doc.close();
+    const images = try doc.getPageImagesFromContent(0, allocator, allocator, "q 0 40 -20 0 100 20 cm /Im1 Do Q q 2 0 0 3 10 20 cm q 0 40 -20 0 100 20 cm /Im1 Do Q Q q 40 20 -10 30 50 60 cm /Im1 Do Q q -40 0 0 -20 80 60 cm /Im1 Do Q");
+    defer Document.freeImages(allocator, images);
+    try std.testing.expectEqual(@as(usize, 4), images.len);
+    try std.testing.expectEqual([4]f64{ 80, 20, 100, 60 }, images[0].rect);
+    try std.testing.expectEqual([4]f64{ 170, 80, 210, 200 }, images[1].rect);
+    try std.testing.expectEqual([4]f64{ 40, 60, 90, 110 }, images[2].rect);
+    try std.testing.expectEqual([4]f64{ 40, 40, 80, 60 }, images[3].rect);
+}
+
+fn imagePlacementAllocationProbe(allocator: std.mem.Allocator, doc: *Document) !void {
+    const images = try doc.getPageImagesFromContent(0, allocator, allocator, "q 40 0 0 40 20 20 cm /Im1 Do Q q 40 0 0 40 120 20 cm /Im1 Do Q");
+    defer Document.freeImages(allocator, images);
+    try std.testing.expectEqual(@as(usize, 2), images.len);
+}
+
+test "image placement stack ownership is safe across every allocation failure" {
+    const allocator = std.testing.allocator;
+    const data = try @import("testpdf.zig").generateImagePdf(allocator);
+    defer allocator.free(data);
+    const doc = try Document.openFromMemory(allocator, data, ErrorConfig.default());
+    defer doc.close();
+    try std.testing.checkAllAllocationFailures(allocator, imagePlacementAllocationProbe, .{doc});
 }
 
 test "page marked content order exposes borrowed structure sequence" {
@@ -5658,4 +6622,140 @@ test "formula crop geometry is padded clamped and top-left mapped" {
     try std.testing.expectEqual(@as(u32, 0), clamped.y);
     try std.testing.expectEqual(@as(u32, 16), clamped.width);
     try std.testing.expectEqual(@as(u32, 14), clamped.height);
+}
+
+fn regionalOcrAllocationProbe(allocator: std.mem.Allocator, doc: *Document, bbox: layout.BBox) !void {
+    var outcome = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = "./definitely-missing-crop-rasterizer" });
+    defer outcome.deinit(allocator);
+    try std.testing.expectEqual(ocr.AttemptStatus.unavailable, outcome.status);
+}
+
+test "regional OCR preflight preserves unsupported and bounded outcomes" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    const bytes = try @import("testpdf.zig").generateMinimalPdf(allocator, "OCR bounds");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    const bbox = layout.BBox{ .x0 = 10, .y0 = 10, .x1 = 20, .y1 = 30 };
+    var memory = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{});
+    defer memory.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_requires_file, memory.diagnostic_code.?);
+    doc.source_path = try allocator.dupe(u8, "unused.pdf");
+    doc.pages.items[0].rotation = 90;
+    var rotated = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{});
+    defer rotated.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_rotation_unsupported, rotated.diagnostic_code.?);
+    doc.pages.items[0].rotation = 0;
+    var pixels = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .max_image_pixels = 1 });
+    defer pixels.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_pixel_limit, pixels.diagnostic_code.?);
+    var image_bytes = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .max_image_bytes = 1 });
+    defer image_bytes.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_image_byte_limit, image_bytes.diagnostic_code.?);
+    var invalid = try doc.rasterizeOcrRegionDetailed(allocator, 0, .{ .x0 = 20, .y0 = 30, .x1 = 10, .y1 = 10 }, .{});
+    defer invalid.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.invalid_crop_geometry, invalid.diagnostic_code.?);
+    var unavailable = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = "./definitely-missing-crop-rasterizer" });
+    defer unavailable.deinit(allocator);
+    try std.testing.expectEqual(ocr.AttemptStatus.unavailable, unavailable.status);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_unavailable, unavailable.diagnostic_code.?);
+    try std.testing.checkAllAllocationFailures(allocator, regionalOcrAllocationProbe, .{ doc, bbox });
+}
+
+test "regional OCR fake rasterizer validates crop identity and cleans rejected images" {
+    if (builtin.target.os.tag == .windows) return;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    const bytes = try @import("testpdf.zig").generateMinimalPdf(allocator, "OCR fake crop");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    doc.source_path = try allocator.dupe(u8, "unused.pdf");
+    const script_path = try std.fmt.allocPrint(allocator, ".pdf-parser-crop-raster-{x}.sh", .{runtime.nanoTimestamp()});
+    defer allocator.free(script_path);
+    defer runtime.deleteFileCwd(script_path);
+    const log_path = try std.fmt.allocPrint(allocator, "{s}.log", .{script_path});
+    defer allocator.free(log_path);
+    defer runtime.deleteFileCwd(log_path);
+    const script = try std.fmt.allocPrint(allocator, "#!/bin/sh\nlast=''\nfor arg do last=\"$arg\"; done\nprintf '%s' \"$last.png\" > '{s}'\nprintf '\\211PNG\\r\\n\\032\\n\\000\\000\\000\\rIHDR\\000\\000\\000\\012\\000\\000\\000\\024' > \"$last.png\"\n", .{log_path});
+    defer allocator.free(script);
+    const file = try runtime.createFileCwd(script_path);
+    try runtime.writeAllFile(file, script);
+    runtime.closeFile(file);
+    try std.testing.expectEqual(@as(u8, 0), try runtime.runIgnored(&.{ "chmod", "+x", script_path }));
+    const executable = try std.fmt.allocPrint(allocator, "./{s}", .{script_path});
+    defer allocator.free(executable);
+    const bbox = layout.BBox{ .x0 = 10, .y0 = 10, .x1 = 20, .y1 = 30 };
+    var success = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = executable, .dpi = 72, .crop_padding_points = 0 });
+    defer success.deinit(allocator);
+    try std.testing.expectEqual(ocr.AttemptStatus.completed, success.status);
+    const input = success.input.?;
+    defer allocator.free(@constCast(input.image_path));
+    runtime.deleteFileCwd(input.image_path);
+    try std.testing.expectEqual(@as(usize, 24), input.image_byte_length.?);
+    try std.testing.expect(input.image_sha256 != null);
+    {
+        const original_media_box = doc.pages.items[0].media_box;
+        defer doc.pages.items[0].media_box = original_media_box;
+        doc.pages.items[0].media_box = .{ 0, 0, 9.8, 19.8 };
+        const fractional_page = layout.BBox{ .x0 = 0, .y0 = 0, .x1 = 9.8, .y1 = 19.8 };
+        var whole = try doc.rasterizePageForOcrDetailed(allocator, 0, .{ .rasterizer_executable = executable, .dpi = 72 });
+        defer whole.deinit(allocator);
+        try std.testing.expectEqual(ocr.AttemptStatus.completed, whole.status);
+        const whole_input = whole.input.?;
+        defer allocator.free(@constCast(whole_input.image_path));
+        defer runtime.deleteFileCwd(whole_input.image_path);
+        try std.testing.expectEqual(fractional_page, whole_input.pdf_bbox);
+        try std.testing.expectEqual(@as(u32, 10), whole_input.pixel_width);
+        try std.testing.expectEqual(@as(u32, 20), whole_input.pixel_height);
+
+        var fractional_crop = try doc.rasterizeOcrRegionDetailed(allocator, 0, fractional_page, .{ .rasterizer_executable = executable, .dpi = 72, .crop_padding_points = 0 });
+        defer fractional_crop.deinit(allocator);
+        try std.testing.expectEqual(ocr.AttemptStatus.completed, fractional_crop.status);
+        const crop_input = fractional_crop.input.?;
+        defer allocator.free(@constCast(crop_input.image_path));
+        defer runtime.deleteFileCwd(crop_input.image_path);
+        try std.testing.expectEqual(@as(f64, 10), crop_input.pdf_bbox.x1);
+        try std.testing.expectApproxEqAbs(@as(f64, -0.2), crop_input.pdf_bbox.y0, 0.000001);
+    }
+    var oversized = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = executable, .dpi = 72, .crop_padding_points = 0, .max_image_bytes = 23 });
+    defer oversized.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_image_byte_limit, oversized.diagnostic_code.?);
+    // A valid preflight with a mismatched raster size fails after the child
+    // exits, and the generated file is deleted before returning the outcome.
+    var wrong_size = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = executable, .dpi = 144, .crop_padding_points = 0 });
+    defer wrong_size.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.invalid_raster_image, wrong_size.diagnostic_code.?);
+    const rejected_path = try runtime.readFileAllocAlignedCwd(allocator, log_path, .fromByteUnits(1));
+    defer allocator.free(rejected_path);
+    try std.testing.expectError(error.FileNotFound, runtime.fileSizeCwd(rejected_path));
+
+    const larger_script = try std.fmt.allocPrint(allocator, "{s}printf X >> \"$last.png\"\n", .{script});
+    defer allocator.free(larger_script);
+    const larger_file = try runtime.createFileCwd(script_path);
+    try runtime.writeAllFile(larger_file, larger_script);
+    runtime.closeFile(larger_file);
+    var bytes_limit = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = executable, .dpi = 72, .crop_padding_points = 0, .max_image_bytes = 24 });
+    defer bytes_limit.deinit(allocator);
+    try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_image_byte_limit, bytes_limit.diagnostic_code.?);
+    const large_path = try runtime.readFileAllocAlignedCwd(allocator, log_path, .fromByteUnits(1));
+    defer allocator.free(large_path);
+    try std.testing.expectError(error.FileNotFound, runtime.fileSizeCwd(large_path));
+
+    const timeout_script = try std.fmt.allocPrint(allocator, "{s}while :; do :; done\n", .{script});
+    defer allocator.free(timeout_script);
+    const timeout_file = try runtime.createFileCwd(script_path);
+    try runtime.writeAllFile(timeout_file, timeout_script);
+    runtime.closeFile(timeout_file);
+    var timed_out = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{ .rasterizer_executable = executable, .dpi = 72, .crop_padding_points = 0, .timeout_ms = 30 });
+    defer timed_out.deinit(allocator);
+    try std.testing.expectEqual(ocr.AttemptStatus.timeout, timed_out.status);
+    const timeout_path = try runtime.readFileAllocAlignedCwd(allocator, log_path, .fromByteUnits(1));
+    defer allocator.free(timeout_path);
+    try std.testing.expectError(error.FileNotFound, runtime.fileSizeCwd(timeout_path));
 }

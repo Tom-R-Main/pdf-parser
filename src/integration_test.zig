@@ -218,7 +218,7 @@ test "structured extraction preserves Form XObject text omitted by partial tags"
     const output = try doc.extractTextStructured(0, allocator);
     defer allocator.free(output);
     try std.testing.expectEqualStrings(
-        "Tagged main Form-only recall text",
+        "Tagged main\n\nForm-only recall text",
         std.mem.trim(u8, output, " \t\r\n\x0c"),
     );
 
@@ -698,7 +698,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.15.0", parsed.value.object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.17.0", parsed.value.object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("0.4.0-dev", parsed.value.object.get("parser_version").?.string);
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-clean-native", parsed.value.object.get("source_id").?.string);
@@ -744,7 +744,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const debug_assets = parsed.value.object.get("debug_assets").?.array.items;
     try std.testing.expect(debug_assets.len > 0);
     try expectProvenanceObject(debug_assets[0]);
-    try std.testing.expectEqualStrings("0.15.0", debug_assets[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.17.0", debug_assets[0].object.get("schema_version").?.string);
     try std.testing.expect(debug_assets[0].object.get("asset_kind") != null);
     try std.testing.expect(debug_assets[0].object.get("path") != null);
     try std.testing.expectEqual(.null, debug_assets[0].object.get("path").?);
@@ -755,7 +755,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     try std.testing.expectEqualStrings("debug", debug_assets[0].object.get("provenance").?.object.get("source_kind").?.string);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_name\":\"document_manifest\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.15.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.17.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"rag_chunk\"") != null);
@@ -879,7 +879,7 @@ test "versioned artifact jsonl starts with manifest then typed records" {
     try std.testing.expect(manifest.value.object.get("output_artifacts") != null);
     try std.testing.expect(manifest.value.object.get("extraction_counts") != null);
     try std.testing.expect(manifest.value.object.get("capability_coverage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.15.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.17.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"record_type\":\"route_trace\"") != null);
     try expectJsonlLinesParse(allocator, jsonl);
@@ -911,7 +911,7 @@ test "specialist protocol emits batch request records for routed table formula r
     const requests = parsed.value.object.get("specialist_requests").?.array.items;
     try std.testing.expect(requests.len > 0);
     try expectProvenanceObject(requests[0]);
-    try std.testing.expectEqualStrings("0.15.0", requests[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.17.0", requests[0].object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("specialist_request", requests[0].object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-specialist", requests[0].object.get("source_id").?.string);
     try std.testing.expect(requests[0].object.get("requested_kind") != null);
@@ -990,7 +990,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.15.0","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.17.0","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(script);
@@ -1066,7 +1066,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         const formulas = response.object.get("formulas").?.array.items;
         try std.testing.expectEqual(@as(usize, 1), formulas.len);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("schema_name").?.string);
-        try std.testing.expectEqualStrings("0.15.0", formulas[0].object.get("schema_version").?.string);
+        try std.testing.expectEqualStrings("0.17.0", formulas[0].object.get("schema_version").?.string);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("record_type").?.string);
         try std.testing.expectEqualStrings("source-formula", formulas[0].object.get("source_id").?.string);
         try expectProvenanceObject(formulas[0]);
@@ -1466,7 +1466,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const tables = parsed.value.object.get("tables").?.array.items;
     try std.testing.expect(tables.len > 0);
     try expectProvenanceObject(tables[0]);
-    try std.testing.expectEqualStrings("0.15.0", tables[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.17.0", tables[0].object.get("schema_version").?.string);
     try std.testing.expect(tables[0].object.get("logical_table_id") != null);
     try std.testing.expect(tables[0].object.get("table_part_index") != null);
     try std.testing.expect(tables[0].object.get("continued_from_table_id") != null);
@@ -1476,7 +1476,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const cells = tables[0].object.get("rows").?.array.items[0].object.get("cells").?.array.items;
     try std.testing.expect(cells.len > 0);
     try std.testing.expectEqualStrings("table_cell", cells[0].object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.15.0", cells[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.17.0", cells[0].object.get("schema_version").?.string);
     try std.testing.expect(cells[0].object.get("cell_id") != null);
     try std.testing.expectEqualStrings("external-merged-cells", cells[0].object.get("source_id").?.string);
     try std.testing.expect(cells[0].object.get("raw_text") != null);
@@ -2208,14 +2208,33 @@ test "detailed search preserves Form XObject inventory recall" {
 
     try std.testing.expectEqual(@as(usize, 1), report.matches.len);
     try std.testing.expectEqual(@as(usize, 0), report.matches[0].page);
-    try std.testing.expect(
-        report.matches[0].source_kind == .legacy_structured or
-            report.matches[0].source_kind == .full_context_text,
-    );
-    try std.testing.expect(report.matches[0].bbox == null);
-    try std.testing.expect(report.matches[0].normalized_offset != null);
-    try std.testing.expect(report.matches[0].source_start != null);
-    try std.testing.expect(report.matches[0].source_end != null);
+    // Native Form traversal now supplies geometry instead of relying on a
+    // page-text inventory match with no placement evidence.
+    try std.testing.expect(report.matches[0].source_kind == .native_reading or report.matches[0].source_kind == .native_content);
+    try std.testing.expect(report.matches[0].bbox != null);
+    try std.testing.expect(report.matches[0].first_glyph_index != null);
+    // Reconstructed glyph views expose placement and indices; they do not
+    // claim stable offsets into a separately retained page-text projection.
+    try std.testing.expect(report.matches[0].normalized_offset == null);
+    try std.testing.expect(report.matches[0].source_start == null);
+    try std.testing.expect(report.matches[0].source_end == null);
+}
+
+test "semantic search retains ActualText union geometry without fabricated glyph indices" {
+    const allocator = std.testing.allocator;
+    const pdf_data = try testpdf.generateActualTextRepairPdf(allocator);
+    defer allocator.free(pdf_data);
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf_data, zpdf.ErrorConfig.permissive());
+    defer doc.close();
+    var report = try doc.searchDetailed(allocator, "ActualText replacement", .{});
+    defer report.deinit();
+    try std.testing.expectEqual(@as(usize, 1), report.matches.len);
+    try std.testing.expect(report.matches[0].bbox != null);
+    try std.testing.expect(report.matches[0].first_glyph_index == null);
+    try std.testing.expect(report.matches[0].last_glyph_index == null);
+    var superseded = try doc.searchDetailed(allocator, "WRONGVISIBLE", .{});
+    defer superseded.deinit();
+    try std.testing.expectEqual(@as(usize, 0), superseded.matches.len);
 }
 
 test "detailed search reports pages considered for an empty normalized query" {
@@ -2299,6 +2318,13 @@ test "decodePdfString - plain ASCII passthrough" {
     const result = try zpdf.decodePdfString(allocator, "Hello");
     defer allocator.free(result);
     try std.testing.expectEqualStrings("Hello", result);
+}
+
+test "decodePdfString - PDFDocEncoding accents punctuation and undefined bytes" {
+    const allocator = std.testing.allocator;
+    const result = try zpdf.decodePdfString(allocator, &.{ 0x18, 0x80, 0x8d, 0x8e, 0x93, 0x94, 0xa0, 0x7f, 0x9f, 0xad });
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("˘•“”ﬁﬂ€���", result);
 }
 
 test "decodePdfString - empty string" {
