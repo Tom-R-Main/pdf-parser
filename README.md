@@ -463,7 +463,7 @@ never emits the password.
 
 Use three integration modes, in this order:
 
-1. **CLI subprocess**: recommended default for workers, Siftable ingestion, and
+1. **CLI subprocess**: recommended default for workers, research applications ingestion, and
    Cloud Run jobs. It is easiest to isolate, supervise, retry, and deploy:
 
    ```bash
@@ -503,7 +503,7 @@ Use three integration modes, in this order:
    Python exposes the same surface as `zpdf.extract_adaptive(...,
    password="known-password")` or `password_file=".pdf-password"`. Node
    wrappers should prefer Node-API over direct V8 bindings for ABI stability,
-   while Siftable can continue using the subprocess path first.
+   while research applications can continue using the subprocess path first.
 
 3. **HTTP server**: useful for later long-running batch corpora or internal
    services. It is a stateless wrapper around the same adapter:
@@ -557,7 +557,7 @@ OCR/table/form/formula extraction counts, output artifact hashes or stream hash
 slots, warnings/errors, and capability coverage. That makes it suitable as the
 stable run record for general pipelines, not just this CLI.
 
-For Siftable-style ingestion, `stream-jsonl` maps naturally to durable
+For research applications-style ingestion, `stream-jsonl` maps naturally to durable
 processing records: `document_manifest` as a manifest artifact,
 `page_started`/`page_finished`/`document_finished` as status artifacts,
 `span`/`block`/`table` as extracted text artifacts, `route_trace` and
@@ -669,12 +669,23 @@ and ruling lines, invokes OCR only for scanned routes, then reconciles native,
 OCR, table, formula, and form spans with typed provenance.
 
 The versioned JSON, artifact JSONL, and streaming JSONL schema is currently
-`0.13.0`, with parser build identity `0.4.0-dev` after the `v0.3.0` release.
+`0.15.0`, with parser build identity `0.4.0-dev` after the `v0.3.0` release.
 Every emitted record carries a `provenance` envelope with document and
 source identity, input hash context, artifact id, page/bbox, source kind,
 confidence, related span/block/chunk ids, route trace ids, and route reasons.
 This makes parser outputs usable as reviewable evidence in host pipelines
 without removing the older top-level compatibility fields.
+
+Schema `0.14.0` also provides hash-bound text views, block-to-span source maps,
+and chunk-to-block maps with explicit synthetic whitespace. The
+[neutral JavaScript adapters](docs/host-adapters.md) expose rich extraction,
+UTF-16 locators, overlap-aware chunk origins and separate prompt projections.
+Schema `0.15.0` adds reconciled span/table/cell ownership and page/region recovery
+assessments. Streaming supports output and adaptive page allocation budgets;
+the JavaScript page adapter validates lifecycle completion and applies
+backpressure. Visual completeness remains unverified.
+Host adoption remains explicit; accepted schema families and parser/compiler
+pins must be updated together.
 
 ## Comparison
 

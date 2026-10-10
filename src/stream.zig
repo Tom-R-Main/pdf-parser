@@ -11,6 +11,7 @@ const runtime = @import("runtime.zig");
 const schema = @import("schema.zig");
 const specialist_protocol = @import("specialist_protocol.zig");
 const visual_assets = @import("visual_assets.zig");
+const resource_limits = @import("resource_limits.zig");
 
 pub const StreamingEventType = enum {
     document_manifest,
@@ -33,6 +34,8 @@ pub const StreamingOptions = struct {
     adaptive_options: adaptive.ExtractOptions = .{},
     schema_options: schema.RenderOptions = .{},
     include_debug_asset_refs: bool = true,
+    max_output_bytes: ?usize = null,
+    max_page_memory_bytes: ?usize = null,
 };
 
 pub const StreamingSummary = struct {
@@ -47,9 +50,15 @@ pub const StreamingSummary = struct {
 pub fn extractAdaptiveStreaming(
     allocator: std.mem.Allocator,
     document: anytype,
-    writer: anytype,
+    output_writer: anytype,
     options: StreamingOptions,
 ) !StreamingSummary {
+    if (options.max_output_bytes == 0 or options.max_page_memory_bytes == 0) return error.InvalidResourceLimit;
+    var limited_writer = resource_limits.LimitedWriter(@TypeOf(output_writer)){
+        .writer = output_writer,
+        .max_bytes = options.max_output_bytes,
+    };
+    const writer = &limited_writer;
     const page_start = options.adaptive_options.page_start orelse 0;
     const page_end = options.adaptive_options.page_end orelse document.pages.items.len;
     if (page_start > page_end or page_end > document.pages.items.len) return error.InvalidPageRange;
@@ -97,13 +106,24 @@ pub fn extractAdaptiveStreaming(
         page_options.fallback_page_index = fallback_page_index;
         page_options.region_index_base = region_index_base;
 
-        var page_result = try adaptive.extractDocument(allocator, document, page_options);
+        var page_budget = resource_limits.BudgetAllocator{
+            .parent = allocator,
+            .max_bytes = options.max_page_memory_bytes orelse std.math.maxInt(usize),
+        };
+        const page_allocator = if (options.max_page_memory_bytes != null) page_budget.allocator() else allocator;
+        var page_result = adaptive.extractDocument(page_allocator, document, page_options) catch |err| {
+            if (page_budget.limit_hit.load(.monotonic)) return error.MemoryBudgetExceeded;
+            return err;
+        };
         defer page_result.deinit();
+        // Some native fallbacks deliberately tolerate allocation errors. A
+        // budget breach must still fail the stream rather than publish omission.
+        if (page_budget.limit_hit.load(.monotonic)) return error.MemoryBudgetExceeded;
         region_index_base += @intCast(page_result.region_routes.len);
         if (page_result.hasSpecialistFailures()) summary.specialist_failure_count += 1;
 
-        const page_counts = try writePageArtifacts(
-            allocator,
+        const page_counts = writePageArtifacts(
+            page_allocator,
             writer,
             manifest_options.document_id,
             manifest_options.source_id,
@@ -114,7 +134,10 @@ pub fn extractAdaptiveStreaming(
             summary.artifact_counts,
             &table_context,
             &event_index,
-        );
+        ) catch |err| {
+            if (page_budget.limit_hit.load(.monotonic)) return error.MemoryBudgetExceeded;
+            return err;
+        };
         summary.artifact_counts.spans += page_counts.spans;
         summary.artifact_counts.blocks += page_counts.blocks;
         summary.artifact_counts.tables += page_counts.tables;
@@ -152,6 +175,21 @@ pub fn extractAdaptiveStreaming(
 
     const elapsed_ns = runtime.nanoTimestamp() - started_ns;
     summary.elapsed_ms = if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, 1_000_000)) else 0;
+    // Reserve the whole terminal record before emitting any of it. A bounded
+    // failure can leave an incomplete artifact, but never a completion marker.
+    var terminal_counter = resource_limits.CountingWriter{};
+    try schema.writeDocumentFinishedRecord(
+        &terminal_counter,
+        manifest_options.document_id,
+        manifest_options.source_id,
+        manifest_options.input_sha256,
+        summary.artifact_counts,
+        summary.route_counts,
+        summary.elapsed_ms,
+        event_index,
+    );
+    try terminal_counter.writeByte('\n');
+    try limited_writer.ensureCapacity(terminal_counter.written);
     try schema.writeDocumentFinishedRecord(
         writer,
         manifest_options.document_id,
@@ -393,4 +431,55 @@ fn addRouteTotals(total: *schema.RouteTotals, add: schema.RouteTotals) void {
 test "streaming event enum includes lifecycle and artifact records" {
     try std.testing.expectEqual(StreamingEventType.document_manifest, StreamingEventType.document_manifest);
     try std.testing.expectEqual(StreamingEventType.document_finished, StreamingEventType.document_finished);
+}
+
+test "stream output cap reserves terminal record atomically" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    const root = @import("root.zig");
+    const pdf_data = try @import("testpdf.zig").generateCleanNativePdf(allocator);
+    defer allocator.free(pdf_data);
+    const doc = try root.Document.openFromMemory(allocator, pdf_data, root.ErrorConfig.default());
+    defer doc.close();
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    const options = StreamingOptions{ .adaptive_options = .{ .page_start = 0, .page_end = 0, .enable_ocr = false }, .include_debug_asset_refs = false };
+    _ = try extractAdaptiveStreaming(allocator, doc, runtime.arrayListWriter(&output, allocator), options);
+    const terminal_start = std.mem.lastIndexOfScalar(u8, output.items[0 .. output.items.len - 1], '\n').? + 1;
+    output.clearRetainingCapacity();
+    var limited_options = options;
+    limited_options.max_output_bytes = terminal_start + 1;
+    try std.testing.expectError(error.OutputLimitExceeded, extractAdaptiveStreaming(allocator, doc, runtime.arrayListWriter(&output, allocator), limited_options));
+    try std.testing.expectEqual(terminal_start, output.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "document_finished") == null);
+}
+
+test "stream page allocation budget failures clean up partial extraction" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    const root = @import("root.zig");
+    const pdf_data = try @import("testpdf.zig").generateCleanNativePdf(allocator);
+    defer allocator.free(pdf_data);
+    const doc = try root.Document.openFromMemory(allocator, pdf_data, root.ErrorConfig.default());
+    defer doc.close();
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    var failed_count: usize = 0;
+    for ([_]usize{ 1, 32, 128, 512, 2048, 8192, 32768 }) |limit| {
+        output.clearRetainingCapacity();
+        if (extractAdaptiveStreaming(allocator, doc, runtime.arrayListWriter(&output, allocator), .{
+            .adaptive_options = .{ .enable_ocr = false },
+            .include_debug_asset_refs = false,
+            .max_page_memory_bytes = limit,
+        })) |_| {} else |err| {
+            try std.testing.expectEqual(error.MemoryBudgetExceeded, err);
+            try std.testing.expect(std.mem.indexOf(u8, output.items, "document_finished") == null);
+            failed_count += 1;
+        }
+    }
+    try std.testing.expect(failed_count > 0);
 }
