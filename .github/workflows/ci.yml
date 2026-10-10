@@ -135,6 +135,13 @@ jobs:
       - name: Build shared library
         run: zig build shared --summary all
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Test public JavaScript adapters against current CLI
+        run: node --test integrations/javascript/*.test.mjs
+
   python:
     name: Python ${{ matrix.python-version }} bindings and wheel
     runs-on: ubuntu-latest

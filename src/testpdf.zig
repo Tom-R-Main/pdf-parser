@@ -652,6 +652,19 @@ fn repeatedWidths(allocator: std.mem.Allocator, count: usize, width_value: []con
     return widths.toOwnedSlice(allocator);
 }
 
+/// One marked-content group with two independently positioned text spans.
+pub fn generateSharedMcidLinesPdf(allocator: std.mem.Allocator) ![]u8 {
+    const content =
+        "/Span << /MCID 7 >> BDC\n" ++
+        "BT /F1 12 Tf 100 700 Td (FIRST) Tj 0 -24 Td (SECOND) Tj ET\n" ++
+        "EMC\n";
+    const font =
+        "5 0 obj\n" ++
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\n" ++
+        "endobj\n";
+    return generateSinglePageFontFixturePdf(allocator, "/F1 5 0 R", content, &.{font});
+}
+
 /// Generate a fixture where /ActualText repairs intentionally bad visible text.
 pub fn generateActualTextRepairPdf(allocator: std.mem.Allocator) ![]u8 {
     const content =

@@ -57,6 +57,79 @@ fn expectProvenanceObject(value: std.json.Value) !void {
     try std.testing.expect(provenance.object.get("route_reasons") != null);
 }
 
+fn expectSourceMapsResolve(allocator: std.mem.Allocator, jsonl: []const u8) !void {
+    var texts = std.StringHashMap([]u8).init(allocator);
+    defer {
+        var entries = texts.iterator();
+        while (entries.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        texts.deinit();
+    }
+    var mapped_records: usize = 0;
+    var lines = std.mem.splitScalar(u8, jsonl, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const object = parsed.value.object;
+        const kind = object.get("record_type").?.string;
+        const is_span = std.mem.eql(u8, kind, "span");
+        const is_block = std.mem.eql(u8, kind, "block");
+        const is_chunk = std.mem.eql(u8, kind, "rag_chunk");
+        if (!is_span and !is_block and !is_chunk) continue;
+        const text = object.get(if (is_chunk) "content" else "text").?.string;
+        const id = object.get(if (is_span) "span_id" else if (is_block) "block_id" else "chunk_id").?.string;
+        const view = object.get("text_view").?.object;
+        try std.testing.expectEqualStrings("utf8_byte", view.get("offset_unit").?.string);
+        try std.testing.expectEqualStrings("half_open", view.get("range_convention").?.string);
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(text, &digest, .{});
+        const hex = std.fmt.bytesToHex(digest, .lower);
+        try std.testing.expectEqualStrings(&hex, view.get("text_sha256").?.string);
+        if (!is_span) {
+            mapped_records += 1;
+            var cursor: usize = 0;
+            for (object.get("source_map").?.array.items) |run_value| {
+                const run = run_value.object;
+                const start: usize = @intCast(run.get("text_start_byte").?.integer);
+                const end: usize = @intCast(run.get("text_end_byte").?.integer);
+                try std.testing.expectEqual(cursor, start);
+                try std.testing.expect(start < end and end <= text.len);
+                try std.testing.expect(std.unicode.utf8ValidateSlice(text[start..end]));
+                const source_id = run.get(if (is_block) "source_span_id" else "source_block_id").?;
+                if (source_id == .null) {
+                    try std.testing.expect(run.get("source_start_byte").? == .null);
+                    try std.testing.expect(run.get("source_end_byte").? == .null);
+                    for (text[start..end]) |byte| try std.testing.expect(std.ascii.isWhitespace(byte));
+                } else {
+                    const source = texts.get(source_id.string) orelse return error.UnresolvedSourceId;
+                    const source_start: usize = @intCast(run.get("source_start_byte").?.integer);
+                    const source_end: usize = @intCast(run.get("source_end_byte").?.integer);
+                    try std.testing.expect(source_start < source_end and source_end <= source.len);
+                    try std.testing.expectEqualStrings(source[source_start..source_end], text[start..end]);
+                }
+                cursor = end;
+            }
+            try std.testing.expectEqual(text.len, cursor);
+            if (is_chunk) {
+                const span_ids = object.get("source_span_ids").?.array.items;
+                try std.testing.expect(span_ids.len > 0);
+                try std.testing.expectEqual(span_ids.len, object.get("provenance").?.object.get("span_ids").?.array.items.len);
+                for (span_ids) |span_id| try std.testing.expect(texts.contains(span_id.string));
+            }
+        }
+        try std.testing.expect(!texts.contains(id));
+        const owned_id = try allocator.dupe(u8, id);
+        errdefer allocator.free(owned_id);
+        const owned_text = try allocator.dupe(u8, text);
+        errdefer allocator.free(owned_text);
+        try texts.put(owned_id, owned_text);
+    }
+    try std.testing.expect(mapped_records > 0);
+}
+
 test "parse minimal PDF" {
     const allocator = std.testing.allocator;
 
@@ -198,6 +271,63 @@ test "adaptive extraction returns native spans routes traces and chunks" {
     const markdown = try result.render(allocator, .markdown);
     defer allocator.free(markdown);
     try std.testing.expect(std.mem.indexOf(u8, markdown, "Adaptive Test") != null);
+}
+
+test "adaptive extraction retains both lines within one MCID in spans and outputs" {
+    const allocator = std.testing.allocator;
+    const pdf_data = try testpdf.generateSharedMcidLinesPdf(allocator);
+    defer allocator.free(pdf_data);
+
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf_data, zpdf.ErrorConfig.permissive());
+    defer doc.close();
+    var result = try doc.extractAdaptive(allocator, .{ .enable_ocr = false });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), result.reconciled.spans.len);
+    try std.testing.expectEqualStrings("FIRST", result.reconciled.spans[0].span.text);
+    try std.testing.expectEqualStrings("SECOND", result.reconciled.spans[1].span.text);
+    for (result.reconciled.spans) |span| {
+        try std.testing.expectEqual(@as(?i32, 7), span.span.mcid);
+        try std.testing.expectEqual(@as(u32, 0), span.duplicate_count);
+    }
+    const markdown = try result.render(allocator, .markdown);
+    defer allocator.free(markdown);
+    try expectIndexBefore(markdown, "FIRST", "SECOND");
+    const jsonl = try result.render(allocator, .artifact_jsonl);
+    defer allocator.free(jsonl);
+    try expectJsonlLinesParse(allocator, jsonl);
+    try expectSourceMapsResolve(allocator, jsonl);
+    try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"text\":\"FIRST\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"text\":\"SECOND\"") != null);
+    try std.testing.expect(result.reconciled.chunks.len > 0);
+    for ([_][]const u8{ "FIRST", "SECOND" }) |needle| {
+        var present = false;
+        for (result.reconciled.chunks) |chunk| {
+            if (std.mem.indexOf(u8, chunk.content, needle) != null) present = true;
+        }
+        try std.testing.expect(present);
+    }
+}
+
+test "streamed source maps resolve document-global span and block ids on later pages" {
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    const pdf_data = try testpdf.generateMultiPagePdf(allocator, &.{ "Repeated phrase", "Repeated phrase" });
+    defer allocator.free(pdf_data);
+    const doc = try zpdf.Document.openFromMemory(allocator, pdf_data, zpdf.ErrorConfig.permissive());
+    defer doc.close();
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    _ = try doc.extractAdaptiveStreaming(allocator, runtime.arrayListWriter(&output, allocator), .{
+        .adaptive_options = .{ .enable_ocr = false },
+        .schema_options = .{ .source_id = "mapping-fixture" },
+        .include_debug_asset_refs = false,
+    });
+    try expectSourceMapsResolve(allocator, output.items);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"source_span_id\":\"span-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "\"source_block_id\":\"block-1\"") != null);
 }
 
 test "adaptive OCR route invokes rasterizer and Tesseract adapter into fresh OCR spans" {
@@ -568,7 +698,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.13.0", parsed.value.object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.15.0", parsed.value.object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("0.4.0-dev", parsed.value.object.get("parser_version").?.string);
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-clean-native", parsed.value.object.get("source_id").?.string);
@@ -614,7 +744,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const debug_assets = parsed.value.object.get("debug_assets").?.array.items;
     try std.testing.expect(debug_assets.len > 0);
     try expectProvenanceObject(debug_assets[0]);
-    try std.testing.expectEqualStrings("0.13.0", debug_assets[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.15.0", debug_assets[0].object.get("schema_version").?.string);
     try std.testing.expect(debug_assets[0].object.get("asset_kind") != null);
     try std.testing.expect(debug_assets[0].object.get("path") != null);
     try std.testing.expectEqual(.null, debug_assets[0].object.get("path").?);
@@ -625,7 +755,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     try std.testing.expectEqualStrings("debug", debug_assets[0].object.get("provenance").?.object.get("source_kind").?.string);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_name\":\"document_manifest\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.13.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.15.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"rag_chunk\"") != null);
@@ -749,7 +879,7 @@ test "versioned artifact jsonl starts with manifest then typed records" {
     try std.testing.expect(manifest.value.object.get("output_artifacts") != null);
     try std.testing.expect(manifest.value.object.get("extraction_counts") != null);
     try std.testing.expect(manifest.value.object.get("capability_coverage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.13.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.15.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"record_type\":\"route_trace\"") != null);
     try expectJsonlLinesParse(allocator, jsonl);
@@ -781,7 +911,7 @@ test "specialist protocol emits batch request records for routed table formula r
     const requests = parsed.value.object.get("specialist_requests").?.array.items;
     try std.testing.expect(requests.len > 0);
     try expectProvenanceObject(requests[0]);
-    try std.testing.expectEqualStrings("0.13.0", requests[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.15.0", requests[0].object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("specialist_request", requests[0].object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-specialist", requests[0].object.get("source_id").?.string);
     try std.testing.expect(requests[0].object.get("requested_kind") != null);
@@ -860,7 +990,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.13.0","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.15.0","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(script);
@@ -936,7 +1066,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         const formulas = response.object.get("formulas").?.array.items;
         try std.testing.expectEqual(@as(usize, 1), formulas.len);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("schema_name").?.string);
-        try std.testing.expectEqualStrings("0.13.0", formulas[0].object.get("schema_version").?.string);
+        try std.testing.expectEqualStrings("0.15.0", formulas[0].object.get("schema_version").?.string);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("record_type").?.string);
         try std.testing.expectEqualStrings("source-formula", formulas[0].object.get("source_id").?.string);
         try expectProvenanceObject(formulas[0]);
@@ -1336,7 +1466,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const tables = parsed.value.object.get("tables").?.array.items;
     try std.testing.expect(tables.len > 0);
     try expectProvenanceObject(tables[0]);
-    try std.testing.expectEqualStrings("0.13.0", tables[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.15.0", tables[0].object.get("schema_version").?.string);
     try std.testing.expect(tables[0].object.get("logical_table_id") != null);
     try std.testing.expect(tables[0].object.get("table_part_index") != null);
     try std.testing.expect(tables[0].object.get("continued_from_table_id") != null);
@@ -1346,7 +1476,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const cells = tables[0].object.get("rows").?.array.items[0].object.get("cells").?.array.items;
     try std.testing.expect(cells.len > 0);
     try std.testing.expectEqualStrings("table_cell", cells[0].object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.13.0", cells[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.15.0", cells[0].object.get("schema_version").?.string);
     try std.testing.expect(cells[0].object.get("cell_id") != null);
     try std.testing.expectEqualStrings("external-merged-cells", cells[0].object.get("source_id").?.string);
     try std.testing.expect(cells[0].object.get("raw_text") != null);

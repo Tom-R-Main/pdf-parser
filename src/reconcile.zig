@@ -37,6 +37,9 @@ pub const ReconciledSpan = struct {
     duplicate_count: u32 = 0,
     chosen_source: SourceKind,
     confidence: f32,
+    /// Half-open UTF-8 byte range in the owning reconciled block's exact text.
+    block_text_start: usize = 0,
+    block_text_end: usize = 0,
 };
 
 pub const ReconciledBlock = struct {
@@ -446,7 +449,7 @@ pub fn renderDebugSvg(allocator: std.mem.Allocator, doc: *const ReconciledDocume
 
 fn buildBlocks(
     allocator: std.mem.Allocator,
-    spans: []const ReconciledSpan,
+    spans: []ReconciledSpan,
     options: ReconcileOptions,
 ) ![]ReconciledBlock {
     var blocks: std.ArrayList(ReconciledBlock) = .empty;
@@ -468,8 +471,8 @@ fn buildBlocks(
     var confidence_sum: f32 = 0;
     var confidence_count: u32 = 0;
 
-    for (spans, 0..) |span, index| {
-        if (index > start_index and shouldStartBlock(spans[index - 1], span, options)) {
+    for (spans, 0..) |*span, index| {
+        if (index > start_index and shouldStartBlock(spans[index - 1], span.*, options)) {
             try finishBlock(
                 allocator,
                 &blocks,
@@ -505,7 +508,9 @@ fn buildBlocks(
                 try text.append(allocator, '\n');
             }
         }
+        span.block_text_start = text.items.len;
         try text.appendSlice(allocator, span.span.text);
+        span.block_text_end = text.items.len;
         confidence_sum += span.confidence;
         confidence_count += 1;
     }
@@ -541,6 +546,7 @@ fn finishBlock(
     confidence_count: u32,
 ) !void {
     const owned_text = try text.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_text);
     text.* = .empty;
     if (owned_text.len == 0) {
         allocator.free(owned_text);
@@ -660,10 +666,13 @@ fn finishChunk(
     confidence_count: u32,
 ) !void {
     const content = try text.toOwnedSlice(allocator);
+    errdefer allocator.free(content);
     text.* = .empty;
+    const owned_source_id = try allocator.dupe(u8, source_id);
+    errdefer allocator.free(owned_source_id);
 
     try chunks.append(allocator, .{
-        .source_id = try allocator.dupe(u8, source_id),
+        .source_id = owned_source_id,
         .chunk_index = @intCast(chunks.items.len),
         .block_start = @intCast(block_start),
         .block_count = @intCast(block_count),
@@ -746,9 +755,8 @@ fn findDuplicate(spans: []const ReconciledSpan, duplicate_index: *const Duplicat
     const same_page_indices = duplicate_index.indicesForPage(candidate.span.page_index) orelse return null;
     for (same_page_indices) |index| {
         const existing = spans[index];
-        if (existing.span.mcid != null and candidate.span.mcid != null and existing.span.mcid.? == candidate.span.mcid.?) {
-            return index;
-        }
+        // MCIDs identify marked-content groups, which may contain multiple
+        // distinct spans. Duplicate identity still requires text and placement.
         if (!std.mem.eql(u8, normalizedText(existing.span.text), normalizedText(candidate.span.text))) continue;
         if (intersectionOverMinArea(existing.span.bbox, candidate.span.bbox) >= overlap_threshold) return index;
     }
@@ -1140,6 +1148,95 @@ test "reconciler duplicate index keeps page identity" {
     }
     try std.testing.expect(merged_page0);
     try std.testing.expect(untouched_page1);
+}
+
+test "reconciler preserves distinct text sharing an MCID even at the same placement" {
+    var first = testSpan("FIRST", .native_pdf, 10, 700, 50, 712);
+    var second = testSpan("SECOND", .native_pdf, 10, 700, 50, 712);
+    first.mcid = 7;
+    second.mcid = 7;
+
+    var doc = try reconcile(std.testing.allocator, &.{
+        .{ .source = .native_pdf, .spans = &.{ first, second } },
+    }, .{ .preserve_input_order = true });
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), doc.spans.len);
+    try std.testing.expectEqualStrings("FIRST", doc.spans[0].span.text);
+    try std.testing.expectEqualStrings("SECOND", doc.spans[1].span.text);
+}
+
+test "reconciler preserves repeated text sharing an MCID at distinct placements" {
+    var first = testSpan("Total", .native_pdf, 10, 700, 50, 712);
+    var second = testSpan("Total", .native_pdf, 10, 650, 50, 662);
+    first.mcid = 7;
+    second.mcid = 7;
+
+    var doc = try reconcile(std.testing.allocator, &.{
+        .{ .source = .native_pdf, .spans = &.{ first, second } },
+    }, .{});
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), doc.spans.len);
+    for (doc.spans) |span| {
+        try std.testing.expectEqualStrings("Total", span.span.text);
+        try std.testing.expectEqual(@as(u32, 0), span.duplicate_count);
+    }
+}
+
+test "reconciler still merges equivalent overlapping MCID spans with provenance" {
+    var native = testSpan("Total", .native_pdf, 10, 700, 50, 712);
+    var ocr = testSpan(" Total ", .fresh_ocr, 10.5, 700, 50.5, 712);
+    native.mcid = 7;
+    ocr.mcid = 7;
+
+    var doc = try reconcile(std.testing.allocator, &.{
+        .{ .source = .native_pdf, .spans = &.{native} },
+        .{ .source = .fresh_ocr, .spans = &.{ocr} },
+    }, .{});
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), doc.spans.len);
+    try std.testing.expectEqualStrings("Total", doc.spans[0].span.text);
+    try std.testing.expectEqual(@as(u8, 2), doc.spans[0].source_count);
+    try std.testing.expect(hasSource(doc.spans[0].source_mask, .native_pdf));
+    try std.testing.expect(hasSource(doc.spans[0].source_mask, .fresh_ocr));
+    try std.testing.expectEqual(@as(u32, 1), doc.spans[0].duplicate_count);
+}
+
+test "reconciler records byte origins during construction of repeated Unicode spans" {
+    var doc = try reconcile(std.testing.allocator, &.{
+        .{ .spans = &.{
+            testSpan("A😀", .native_pdf, 10, 700, 40, 712),
+            testSpan("A😀", .native_pdf, 45, 700, 75, 712),
+        } },
+    }, .{});
+    defer doc.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+    try std.testing.expectEqualStrings("A😀 A😀", doc.blocks[0].text);
+    try std.testing.expectEqual(@as(usize, 0), doc.spans[0].block_text_start);
+    try std.testing.expectEqual(@as(usize, 5), doc.spans[0].block_text_end);
+    try std.testing.expectEqual(@as(usize, 6), doc.spans[1].block_text_start);
+    try std.testing.expectEqual(@as(usize, 11), doc.spans[1].block_text_end);
+    for (doc.spans) |span| {
+        try std.testing.expectEqualStrings(span.span.text, doc.blocks[0].text[span.block_text_start..span.block_text_end]);
+    }
+}
+
+fn reconcileAllocationProbe(allocator: std.mem.Allocator) !void {
+    var deterministic = std.testing.FailingAllocator.init(allocator, .{ .resize_fail_index = 0 });
+    var doc = try reconcile(deterministic.allocator(), &.{
+        .{ .spans = &.{
+            testSpan("FIRST", .native_pdf, 10, 700, 50, 712),
+            testSpan("SECOND", .native_pdf, 10, 650, 60, 662),
+        } },
+    }, .{ .max_chunk_bytes = 8 });
+    defer doc.deinit();
+}
+
+test "reconciler construction cleans up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, reconcileAllocationProbe, .{});
 }
 
 test "reconciler emits specialist blocks and rag jsonl chunks" {

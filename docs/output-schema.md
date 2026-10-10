@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current schema version: `0.13.0`
+Current schema version: `0.15.0`
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.13.0` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.15.0` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,23 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.15.0` adds authoritative reconciled block references to spans, tables
+and cells, and page/region recovery assessments to route traces. Span provenance
+block references now resolve to actual reconciled owners, including later pages
+in streaming output. Numeric compatibility fields remain unchanged. Readers
+must explicitly accept `0.15.x` before adopting this revision.
+When the caller omits source identity, chunk `source_id` is now null, matching
+the manifest and provenance. Schema `0.14.x` chunks used an internal default
+label in that field; readers may retain it as compatibility metadata while
+binding identity through the manifest and provenance.
+
+Schema `0.14.0` adds identity text views and source maps to spans, blocks and
+retrieval chunks. Chunk span references now resolve to owning reconciled spans;
+streamed mappings use document-global ids. These are additive fields with no
+change to existing text, bbox, page-index or compatibility fields. A host that
+restricts accepted schema families must explicitly add `0.14.x` before adopting
+this parser revision. Formula children must echo the request's schema version.
 
 Schema `0.13.0` closes the first formula-specialist loop for file-backed,
 unrotated pages. Routed formula regions are padded, clamped to the page, mapped
@@ -267,6 +284,110 @@ protocol consumers.
 Chunk record with chunk id, source id, content, block range, page range, bbox,
 source mask, confidence, and source block/span references.
 
+### Text-view and source-map contract (0.14)
+
+`span`, `block`, and `rag_chunk` include `text_view`:
+
+```json
+{
+  "text_view_id": "block-2:text",
+  "kind": "reconciled_block",
+  "offset_unit": "utf8_byte",
+  "range_convention": "half_open",
+  "normalization": "none",
+  "text_sha256": "SHA256 of the exact UTF-8 text field"
+}
+```
+
+Kinds are `reconciled_span`, `reconciled_block`, and `rag_chunk`; the latter
+hashes `content`. IDs are artifact-local, so bind a locator to document/source
+identity, input SHA-256, the text-view id and text SHA-256. Never resolve a
+locator against another extraction run solely because an id or phrase matches.
+
+Blocks include ordered `source_map` runs covering their entire `text`:
+
+```json
+[
+  {"text_start_byte":0,"text_end_byte":5,"source_span_id":"span-4","source_start_byte":0,"source_end_byte":5},
+  {"text_start_byte":5,"text_end_byte":6,"source_span_id":null,"source_start_byte":null,"source_end_byte":null},
+  {"text_start_byte":6,"text_end_byte":11,"source_span_id":"span-5","source_start_byte":0,"source_end_byte":5}
+]
+```
+
+Ranges are half-open UTF-8 bytes, must end on Unicode scalar boundaries, and
+map byte-for-byte to the referenced exact text. Parser-inserted spaces/newlines
+have null source ids and ranges: they have no invented glyph evidence. Origin
+ranges are retained during block construction, including repeated spans; no
+text search is used to infer them. A span bbox covers the whole span, not the
+individual character subset selected by a mapped range.
+
+Chunks use the same run fields with `source_block_id` instead of
+`source_span_id`; their `\n\n` block separators are synthetic null runs.
+`source_span_ids` and `provenance.span_ids` enumerate the spans belonging to
+their source blocks. Resolve chunk -> block -> span maps to recover evidence.
+IDs in batch and streaming maps are document-global. Byte ranges are local to
+their own exact text view, not offsets in the input PDF file or in Markdown.
+
+The manifest's `text_contract` declares the byte/range units, zero-based page
+indices and geometry: `pdf_user_space`, points, `span_bbox` highlight precision,
+and `display_transform:null`. Existing bbox semantics are unchanged. Neither
+these boxes nor a multi-page union bbox are screen pixels. A viewer must apply
+its own page rotation/crop/display transform; the contract does not supply one.
+The origin can be native, OCR, specialist, or fallback text as its span's
+provenance declares; these mappings do not prove source-image visibility,
+complete page coverage, quotation verification, or absence of extraction loss.
+
+The neutral [JavaScript adapters](host-adapters.md) explicitly translate these
+UTF-8 byte boundaries to JavaScript UTF-16 units. Their document text projection
+joins exact block texts with two newlines, has its own hash and source map, and
+remains separate from prompt truncation and whitespace-normalized chunks. Rich
+search normalization in `src/text_search.zig` retains its existing reverse map;
+these identity views add no second native normalization engine.
+
+### Reconciled ownership and recovery assessments (0.15)
+
+Each span has `reconciled_block_id`, a document-global block id or null if no
+reconciled block owns it. Its `provenance.block_ids` agrees with that owner.
+The older numeric `block_id` retains its layout-index meaning.
+
+Tables and nested cells have `reconciled_block_ids`. These list the reconciled
+owners of their `source_span_ids` on the same page. Source spans are selected
+by the existing span-center-inside-bbox rule; a bbox intersection alone does
+not establish ownership. A spanning block can therefore belong to multiple
+cells. Legacy table `block_index`, `block_count` and `provenance.block_ids`
+retain pre-reconciliation indices and must not be used as authoritative links.
+These additions establish source linkage, not table topology accuracy.
+
+Page and region route traces include `coverage` with `status`, `completeness`,
+`native_span_count`, `recognized_span_count`, `requested_recovery`,
+`recovery_state` and `unresolved_region_count`. Status is `text_available`,
+`empty_unverified`, `recovery_required`, `recovery_failed` or `recovered`.
+Recovery state is `not_required`, `not_invoked`, `completed`, `empty`,
+`unavailable`, `failed`, `timeout` or `invalid_output`.
+
+`completeness` is always `unverified`. Empty output does not prove a blank
+page; retained native text does not prove that image regions were recognized.
+Selected OCR/formula attempts count as recovery only when retained recognized
+spans intersect the assessed region. Successful OCR cannot hide unresolved
+formula or disjoint image regions. Lifecycle `completed` means extraction
+finished, not that the source has complete visual coverage. Paint/clipping
+evidence and bounded regional OCR crops remain future work.
+
+### Streaming resource budgets
+
+`extract-adaptive --format stream-jsonl` accepts positive integer
+`--max-output-bytes N` and `--max-page-memory-bytes N`. The first caps aggregate
+serialized output; the second caps live requested allocation bytes in the
+adaptive page allocator. Document caches/mappings, allocator overhead and
+subprocess RSS are outside the page allocation budget. Batch formats and the
+specialist-request sidecar prepass reject these flags.
+
+Budget failures return nonzero (`OutputLimitExceeded` or
+`MemoryBudgetExceeded`). Partial records/pages may already have been emitted.
+The entire `document_finished` record is reserved before writing, so an output
+cap cannot leave a truncated success record. Accept a complete stream only
+after valid lifecycle/count checks and successful process exit.
+
 ### `debug_asset`
 
 Reference to visual review and coordinate artifacts. Debug assets are always
@@ -341,14 +462,14 @@ When `--debug-assets-dir` is provided, page-scoped `debug_asset` records are
 emitted before that page's `page_finished` event. Document-scoped debug assets
 are emitted near the end of the stream before `document_finished`.
 
-## Siftable Artifact Mapping
+## Host Artifact Mapping
 
 `source_id` is intentionally neutral: callers can set it to a database id,
 object-store key, URL, CMS id, processing-run source id, or any other external
 identifier. The parser does not interpret it.
 
 `stream-jsonl` is designed to map cleanly onto host application artifact
-pipelines, including Siftable-style `processing_runs` and `stage_artifacts`:
+pipelines, including durable processing runs and stage artifacts:
 
 - `document_manifest` -> `manifest` or run summary, including input hash,
   parser version, page count, encryption/corruption flags, route totals,

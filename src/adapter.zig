@@ -27,6 +27,8 @@ pub const AdaptiveAdapterOptions = struct {
     debug_assets_dir: ?[]const u8 = null,
     emit_specialist_requests_path: ?[]const u8 = null,
     specialist_config_path: ?[]const u8 = null,
+    max_output_bytes: ?usize = null,
+    max_page_memory_bytes: ?usize = null,
 };
 
 pub const AdaptiveAdapterSummary = struct {
@@ -42,6 +44,10 @@ pub fn extractAdaptive(
     writer: anytype,
     options: AdaptiveAdapterOptions,
 ) !AdaptiveAdapterSummary {
+    if (options.max_output_bytes != null or options.max_page_memory_bytes != null) {
+        if (options.format != .stream_jsonl or options.emit_specialist_requests_path != null) return error.InvalidResourceLimitOptions;
+        if (options.max_output_bytes == 0 or options.max_page_memory_bytes == 0) return error.InvalidResourceLimit;
+    }
     const input_sha256 = try schema.sha256Hex(allocator, document.data);
     defer allocator.free(input_sha256);
 
@@ -102,6 +108,8 @@ pub fn extractAdaptive(
             .adaptive_options = adaptive_options,
             .schema_options = render_options,
             .include_debug_asset_refs = options.include_debug_asset_refs,
+            .max_output_bytes = options.max_output_bytes,
+            .max_page_memory_bytes = options.max_page_memory_bytes,
         });
         return .{
             .format = options.format,
