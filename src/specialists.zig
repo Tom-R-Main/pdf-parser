@@ -7,6 +7,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 const runtime = @import("runtime.zig");
+const page_geometry = @import("page_geometry.zig");
 
 pub const BBox = layout.BBox;
 pub const TextSpan = layout.TextSpan;
@@ -125,6 +126,8 @@ pub const CropInput = struct {
     image_path: []const u8,
     pixel_width: u32 = 0,
     pixel_height: u32 = 0,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
 };
 
 pub const TableSpecialistKind = enum {
@@ -224,6 +227,8 @@ pub const FormulaCrop = struct {
     pixel_width: u32,
     pixel_height: u32,
     dpi: u32,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
 
     pub fn deinit(self: *FormulaCrop, allocator: std.mem.Allocator) void {
         runtime.deleteFilePath(self.image_path);

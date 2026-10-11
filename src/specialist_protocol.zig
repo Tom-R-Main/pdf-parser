@@ -10,8 +10,9 @@ const complexity = @import("complexity.zig");
 const layout = @import("layout.zig");
 const reconcile = @import("reconcile.zig");
 const runtime = @import("runtime.zig");
+const page_geometry = @import("page_geometry.zig");
 
-pub const schema_version = "0.17.0";
+pub const schema_version = "0.19.0";
 
 pub const SpecialistKind = enum {
     ocr,
@@ -51,7 +52,34 @@ pub const RenderContext = struct {
     input_sha256: ?[]const u8 = null,
     span_base: u32 = 0,
     block_base: u32 = 0,
+    crop_geometry: ?RasterContext = null,
 };
+
+pub const RasterContext = struct {
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
+    pixel_width: u32,
+    pixel_height: u32,
+};
+
+pub fn writeMatrix(writer: anytype, matrix: page_geometry.Matrix) !void {
+    try writer.writeByte('[');
+    for (matrix, 0..) |value, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.print("{d}", .{value});
+    }
+    try writer.writeByte(']');
+}
+
+pub fn writeRasterContext(writer: anytype, context: ?RasterContext) !void {
+    const value = context orelse return writer.writeAll("null");
+    const matrix = value.pixel_to_pdf orelse return writer.writeAll("null");
+    try writer.writeAll("{\"pixel_to_pdf\":");
+    try writeMatrix(writer, matrix);
+    try writer.writeAll(",\"rasterizer_dpi\":");
+    if (value.rasterizer_dpi) |dpi| try writer.print("{d}", .{dpi}) else try writer.writeAll("null");
+    try writer.print(",\"pixel_width\":{},\"pixel_height\":{}}}", .{ value.pixel_width, value.pixel_height });
+}
 
 pub const StreamMeta = struct {
     event_index: u64,
@@ -436,7 +464,7 @@ pub fn writeEntityRequestForBlock(
     try writer.print("\"block-{d}\"", .{context.block_base + block.id});
     try writer.writeAll("],\"blocks\":[");
     try writeBlockContext(writer, block, context.block_base + block.id);
-    try writer.writeAll("],\"ruling_lines\":[],\"crop_image_path\":null,\"debug_asset_ids\":[]");
+    try writer.writeAll("],\"ruling_lines\":[],\"crop_image_path\":null,\"crop_geometry\":null,\"debug_asset_ids\":[]");
     try writeProvenance(writer, context, "specialist-request-entity", block.page_index, block.bbox, "lifecycle", 1.0);
     try writer.writeByte('}');
 }
@@ -606,6 +634,13 @@ fn writeFormulaAttempts(
         if (attempt.crop_pixel_width) |width| try writer.print("{}", .{width}) else try writer.writeAll("null");
         try writer.writeAll(",\"crop_pixel_height\":");
         if (attempt.crop_pixel_height) |height| try writer.print("{}", .{height}) else try writer.writeAll("null");
+        try writer.writeAll(",\"crop_transform\":");
+        try writeRasterContext(writer, .{
+            .pixel_to_pdf = if (@hasField(@TypeOf(attempt), "crop_pixel_to_pdf")) attempt.crop_pixel_to_pdf else null,
+            .rasterizer_dpi = if (@hasField(@TypeOf(attempt), "crop_rasterizer_dpi")) attempt.crop_rasterizer_dpi else null,
+            .pixel_width = attempt.crop_pixel_width orelse 0,
+            .pixel_height = attempt.crop_pixel_height orelse 0,
+        });
         try writer.print("}},\"execution\":{{\"duration_ms\":{},\"exit_code\":", .{attempt.duration_ms});
         if (attempt.exit_code) |code| try writer.print("{}", .{code}) else try writer.writeAll("null");
         try writer.writeAll("},\"quality\":{\"formula_count\":");
@@ -838,6 +873,8 @@ fn writeRequestRecord(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"crop_geometry\":");
+    try writeRasterContext(writer, context.crop_geometry);
     try writer.writeAll(",\"debug_asset_ids\":");
     try writeDebugAssetIds(writer, page_index);
     try writeProvenance(writer, context, "specialist-request", page_index, bbox, "lifecycle", routeConfidence(route));
@@ -886,6 +923,13 @@ fn writeOcrAttemptRecord(writer: anytype, context: RenderContext, attempt: anyty
     try writer.print(",\"max_image_pixels\":{},\"max_image_bytes\":{},\"max_regions_per_page\":{},\"max_attempts_per_page\":{}", .{ attempt.max_image_pixels, attempt.max_image_bytes, attempt.max_regions_per_page, attempt.max_attempts_per_page });
     try writer.writeAll("},\"crop\":");
     try writeOcrCrop(writer, attempt);
+    try writer.writeAll(",\"raster_transform\":");
+    try writeRasterContext(writer, .{
+        .pixel_to_pdf = if (@hasField(@TypeOf(attempt), "pixel_to_pdf")) attempt.pixel_to_pdf else null,
+        .rasterizer_dpi = if (@hasField(@TypeOf(attempt), "rasterizer_dpi")) attempt.rasterizer_dpi else null,
+        .pixel_width = attempt.pixel_width,
+        .pixel_height = attempt.pixel_height,
+    });
     try writer.writeAll(",\"execution\":{\"duration_ms\":");
     try writer.print("{}", .{attempt.duration_ms});
     try writer.writeAll(",\"exit_code\":");
@@ -1490,6 +1534,8 @@ fn writeReasonArray(writer: anytype, mask: u32) !void {
         .{ .bit = 10, .name = "layout_route_stub" },
         .{ .bit = 11, .name = "table_route_stub" },
         .{ .bit = 12, .name = "formula_route_stub" },
+        .{ .bit = 13, .name = "unexplained_vector" },
+        .{ .bit = 14, .name = "vector_evidence_limited" },
     };
     try writer.writeByte('[');
     var first = true;

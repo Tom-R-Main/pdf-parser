@@ -1,6 +1,6 @@
 # Parser, Research consumer, and Editorial consumer implementation plan
 
-Status: phases 0/1, reconciled table links, bounded streaming and recovery assessments landed in [PR #5](https://github.com/Tom-R-Main/pdf-parser/pull/5), merge commit `0dd534d`. Paint/clipping, bounded regional OCR and the text-fidelity continuation are implemented locally in schema 0.17; verification is recorded below. Host adoption remains pending, 2026-10-10. All writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Richer hierarchy/figures and host rollout remain planned.
+Status: phases 0/1, reconciled table links, bounded streaming and recovery assessments landed in [PR #5](https://github.com/Tom-R-Main/pdf-parser/pull/5), merge commit `0dd534d`. Paint/clipping, bounded regional OCR and text fidelity landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6), merge commit `9cac608`, with all six CI checks green for schema 0.17. Coordinate transforms and rotated OCR are locally checked, uncommitted schema 0.18. Bounded vector routing is locally checked, uncommitted schema 0.19; remote CI and merge remain separate. Host adoption remains pending, 2026-10-11. All writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Richer hierarchy/figures and host rollout remain planned.
 
 ## Delivery order and ownership
 
@@ -142,7 +142,7 @@ Schema 0.15.0 implements three parser-side units from the later phases:
 Regressions exercise forged ownership, contradictory coverage, later-page source
 locators, actual native allocation exhaustion, mixed native/scan extraction and
 stream failure paths. The previous phase receipts describe historical hashes;
-the continuation receipt records the current source/binary and gate results.
+the continuation receipt records the source/binary and gate results for that phase.
 
 Observed checks: all 128 JavaScript tests pass without skips, strict declaration
 typechecking and Zig formatting pass, and native test/build targets pass all
@@ -238,8 +238,9 @@ metadata lifetime defects. Both were fixed with regression tests and allocation
 sweeps. Review used independent contexts on the inherited session model; it does
 not establish model diversity. The
 [text-fidelity receipt](../benchmark/eval/outputs/text-fidelity-2026-10-10/receipt.json)
-binds the current source and binary to the final local checks. This continuation
-is uncommitted; no new remote CI, merge, host adoption or deployment is claimed.
+binds the source and binary used for the final local checks. This continuation
+subsequently landed in PR #6 at `9cac608`, with all six CI checks green. Host
+adoption and deployment remain outside that result.
 
 Observed final local checks: 183 JavaScript tests pass without skips; native
 tests pass all 62 steps, shared builds 6/6 and WASM 5/5. The combined benchmark
@@ -255,10 +256,113 @@ Expected injected faults remain detected. This qualifies the diagnostic native
 lane; Python and OCR memory lifetimes were excluded, and logical suballocation
 boundaries inside live arenas remain outside its proof.
 
-Inferred next implementation unit: a shared forward/inverse transform contract
-for page boxes, rotation, UserUnit and raster crops. Qualify quarter-turn pages,
-nonzero origins, fractional edges and transformed Forms before enabling rotated
-OCR. Then identify unexplained vector regions with new outlined-text controls and
-negative cases for rules, highlights, borders and logos. Keep recovered text
-separate from visual completeness. Table topology and reading order need new
-held-out suites; the earlier reading-order holdout must not be retuned or promoted.
+### Coordinate transforms and rotated OCR (0.18, local)
+
+The shared page model retains raw PDF user-space bboxes and adds a forward/inverse
+display contract. Page routes carry nullable `page_geometry`: MediaBox, effective
+CropBox, normalized quarter-turn rotation, leaf-page UserUnit and physical-point
+display dimensions/matrices. MediaBox, CropBox and Rotate retain page-tree
+inheritance. Legacy PageInfo dimensions and manifest `display_transform:null`
+remain compatible. Invalid geometry or non-quarter rotations withhold the new
+mapping; no identity transform is fabricated.
+
+OCR and formula raster callers use MediaBox. Regional crops round outward on the
+backend pixel grid; whole-page OCR maps accepted bitmap dimensions to exact page
+extents. The selected Poppler backend ignores UserUnit, so rasterizer DPI is the
+requested physical DPI multiplied by UserUnit. Padding is divided by UserUnit
+before applying it to raw coordinates. Accepted OCR attempts expose nullable
+`raster_transform`; formula attempts expose nullable `config.crop_transform` and
+their child requests receive `crop_geometry`. Each context retains pixel-to-PDF
+matrix, effective rasterizer DPI and dimensions. Formula's legacy requested bbox
+is preserved separately.
+
+OCR word boxes map all four corners back to raw PDF coordinates. Recognizer
+word/line/block metadata retains readable boundaries through quarter turns.
+This follows declared page rotation; it does not detect the orientation of scans.
+Rotated OCR preserves the recognizer's word order instead of promoting tables
+inferred from raw PDF axes. Rotated table reconstruction remains unqualified.
+Pixel, byte, region and attempt caps remain in place. Neutral adapters expose
+page geometry and explicit-scale bbox mapping without inventing character boxes.
+
+Local verification passed for this unit: 82 combined native/build/shared/WASM/
+benchmark steps, 241 JavaScript tests without skips, strict declarations,
+36 corpus documents through both readers, and three OCR quality gates plus
+their SDK readbacks. Numeric and actual raster controls cover quarter turns,
+inverse mappings, negative/nonzero origins, distinct CropBox, leaf-only UserUnit,
+fractional seams, transformed Forms applied once, invalid/overflow refusal,
+text/chunks/locators and retained budget failures. Linux passed 19 scoped memory
+checks and eight actual OCR quarter-turn CLI controls. Whole-Python-process
+shutdown remains unqualified. Ten native tests were skipped; the C-enabled
+recognition/teardown memory lane was exercised separately. Evidence is retained
+under ignored `benchmark/eval/outputs/coordinate-transforms-2026-10-10/`.
+No remote CI or merge is claimed for schema 0.18.
+
+### Bounded vector routing (0.19, locally checked)
+
+Collect painted-path hulls with limits of 512 retained shapes, 512 segments per
+path and 100,000 operators. Cap cumulative vector-lexer input across page and
+Forms at 8 MiB, graphics stack depth at 32 and Form invocations at 256. These
+bounds exclude initial PDF decompression and do not establish whole-process
+memory limits. Group unexplained contours into at most 64 regional
+OCR candidates. Page summaries retain collection status, classification
+counts and operator/byte counters; candidate records retain exact PDF-space
+bbox, shape/segment/subpath counts and native
+coverage. Required nullable `vector_evidence` appears only on page and region
+route traces. Known candidates link their `unexplained_vector` reason to an
+actual same-scope OCR request. Missing evidence remains null.
+When an existing image OCR route covers a vector candidate, retain the exact
+candidate bbox inside the larger route and reuse its request.
+Require nonblank retained fresh OCR text to intersect the exact candidate bbox
+with positive area before reporting recovery. Text elsewhere in the shared
+bitmap crop leaves the vector candidate unresolved. Recovery is text
+availability; merged route bounds and completeness remain unverified.
+
+Use known display axes for grouping, while public candidate boxes remain raw,
+unrotated PDF coordinates. Withhold rules, simple boxes, native-accounted shapes
+and isolated symbols. Unsupported evidence is partial; exhausted work bounds
+are limited. Geometric suspicion does not establish glyph identity, final
+visibility or completeness. Recovery uses the existing OCR engine and bounded
+crop quotas. Rotated OCR table promotion remains deferred.
+Native accounting unions clipped painted span rectangles, capped at 64
+intersections per shape/candidate coverage query and 1,000,000 native-span
+checks during page classification. Candidate-merge coverage uses its own bounded
+check budget. Exhaustion produces partial evidence and candidate abstention;
+it must not establish zero coverage.
+
+Acceptance passed on 23 generated fixtures with real curved glyph outlines,
+mixed native/vector content, transformed Forms, quarter turns, clipping, thin
+rules, highlights, borders, isolated logos, ambiguous dense graphics and reached
+shape/segment limits. All 47 generated files reproduce byte-for-byte; the PDFs
+total 156,147 bytes. Sheared Form clipping remains an explicit abstention.
+
+Independent review reproduced and remediation fixed three defects: a narrow
+native clip could suppress visible outlines, exhausted native accounting could
+publish fabricated zero coverage, and disjoint OCR text in a reused bitmap crop
+could mark its vector candidate recovered. Each has a persistent regression;
+saved before/after CLI probes cover both JSONL formats. The final scoped
+readback found no remaining material issue. Review used a separate context with
+the inherited session model; this does not establish model diversity.
+
+Current local gates pass 82/82 Zig build steps and 3,774/3,784 tests, with ten
+documented skips; native, shared-library and WASM builds pass. All 339 JavaScript
+tests pass with no skips in a serial run, including 13 vector CLI/SDK tests.
+Both SDK readers accept all 36 corpus documents and three OCR-enabled controls.
+The 36-document adaptive evaluation, both born-digital/hard-font lanes and
+three OCR quality gates pass. An earlier parallel JS run missed a process-test
+startup deadline; the retained serial run passes that test without a product
+change. No speed or universal outlined-text accuracy claim follows from these
+checks.
+
+Linux/aarch64 passes 19 scoped parser/ABI/counter and C OCR teardown memory
+checks with no skips, plus 16 vector CLI controls across both JSONL formats.
+The latter exercise actual OCR children without instrumenting their memory.
+Whole-Python-process shutdown remains unqualified, and `memcheck_proven` remains
+false. These checks do not establish a whole-process memory bound.
+
+Evidence and checked binaries are retained under ignored
+`benchmark/eval/outputs/vector-routing-2026-10-11/`. This unit remains
+uncommitted; no remote CI or merge is claimed.
+
+Table topology and reading order need new held-out suites; the earlier
+reading-order holdout must not be retuned or promoted. Host adoption remains a
+separate change after parser contract verification.

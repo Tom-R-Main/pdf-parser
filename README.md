@@ -548,8 +548,9 @@ The minimal specialist config shape is a JSON object with optional `ocr`,
 `enabled`, `executable`, `args`, `rasterizer_executable`, `crop_dpi`,
 `crop_padding_points`, `crop_grayscale`, and `timeout_ms`. Formula invocation
 is opt-in and model-neutral; no recognizer package is bundled. Memory-opened
-documents and rotated pages produce explicit crop-stage outcomes rather than
-silently invoking a text-only fallback.
+documents, invalid geometry and unsupported rotations produce explicit
+crop-stage outcomes. The development schema `0.18` maps declared quarter turns
+through shared crop transforms; scan orientation detection is separate.
 
 The document manifest is the top-level intelligence summary: input SHA256,
 parser/schema versions, page count, encrypted/corrupt flags, route counts,
@@ -669,7 +670,13 @@ and ruling lines, invokes OCR only for scanned routes, then reconciles native,
 OCR, table, formula, and form spans with typed provenance.
 
 The versioned JSON, artifact JSONL, and streaming JSONL schema is currently
-`0.17.0`, with parser build identity `0.4.0-dev` after the `v0.3.0` release.
+`0.19.0` in local development, with parser build identity `0.4.0-dev` after the
+`v0.3.0` release. Schema `0.17.0` landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6)
+at `9cac608`, with all six CI checks green. Schema `0.18` is locally checked and
+uncommitted; remote CI and merge remain separate. The `0.19` vector-routing
+continuation is locally checked and uncommitted. Its 23 outlined-text and
+negative-control fixtures, 13 real CLI/SDK tests and both JSONL readers are
+qualified in the [implementation evidence](docs/parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked).
 Every emitted record carries a `provenance` envelope with document and
 source identity, input hash context, artifact id, page/bbox, source kind,
 confidence, related span/block/chunk ids, route trace ids, and route reasons.
@@ -692,6 +699,36 @@ Schema `0.17.0` adds content-stream and Form invocation scope to spans.
 ActualText and classified text boundaries survive adaptive reconstruction; Form
 text uses scoped resources and transformed geometry. Native and adaptive text
 quality gates run against the same born-digital and hard-font floors.
+Schema `0.18.0` adds nullable page geometry and OCR/formula pixel transforms for
+declared quarter-turn pages. Source bboxes remain raw, unrotated PDF user-space
+coordinates; UserUnit determines their physical size. Display geometry uses the
+effective CropBox in physical points, while rasterization uses MediaBox and
+retains bounded crop budgets. Legacy PageInfo dimensions and the manifest's
+`display_transform:null` remain compatible. These mappings do not detect scan
+orientation or establish visual completeness.
+Rotated OCR retains recognized word order; inferred tables on those pages are
+not promoted to table artifacts until their topology is qualified.
+Schema `0.19.0` adds nullable vector evidence to page and region routes. Bounded
+painted-path collection and geometric grouping can request regional OCR for
+unexplained vector contours. Rules, simple boxes, native-accounted shapes and
+isolated symbols can be withheld. The collector caps retained shapes at 512,
+segments per path at 512, operators at 100,000, cumulative vector-lexer input at
+8 MiB, graphics stack depth at 32, Form invocations at 256 and candidate regions
+at 64. Page summaries retain operator and byte counters. These lexer bounds
+exclude initial PDF decompression and do not establish whole-process memory
+limits. Native accounting uses rectangle unions capped at 64 intersections per
+coverage query and 1,000,000 native-span checks during page classification;
+candidate-merge coverage has its own bounded check budget. Exhaustion produces
+partial evidence and abstention.
+Partial or limited evidence remains explicit. Grouping uses known display axes;
+candidate bboxes stay in raw PDF coordinates. Exact candidate bounds can be
+retained within a larger image OCR route to avoid duplicate crops. These
+candidates require retained OCR text intersecting the exact candidate extent
+before recovery is reported; recognized text elsewhere in the bitmap crop does
+not qualify. Recovery and merged route bounds leave completeness unverified.
+Vector candidates do not establish recognized glyphs, final visibility or
+complete coverage, and use the existing
+OCR engine and crop budgets.
 Host adoption remains explicit; accepted schema families and parser/compiler
 pins must be updated together.
 

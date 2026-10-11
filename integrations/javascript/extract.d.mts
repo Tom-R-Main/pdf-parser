@@ -1,3 +1,5 @@
+import type { PageGeometry, RasterTransform } from './coordinates.mjs';
+
 export type ExtractionErrorCode = 'protocol' | 'unavailable' | 'timeout' | 'output_limit' | 'memory_limit' | 'aborted' | 'crashed' | 'document' | 'cleanup' | 'callback';
 export class PdfExtractionError extends Error {
   readonly code: ExtractionErrorCode;
@@ -85,6 +87,76 @@ export interface PaintEvidence {
   paint_state: 'painting' | 'non_painting' | 'unknown';
   clip_state: 'unclipped' | 'inside' | 'outside' | 'partial' | 'unknown';
   clip_bbox: PdfBBox | null;
+}
+export interface PageRouteRecord extends ArtifactRecord {
+  record_type: 'route_trace';
+  trace_kind: 'page_route';
+  page_index: number;
+  /** Available from 0.18; null when geometry is unavailable. */
+  page_geometry?: PageGeometry | null;
+  /** Available from 0.19; bounded path evidence, not recognized text or visibility. */
+  vector_evidence?: PageVectorEvidence | null;
+}
+export interface PageVectorEvidence {
+  status: 'complete' | 'partial' | 'limited';
+  shape_count: number;
+  /** Unknown operators/paths; independent of the retained shape count. */
+  unknown_count: number;
+  ignored_rule_count: number;
+  clipped_out_count: number;
+  native_accounted_count: number;
+  simple_graphic_count: number;
+  ambiguous_shape_count: number;
+  candidate_region_count: number;
+  max_shapes: 512;
+  max_segments_per_path: 512;
+  max_operators: 100000;
+  operator_count: number;
+  content_bytes: number;
+  max_content_bytes: 8388608;
+  max_graphics_depth: 32;
+  max_form_invocations: 256;
+  max_candidate_regions: 64;
+}
+export interface RegionVectorEvidence {
+  /** Exact candidate extent; may be smaller than a reused image OCR route. */
+  bbox: PdfBBox;
+  shape_count: number;
+  segment_count: number;
+  subpath_count: number;
+  native_coverage: number;
+  decision: 'unexplained_vector';
+}
+export interface RegionRouteRecord extends ArtifactRecord {
+  record_type: 'route_trace';
+  trace_kind: 'region_route';
+  page_index: number;
+  region_index: number;
+  /** Available from 0.19; null for routes without a vector candidate. */
+  vector_evidence?: RegionVectorEvidence | null;
+}
+export interface OcrAttemptRecord extends ArtifactRecord {
+  record_type: 'specialist_attempt';
+  specialist_kind: 'ocr';
+  page_index: number;
+  /** Available from 0.18; null before a raster is accepted. */
+  raster_transform?: RasterTransform | null;
+}
+export interface FormulaAttemptRecord extends ArtifactRecord {
+  record_type: 'specialist_attempt';
+  specialist_kind: 'formula';
+  page_index: number;
+  config: {
+    /** Available from 0.18; requested PDF bbox remains separate. */
+    crop_transform?: RasterTransform | null;
+    [key: string]: unknown;
+  };
+}
+export interface SpecialistRequestRecord extends ArtifactRecord {
+  record_type: 'specialist_request';
+  page_index: number;
+  /** Available from 0.18; null unless the request has an accepted crop. */
+  crop_geometry?: RasterTransform | null;
 }
 export interface ByteSourceSegment {
   text_start_byte: number;

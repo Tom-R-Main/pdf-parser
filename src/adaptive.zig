@@ -15,6 +15,8 @@ const reading_order_regions = @import("reading_order_regions.zig");
 const schema = @import("schema.zig");
 const specialist_protocol = @import("specialist_protocol.zig");
 const specialists = @import("specialists.zig");
+const page_geometry = @import("page_geometry.zig");
+const vector_routing = @import("vector_routing.zig");
 
 pub const BBox = layout.BBox;
 pub const BlockKind = layout.BlockKind;
@@ -88,6 +90,8 @@ pub const RouteReason = enum(u5) {
     layout_route_stub,
     table_route_stub,
     formula_route_stub,
+    unexplained_vector,
+    vector_evidence_limited,
 };
 
 pub const RouteReasonMask = u32;
@@ -122,6 +126,8 @@ pub const OcrAttempt = struct {
     crop_bbox: ?BBox = null,
     crop_image_sha256: ?[32]u8 = null,
     crop_image_byte_length: ?usize = null,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
     status: ocr.AttemptStatus,
     page_bbox: BBox = .{},
     failure_stage: ?ocr.AttemptStage = null,
@@ -150,6 +156,8 @@ pub const OcrAttempt = struct {
 
 pub const PageRoute = struct {
     page_index: u32,
+    page_geometry: ?page_geometry.PageGeometry = null,
+    vector_evidence: ?vector_routing.Summary = null,
     bbox: BBox,
     span_count: usize,
     image_count: usize,
@@ -187,6 +195,7 @@ pub const RegionRoute = struct {
     page_index: u32,
     region_index: u32,
     layout_block_index: ?u32 = null,
+    vector_evidence: ?vector_routing.Candidate = null,
     bbox: BBox,
     block_kind: ?BlockKind = null,
     span_count: usize,
@@ -290,6 +299,8 @@ pub const FormulaAttempt = struct {
     crop_dpi: ?u32 = null,
     crop_pixel_width: ?u32 = null,
     crop_pixel_height: ?u32 = null,
+    crop_pixel_to_pdf: ?page_geometry.Matrix = null,
+    crop_rasterizer_dpi: ?f64 = null,
 };
 
 pub const FormulaArtifact = struct {
@@ -595,6 +606,22 @@ pub fn extractDocument(
 
         const page_score = complexity.scorePage(page_input);
         var page_route = PageRoute.fromScore(page_score);
+        if (@hasDecl(@TypeOf(document.*), "getPageGeometry")) page_route.page_geometry = document.getPageGeometry(page_idx);
+        var vector_result: ?vector_routing.Result = null;
+        defer if (vector_result) |*value| value.deinit();
+        if (@hasDecl(@TypeOf(document.*), "getPageVectorEvidenceFromContent")) {
+            var evidence = try document.getPageVectorEvidenceFromContent(page_idx, allocator, content_scratch_allocator, page_content);
+            defer evidence.deinit();
+            vector_result = try vector_routing.classify(allocator, &evidence, spans, page_bbox, page_route.page_geometry);
+            page_route.vector_evidence = vector_result.?.summary;
+            if (vector_result.?.candidates.len > 0) {
+                page_route.route.native_fast_path = false;
+                page_route.reason_mask &= ~reasonBit(.native_fast_path);
+                page_route.reason_mask |= reasonBit(.unexplained_vector);
+            }
+            if (evidence.status != .complete or vector_result.?.summary.status != .complete)
+                page_route.reason_mask |= reasonBit(.vector_evidence_limited);
+        }
         if (!native_result.quality.quality_pass) suppressLayoutSpecialists(&page_route.route, &page_route.reason_mask);
         try page_routes.append(allocator, page_route);
         try trace_records.append(allocator, .{
@@ -618,7 +645,8 @@ pub fn extractDocument(
         // Image routes precede recognition so attempts retain the exact routed
         // region identity even when native text makes the page score look good.
         const image_route_start = region_routes.items.len;
-        const regional_ocr = usesRegionalOcr(page_route, native_result.quality.quality_pass);
+        const regional_ocr = usesRegionalOcr(page_route, native_result.quality.quality_pass) or
+            (vector_result != null and vector_result.?.candidates.len > 0 and !page_route.route.needs_ocr);
         if (regional_ocr) {
             for (image_boxes) |image| {
                 const score = complexity.scoreRegion(page_input, image.bbox);
@@ -627,12 +655,37 @@ pub fn extractDocument(
                 try appendRouteTraces(allocator, &trace_records, page_index, region_index, route.route, route.reason_mask, route.span_count, 0);
                 region_index += 1;
             }
+            if (vector_result) |value| {
+                for (value.candidates) |candidate| {
+                    var covered = false;
+                    for (region_routes.items[image_route_start..]) |*existing| {
+                        if (!existing.route.needs_ocr or existing.bbox.x0 > candidate.bbox.x0 or existing.bbox.y0 > candidate.bbox.y0 or
+                            existing.bbox.x1 < candidate.bbox.x1 or existing.bbox.y1 < candidate.bbox.y1) continue;
+                        existing.vector_evidence = if (existing.vector_evidence) |old|
+                            vector_routing.mergeCandidates(old, candidate, spans) orelse continue
+                        else
+                            candidate;
+                        existing.reason_mask |= reasonBit(.unexplained_vector);
+                        covered = true;
+                        break;
+                    }
+                    if (covered) continue;
+                    var route = RegionRoute.fromScore(.{ .region_index = region_index, .score = complexity.scoreRegion(page_input, candidate.bbox) });
+                    route.vector_evidence = candidate;
+                    route.route = .{ .native_fast_path = false, .needs_ocr = true, .max_signal = 1 };
+                    route.reason_mask = reasonBit(.unexplained_vector) | reasonBit(.ocr_route_stub);
+                    try region_routes.append(allocator, route);
+                    try appendRouteTraces(allocator, &trace_records, page_index, region_index, route.route, route.reason_mask, route.span_count, 0);
+                    region_index += 1;
+                }
+            }
         }
         const image_route_end = region_routes.items.len;
         var page_ocr_spans: ?[]layout.TextSpan = null;
         var page_attempt_count: usize = 0;
         if (!regional_ocr and page_route.route.needs_ocr) {
-            const selected = try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, page_bbox, null, spans, image_boxes, &page_attempt_count);
+            const target_images = if (vector_result != null and vector_result.?.candidates.len > 0) &.{} else image_boxes;
+            const selected = try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, page_bbox, null, spans, target_images, &page_attempt_count);
             if (selected) |owned| {
                 errdefer ocr.freeSpans(allocator, owned);
                 try ocr_pages.append(allocator, owned);
@@ -658,7 +711,8 @@ pub fn extractDocument(
                     continue;
                 }
                 requested_regions += 1;
-                if (try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, route.bbox, route.region_index, spans, image_boxes, &page_attempt_count)) |owned| {
+                const target_images = if (route.vector_evidence != null) &.{} else image_boxes;
+                if (try recognizeOcrTarget(document, allocator, &ocr_attempts, options, page_idx, route.bbox, route.region_index, spans, target_images, &page_attempt_count)) |owned| {
                     // Transfer strings only after capacity succeeds; free the
                     // temporary array while combined owns its span strings.
                     errdefer ocr.freeSpans(allocator, owned);
@@ -836,13 +890,21 @@ pub fn extractDocument(
             region_summaries_transferred = true;
         }
 
-        for (page_layout.tables) |table| {
-            try tables.ensureUnusedCapacity(allocator, 1);
-            tables.appendAssumeCapacity(try copyTableGrid(allocator, table));
+        // Axis-aligned table inference uses raw PDF coordinates. On a rotated
+        // OCR page those axes differ from the recognizer's rows and columns.
+        // Retain its authoritative word order until table inference can share
+        // the display transform; candidate routing may still describe evidence.
+        const promote_tables = page_ocr_spans == null or
+            (page_route.page_geometry != null and page_route.page_geometry.?.rotation == .none);
+        if (promote_tables) {
+            for (page_layout.tables) |table| {
+                try tables.ensureUnusedCapacity(allocator, 1);
+                tables.appendAssumeCapacity(try copyTableGrid(allocator, table));
+            }
         }
 
         var filtered_ocr_layer_added = false;
-        if (page_layout.tables.len > 0 and page_view_quality_pass) {
+        if (promote_tables and page_layout.tables.len > 0 and page_view_quality_pass) {
             try layout_pages.ensureUnusedCapacity(allocator, 1);
             const layout_spans = try buildLayoutLayerSpans(allocator, &page_layout, applied_projected_order);
             if (layout_spans.len > 0) {
@@ -1101,7 +1163,14 @@ fn executeFormulaSpecialists(
         defer crop_outcome.deinit(allocator);
         const crop_input = crop_outcome.input;
         var execution = if (crop_input) |crop| blk: {
-            const request_jsonl = try specialist_protocol.renderRegionRequestJsonl(allocator, result, context, route_index, crop.image_path);
+            var crop_context = context;
+            crop_context.crop_geometry = .{
+                .pixel_to_pdf = crop.pixel_to_pdf,
+                .rasterizer_dpi = crop.rasterizer_dpi,
+                .pixel_width = crop.pixel_width,
+                .pixel_height = crop.pixel_height,
+            };
+            const request_jsonl = try specialist_protocol.renderRegionRequestJsonl(allocator, result, crop_context, route_index, crop.image_path);
             defer allocator.free(request_jsonl);
             var completed = try specialists.runFormulaJsonl(
                 allocator,
@@ -1174,6 +1243,8 @@ fn executeFormulaSpecialists(
             .crop_dpi = if (crop_input) |crop| crop.dpi else null,
             .crop_pixel_width = if (crop_input) |crop| crop.pixel_width else null,
             .crop_pixel_height = if (crop_input) |crop| crop.pixel_height else null,
+            .crop_pixel_to_pdf = if (crop_input) |crop| crop.pixel_to_pdf else null,
+            .crop_rasterizer_dpi = if (crop_input) |crop| crop.rasterizer_dpi else null,
         });
     }
 
@@ -1619,6 +1690,8 @@ fn recognizeOcrTarget(
                     .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
                     .pixel_width = ocr_input.pixel_width,
                     .pixel_height = ocr_input.pixel_height,
+                    .pixel_to_pdf = ocr_input.pixel_to_pdf,
+                    .rasterizer_dpi = ocr_input.rasterizer_dpi,
                     .crop_bbox = if (region_id != null) ocr_input.pdf_bbox else null,
                     .crop_image_sha256 = if (region_id != null) ocr_input.image_sha256 else null,
                     .crop_image_byte_length = if (region_id != null) ocr_input.image_byte_length else null,
@@ -1642,6 +1715,8 @@ fn recognizeOcrTarget(
                 .duration_ms = raster_outcome.duration_ms + recognition.duration_ms,
                 .pixel_width = ocr_input.pixel_width,
                 .pixel_height = ocr_input.pixel_height,
+                .pixel_to_pdf = ocr_input.pixel_to_pdf,
+                .rasterizer_dpi = ocr_input.rasterizer_dpi,
                 .crop_bbox = if (region_id != null) ocr_input.pdf_bbox else null,
                 .crop_image_sha256 = if (region_id != null) ocr_input.image_sha256 else null,
                 .crop_image_byte_length = if (region_id != null) ocr_input.image_byte_length else null,
@@ -2518,6 +2593,8 @@ fn reasonName(reason: RouteReason) []const u8 {
         .layout_route_stub => "layout_route_stub",
         .table_route_stub => "table_route_stub",
         .formula_route_stub => "formula_route_stub",
+        .unexplained_vector => "unexplained_vector",
+        .vector_evidence_limited => "vector_evidence_limited",
     };
 }
 
@@ -2592,6 +2669,8 @@ const AppendOcrAttemptOptions = struct {
     duration_ms: u64 = 0,
     pixel_width: u32 = 0,
     pixel_height: u32 = 0,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
     spans: []const layout.TextSpan = &.{},
     exit_code: ?u8 = null,
     diagnostic_code: ?ocr.DiagnosticCode = null,
@@ -2644,6 +2723,8 @@ fn appendOcrAttempt(
         .duration_ms = options.duration_ms,
         .pixel_width = options.pixel_width,
         .pixel_height = options.pixel_height,
+        .pixel_to_pdf = options.pixel_to_pdf,
+        .rasterizer_dpi = options.rasterizer_dpi,
         .span_count = options.spans.len,
         .character_count = character_count,
         .mean_confidence = if (options.spans.len > 0) @floatCast(confidence_total / @as(f64, @floatFromInt(options.spans.len))) else 0,

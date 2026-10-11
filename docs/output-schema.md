@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current schema version: `0.17.0`
+Current development schema version: `0.19.0` (locally checked, uncommitted).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.17.0` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.19.0` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,22 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.19.0` adds required nullable vector evidence on page and region route
+traces. Bounded path collection proposes geometric OCR candidates without
+changing the raw-coordinate or source-text contract. Readers must explicitly
+accept `0.19.x`; formula children must echo it. This unit is locally checked and
+uncommitted. Its [qualification](parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked)
+is separate from earlier local results and remote CI.
+
+Schema `0.18.0` adds nullable page geometry, OCR raster transforms and formula
+crop transforms. Native and recovered bboxes retain unrotated PDF user-space
+coordinates. Quarter-turn raster mapping uses the page's declared rotation and
+UserUnit; this does not detect the orientation of scanned content. Readers must
+explicitly accept `0.18.x`; formula children must echo it. Schema `0.17.0` landed
+in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6), merge commit
+`9cac608`, with all six CI checks green. Schema `0.18.0` has local verification;
+remote CI and merge remain separate.
 
 Schema `0.17.0` adds nullable `content_scope` to spans and inline specialist span
 context. It identifies native page content or a particular Form invocation.
@@ -217,6 +233,71 @@ confidence, reasons, counts, signals, bbox, and specialist metadata when
 available. Route traces include `specialist_request_ids` and
 `specialist_status` when a route maps to a request.
 
+In `0.18`, `page_route` traces also carry nullable `page_geometry`. Known geometry
+contains `coordinate_space:"pdf_user_space"`, `user_unit`, `rotation_degrees`,
+`media_box`, the effective `crop_box`, and `display`. The effective CropBox is
+the declared CropBox intersected with MediaBox, or MediaBox when CropBox is absent.
+MediaBox, CropBox and Rotate follow page-tree inheritance; UserUnit comes from
+the leaf page and defaults to 1.
+
+`display` contains `box:"crop_box"`, `origin:"top_left"`, `unit:"point"`,
+`width`, `height`, `pdf_to_display` and `display_to_pdf`. Display dimensions are
+physical points (1/72 inch), including UserUnit and the normalized quarter turn.
+Matrices use PDF `[a,b,c,d,e,f]` order: `x' = a*x + c*y + e` and
+`y' = b*x + d*y + f`. Map all four bbox corners and take their enclosing box.
+Invalid boxes or UserUnit, an empty effective CropBox, or a non-quarter rotation
+leave `page_geometry:null`; callers must withhold a display mapping in that case.
+
+In `0.19`, page and region route traces also carry required nullable
+`vector_evidence`. Other stage traces do not carry this field. A page summary
+contains `status` (`complete`, `partial` or `limited`), `shape_count`,
+`unknown_count`, `ignored_rule_count`, `clipped_out_count`,
+`native_accounted_count`, `simple_graphic_count`, `ambiguous_shape_count` and
+`candidate_region_count`, `operator_count` and `content_bytes`. It declares
+`max_shapes:512`, `max_segments_per_path:512`, `max_operators:100000`,
+`max_candidate_regions:64`, `max_content_bytes:8388608`,
+`max_graphics_depth:32` and `max_form_invocations:256`. Counts are nonnegative
+integers; operator and content-byte counters cannot exceed their declared caps.
+The content-byte budget applies cumulatively to input accepted by the vector
+lexer across the page and its Forms. Initial PDF decompression is separate;
+these limits do not establish a whole-process memory bound. The classified
+shape counts exclude `unknown_count`, which counts unsupported or malformed
+operator/path evidence independently of retained shapes. Classified shapes and
+the shapes in retained candidates cannot exceed `shape_count`.
+
+A region candidate contains positive integer `shape_count`, `segment_count`
+and `subpath_count`, exact `bbox`, `native_coverage` in `[0,1]`, and
+`decision:"unexplained_vector"`. Its route is `queue_ocr`; its reasons and
+provenance include `unexplained_vector`, and its specialist request ids link to
+a same-page, same-region OCR request. Candidate boxes remain raw, unrotated PDF
+user-space hulls. The payload `bbox` is the extent used for native coverage;
+it is contained by the route bbox, allowing the route's two-decimal rounding.
+A vector candidate may reuse a larger image OCR route instead of requesting a
+duplicate crop. Reporting that candidate as recovered requires retained,
+nonblank fresh OCR text whose bbox intersects the exact candidate bbox with
+positive area. Recognized text elsewhere in the larger bitmap crop does not
+satisfy that requirement. Recovery indicates text availability; the merged route
+bbox and candidate completeness remain unverified. Grouping follows display axes
+when known page geometry is
+available. A retained collection may contain fewer candidates than the page
+summary reports.
+
+This evidence identifies geometric candidates for the existing bounded OCR
+path. It does not recognize glyphs or prove final pixel visibility or document
+completeness. Rules, simple rectangular graphics, shapes accounted for by native
+text, and isolated symbols/logos can be withheld. `partial` records unsupported
+or uncertain evidence; `limited` records a reached work bound. Neither status
+authorizes a completeness claim. `null` withholds vector attribution rather
+than fabricating an empty known summary. No new OCR engine or model is implied.
+Native accounting uses the union of intersecting painted span rectangles,
+restricted by captured clip bounds. Each shape/candidate coverage query permits
+64 intersecting rectangles, with at most 1,000,000 native-span checks during
+page classification. The bounded candidate-merge coverage query uses its own
+check budget.
+Exhaustion makes evidence partial and withholds the affected candidate; it does
+not establish zero native coverage. Rectangle unions still do not prove pixel
+visibility.
+
 ### `specialist_request`
 
 Request record for a swappable local specialist. The parser emits these records
@@ -241,6 +322,10 @@ For formula execution, the public artifact remains redacted with
 `crop_image_path:null`; only the bounded child-process request contains the
 ephemeral local crop path.
 
+Schema `0.18` requests include nullable `crop_geometry`. Formula child requests
+carry this geometry after a crop is accepted; redacted public requests retain
+null. The object uses the raster-context fields described below.
+
 ### `specialist_attempt`
 
 One record per specialist invocation, including unsuccessful invocations.
@@ -258,6 +343,26 @@ recognition duration plus exit code; quality records the formula artifact
 count. Formula attempts are selected only when the response is completed and
 contains one valid formula artifact. `failure_stage` distinguishes rasterize
 failures from recognize failures.
+
+Schema `0.18` adds the following nullable raster contexts:
+
+| Record | Field | Meaning |
+| --- | --- | --- |
+| OCR attempt | `raster_transform` | Accepted whole-page or regional OCR image mapping |
+| Formula attempt | `config.crop_transform` | Accepted formula crop mapping |
+| Specialist request | `crop_geometry` | Formula crop mapping sent to the child |
+
+Each known context contains `pixel_to_pdf`, `rasterizer_dpi`, `pixel_width` and
+`pixel_height`. The matrix maps crop-local, top-left pixel edges to unrotated
+PDF user space. A missing mapping is null, not an identity transform. The
+configured DPI remains the requested physical DPI; the selected Poppler backend
+uses `rasterizer_dpi = requested_dpi * user_unit` because it ignores UserUnit.
+Formula `crop_bbox` retains its legacy requested-region meaning. Use the pixel
+matrix and dimensions to recover the actual raster extent.
+
+Rotated OCR words retain the recognizer's row order. Tables inferred from their
+raw PDF axes are not promoted to table artifacts or replacement text until
+rotated table reconstruction is qualified.
 
 `attempt_status` is `not_invoked`, `completed`, `empty`, `unavailable`,
 `failed`, `timeout`, or `invalid_output`. A bounded OCR policy may emit a
@@ -282,8 +387,9 @@ have `crop:null`; regional attempts carry `crop` with `bbox`, `dpi`,
 `pixel_width`, `pixel_height`, nullable `image_sha256` and `image_byte_length`.
 The hash and length identify the accepted PNG bytes delivered to recognition.
 They stay null when rasterization is refused or fails. The bbox is the actual
-pixel-aligned crop in PDF user space: padded by two points, clamped to MediaBox,
-then rounded outward using the nonzero page origin. Ephemeral PNG paths are
+pixel-aligned crop in PDF user space: padded by two physical points, clamped to
+MediaBox, then rounded outward on the raster grid. Padding in raw PDF units is
+divided by UserUnit. Ephemeral PNG paths are
 deleted after each attempt and never exposed as public crop identity.
 Whole-page OCR preserves its established MediaBox coordinate mapping; crop
 rounding does not rescale whole-page recognition geometry.
@@ -291,9 +397,11 @@ rounding does not rescale whole-page recognition geometry.
 Good native pages route image placements individually; pages failing native
 quality use whole-page recovery. Native text survives failed recovery. Quota
 skips retain requested routes and `not_invoked` attempts with `ocr_region_limit`
-or `ocr_attempt_limit`. Pixel/byte refusal, invalid geometry and rotation have
-explicit diagnostics. Rotated OCR pages are refused until their raster mapping
-is qualified. Pixel bounds apply before launch and to accepted PNG dimensions;
+or `ocr_attempt_limit`. Pixel/byte refusal and invalid geometry have explicit
+diagnostics. Declared rotations of 0, 90, 180 and 270 degrees use shared forward
+and inverse transforms. Unsupported rotations retain explicit refusal outcomes.
+The rasterizer uses MediaBox for compatibility, while display geometry uses the
+effective CropBox. Pixel bounds apply before launch and to accepted PNG dimensions;
 byte bounds apply before reading the PNG. These are not child RSS or in-flight
 temporary-file disk caps.
 
@@ -373,10 +481,14 @@ IDs in batch and streaming maps are document-global. Byte ranges are local to
 their own exact text view, not offsets in the input PDF file or in Markdown.
 
 The manifest's `text_contract` declares the byte/range units, zero-based page
-indices and geometry: `pdf_user_space`, points, `span_bbox` highlight precision,
-and `display_transform:null`. Existing bbox semantics are unchanged. Neither
-these boxes nor a multi-page union bbox are screen pixels. A viewer must apply
-its own page rotation/crop/display transform; the contract does not supply one.
+indices and compatibility geometry: `pdf_user_space`, `unit:"point"`,
+`span_bbox` highlight precision, and `display_transform:null`. Existing bbox
+semantics are unchanged: these boxes contain raw PDF user-space values. One raw
+unit equals UserUnit physical points, so the compatibility unit label alone does
+not supply physical scaling when UserUnit differs from 1. Legacy PageInfo
+dimensions also remain raw. Neither these boxes nor a multi-page union bbox are
+screen pixels. In `0.18`, use the matching page route's `page_geometry` to map a
+box to the effective CropBox display; apply the viewer's scale separately.
 The origin can be native, OCR, specialist, or fallback text as its span's
 provenance declares; these mappings do not prove source-image visibility,
 complete page coverage, quotation verification, or absence of extraction loss.
@@ -668,13 +780,13 @@ Minimal specialist config shape:
 
 The config format is intentionally small and bounded to 256 KiB, 32 arguments,
 4 KiB per executable/argument, a 72–600 crop DPI, 0–72 points of crop padding,
-and a 1–120000 ms timeout. In schema `0.13.0`, an enabled `formula` entry on a
-file-backed, unrotated page receives a deterministic PNG crop. Its executable
+and a 1–120000 ms timeout. An enabled `formula` entry on a file-backed page with
+valid quarter-turn geometry receives a deterministic PNG crop. Its executable
 reads one `specialist_request` JSONL record from stdin and writes one
 `specialist_response` JSONL record to stdout. The parser remains model-neutral
 and does not depend on a specific Python package or hosted model. Memory-opened
-documents and rotated pages produce explicit rasterize-stage outcomes. Other
-entries remain reserved adapter configuration.
+documents, unsupported rotations and invalid geometry produce explicit
+rasterize-stage outcomes. Other entries remain reserved adapter configuration.
 
 ## Host Packaging Modes
 

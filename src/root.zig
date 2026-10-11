@@ -29,6 +29,8 @@ pub const encryption = @import("encryption.zig");
 pub const structural = @import("structural.zig");
 pub const simd = @import("simd.zig");
 pub const layout = @import("layout.zig");
+pub const page_geometry = @import("page_geometry.zig");
+pub const vector_evidence = @import("vector_evidence.zig");
 pub const native_layout = @import("native_layout.zig");
 pub const text_search = @import("text_search.zig");
 pub const structtree = @import("structtree.zig");
@@ -1839,6 +1841,19 @@ pub const Document = struct {
         rotation: i32,
     };
 
+    /// Canonical PDF coordinates remain unchanged. These page-local matrices
+    /// map them to physical points at the selected box's top-left display origin.
+    pub fn getPageGeometry(self: *const Document, page_num: usize) ?page_geometry.PageGeometry {
+        if (page_num >= self.pages.items.len) return null;
+        const page = self.pages.items[page_num];
+        return page_geometry.PageGeometry.init(
+            .{ .x0 = page.media_box[0], .y0 = page.media_box[1], .x1 = page.media_box[2], .y1 = page.media_box[3] },
+            .{ .x0 = page.crop_box[0], .y0 = page.crop_box[1], .x1 = page.crop_box[2], .y1 = page.crop_box[3] },
+            page.rotation,
+            page.user_unit,
+        ) catch null;
+    }
+
     // =========================================================================
     // Feature 1: Document Metadata (/Info dict)
     // =========================================================================
@@ -2291,9 +2306,9 @@ pub const Document = struct {
                 });
                 break :blk null;
             };
-            if (geometry) |*page_geometry| {
-                defer page_geometry.deinit();
-                const canonical_glyphs = page_geometry.semantic_glyphs orelse page_geometry.glyphs;
+            if (geometry) |*native_geometry| {
+                defer native_geometry.deinit();
+                const canonical_glyphs = native_geometry.semantic_glyphs orelse native_geometry.glyphs;
                 const raw_or_empty: []const u8 = if (raw) |raw_text| raw_text else "";
                 const page = self.pages.items[page_idx];
                 var native_result = native_layout.analyze(
@@ -3017,8 +3032,8 @@ pub const Document = struct {
 
     /// Rasterize one routed formula region to an ephemeral PNG. The crop is
     /// page-clamped and expressed in Poppler's top-left pixel coordinates.
-    /// Rotated pages remain explicit unsupported outcomes until their geometry
-    /// mapping is fixture-gated.
+    /// Quarter-turn pages use the shared page transform; the legacy requested
+    /// bbox is retained alongside the crop-local pixel-to-PDF mapping.
     pub fn rasterizeFormulaRegionDetailed(
         self: *Document,
         allocator: std.mem.Allocator,
@@ -3032,26 +3047,23 @@ pub const Document = struct {
             .diagnostic_code = "formula_crop_requires_file",
         };
         const page = self.pages.items[page_idx];
-        const normalized_rotation = @mod(page.rotation, 360);
-        if (normalized_rotation != 0) return .{
+        const page_model = self.getPageGeometry(page_idx) orelse return .{
             .status = .unavailable,
-            .diagnostic_code = "formula_crop_rotation_unsupported",
+            .diagnostic_code = if (@mod(page.rotation, 90) != 0) "formula_crop_rotation_unsupported" else "invalid_formula_crop_geometry",
         };
-
-        const page_bbox = layout.BBox{
-            .x0 = page.media_box[0],
-            .y0 = page.media_box[1],
-            .x1 = page.media_box[2],
-            .y1 = page.media_box[3],
-        };
-        const geometry = formulaCropGeometry(page_bbox, bbox, config.crop_padding_points, config.crop_dpi) orelse return .{
+        const geometry = page_model.planCrop(bbox, .{ .padding_points = config.crop_padding_points, .dpi = @floatFromInt(config.crop_dpi) }) catch return .{
             .status = .invalid_output,
             .diagnostic_code = "invalid_formula_crop_geometry",
+        };
+        const raster_limits = ocr.OcrConfig{};
+        if (!@import("ocr/crop.zig").withinPixelLimit(geometry.width, geometry.height, raster_limits.max_image_pixels)) return .{
+            .status = .invalid_output,
+            .diagnostic_code = "formula_crop_pixel_limit",
         };
 
         const page_number = try std.fmt.allocPrint(allocator, "{}", .{page_idx + 1});
         defer allocator.free(page_number);
-        const dpi_arg = try std.fmt.allocPrint(allocator, "{}", .{config.crop_dpi});
+        const dpi_arg = try std.fmt.allocPrint(allocator, "{d}", .{geometry.rasterizer_dpi});
         defer allocator.free(dpi_arg);
         const x_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.x});
         defer allocator.free(x_arg);
@@ -3126,7 +3138,7 @@ pub const Document = struct {
                 .diagnostic_code = "formula_rasterizer_failed",
             },
         }
-        const dimensions = readPngDimensions(allocator, image_path) catch |err| switch (err) {
+        const dimensions = @import("ocr/crop.zig").readIdentity(allocator, image_path, raster_limits.max_image_bytes, raster_limits.max_image_pixels) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => return .{
                 .status = .invalid_output,
@@ -3135,12 +3147,20 @@ pub const Document = struct {
                 .diagnostic_code = "invalid_formula_crop_image",
             },
         };
+        if (dimensions.width != geometry.width or dimensions.height != geometry.height) return .{
+            .status = .invalid_output,
+            .stderr = result.stderr,
+            .duration_ms = elapsedMilliseconds(started_ns),
+            .diagnostic_code = "invalid_formula_crop_image",
+        };
         keep_image_path = true;
         return .{
             .status = .completed,
             .input = .{
                 .image_path = image_path,
-                .pdf_bbox = geometry.pdf_bbox,
+                .pdf_bbox = geometry.clamped_bbox,
+                .pixel_to_pdf = geometry.pixel_to_pdf,
+                .rasterizer_dpi = geometry.rasterizer_dpi,
                 .pixel_width = dimensions.width,
                 .pixel_height = dimensions.height,
                 .dpi = config.crop_dpi,
@@ -3159,31 +3179,14 @@ pub const Document = struct {
     };
 
     fn formulaCropGeometry(page_bbox: layout.BBox, bbox: layout.BBox, padding: f64, dpi: u32) ?FormulaCropGeometry {
-        const crop_bbox = layout.BBox{
-            .x0 = @max(page_bbox.x0, bbox.x0 - padding),
-            .y0 = @max(page_bbox.y0, bbox.y0 - padding),
-            .x1 = @min(page_bbox.x1, bbox.x1 + padding),
-            .y1 = @min(page_bbox.y1, bbox.y1 + padding),
-        };
-        if (!(std.math.isFinite(page_bbox.x0) and std.math.isFinite(page_bbox.y0) and
-            std.math.isFinite(page_bbox.x1) and std.math.isFinite(page_bbox.y1) and
-            std.math.isFinite(crop_bbox.x0) and std.math.isFinite(crop_bbox.y0) and
-            std.math.isFinite(crop_bbox.x1) and std.math.isFinite(crop_bbox.y1)) or
-            page_bbox.x1 <= page_bbox.x0 or page_bbox.y1 <= page_bbox.y0 or
-            crop_bbox.x1 <= crop_bbox.x0 or crop_bbox.y1 <= crop_bbox.y0) return null;
-        const scale = @as(f64, @floatFromInt(dpi)) / 72.0;
-        const left = @floor((crop_bbox.x0 - page_bbox.x0) * scale);
-        const top = @floor((page_bbox.y1 - crop_bbox.y1) * scale);
-        const right = @ceil((crop_bbox.x1 - page_bbox.x0) * scale);
-        const bottom = @ceil((page_bbox.y1 - crop_bbox.y0) * scale);
-        const max_u32_f = @as(f64, @floatFromInt(std.math.maxInt(u32)));
-        if (left < 0 or top < 0 or right <= left or bottom <= top or right > max_u32_f or bottom > max_u32_f) return null;
+        const model = page_geometry.PageGeometry.init(page_bbox, page_bbox, 0, 1) catch return null;
+        const plan = model.planCrop(bbox, .{ .padding_points = padding, .dpi = @floatFromInt(dpi) }) catch return null;
         return .{
-            .pdf_bbox = crop_bbox,
-            .x = @intFromFloat(left),
-            .y = @intFromFloat(top),
-            .width = @intFromFloat(right - left),
-            .height = @intFromFloat(bottom - top),
+            .pdf_bbox = plan.clamped_bbox,
+            .x = plan.x,
+            .y = plan.y,
+            .width = plan.width,
+            .height = plan.height,
         };
     }
 
@@ -3215,8 +3218,8 @@ pub const Document = struct {
     }
 
     /// Caller owns the ephemeral image path and must delete and free it after
-    /// recognition. Rotated pages are unsupported until coordinate mapping is
-    /// fixture-proven. Limits bound accepted raster pixels/bytes, not process RSS.
+    /// recognition. Quarter-turn mapping uses validated page geometry. Limits
+    /// bound accepted raster pixels/bytes, not process RSS.
     pub fn rasterizeOcrRegionDetailed(self: *Document, allocator: std.mem.Allocator, page_idx: usize, bbox: layout.BBox, config: ocr.OcrConfig) !ocr.RasterizeOutcome {
         return self.rasterizeOcrDetailed(allocator, page_idx, bbox, config, true);
     }
@@ -3229,17 +3232,23 @@ pub const Document = struct {
         };
 
         const page = self.pages.items[page_idx];
-        if (@mod(page.rotation, 360) != 0) return .{ .status = .unavailable, .diagnostic_code = .rasterizer_rotation_unsupported };
         const crop = @import("ocr/crop.zig");
         const page_bbox = layout.BBox{ .x0 = page.media_box[0], .y0 = page.media_box[1], .x1 = page.media_box[2], .y1 = page.media_box[3] };
-        const geometry = crop.geometry(page_bbox, bbox, if (regional) config.crop_padding_points else 0, config.dpi) orelse return .{ .status = .invalid_output, .diagnostic_code = .invalid_crop_geometry };
+        const page_model = self.getPageGeometry(page_idx) orelse return .{
+            .status = .unavailable,
+            .diagnostic_code = if (@mod(page.rotation, 90) != 0) .rasterizer_rotation_unsupported else .invalid_crop_geometry,
+        };
+        const geometry = page_model.planCrop(bbox, .{ .padding_points = if (regional) config.crop_padding_points else 0, .dpi = @floatFromInt(config.dpi) }) catch |err| return .{
+            .status = .invalid_output,
+            .diagnostic_code = if (err == error.RasterExtentOverflow) .rasterizer_pixel_limit else .invalid_crop_geometry,
+        };
         if (!crop.withinPixelLimit(geometry.width, geometry.height, config.max_image_pixels)) return .{ .status = .invalid_output, .diagnostic_code = .rasterizer_pixel_limit };
         if (config.max_image_bytes < 24) return .{ .status = .invalid_output, .diagnostic_code = .rasterizer_image_byte_limit };
 
         const page_number = try std.fmt.allocPrint(allocator, "{}", .{page_idx + 1});
         defer allocator.free(page_number);
 
-        const dpi_arg = try std.fmt.allocPrint(allocator, "{}", .{config.dpi});
+        const dpi_arg = try std.fmt.allocPrint(allocator, "{d}", .{geometry.rasterizer_dpi});
         defer allocator.free(dpi_arg);
         const x_arg = try std.fmt.allocPrint(allocator, "{}", .{geometry.x});
         defer allocator.free(x_arg);
@@ -3367,7 +3376,13 @@ pub const Document = struct {
                 },
             },
         };
-        if (regional and (dimensions.width != geometry.width or dimensions.height != geometry.height)) return .{ .status = .invalid_output, .stderr = result.stderr, .duration_ms = elapsedMilliseconds(started_ns), .diagnostic_code = .invalid_raster_image };
+        if (dimensions.width != geometry.width or dimensions.height != geometry.height) return .{ .status = .invalid_output, .stderr = result.stderr, .duration_ms = elapsedMilliseconds(started_ns), .diagnostic_code = .invalid_raster_image };
+        const pixel_to_pdf = if (regional) geometry.pixel_to_pdf else page_model.fullPagePixelToPdf(.media, dimensions.width, dimensions.height) catch return .{
+            .status = .invalid_output,
+            .stderr = result.stderr,
+            .duration_ms = elapsedMilliseconds(started_ns),
+            .diagnostic_code = .invalid_raster_image,
+        };
         keep_image_path = true;
         return .{
             .status = .completed,
@@ -3376,6 +3391,8 @@ pub const Document = struct {
                 // Preserve the established full-page OCR mapping. Regional
                 // crops map through their actual outward pixel boundaries.
                 .pdf_bbox = if (regional) geometry.pdf_bbox else page_bbox,
+                .pixel_to_pdf = pixel_to_pdf,
+                .rasterizer_dpi = geometry.rasterizer_dpi,
                 .image_path = image_path,
                 .pixel_width = dimensions.width,
                 .pixel_height = dimensions.height,
@@ -3390,20 +3407,6 @@ pub const Document = struct {
     fn elapsedMilliseconds(started_ns: i128) u64 {
         const elapsed_ns = runtime.nanoTimestamp() - started_ns;
         return if (elapsed_ns > 0) @intCast(@divTrunc(elapsed_ns, 1_000_000)) else 0;
-    }
-
-    fn readPngDimensions(allocator: std.mem.Allocator, image_path: []const u8) !struct { width: u32, height: u32 } {
-        const data = try runtime.readFileAllocAlignedCwd(allocator, image_path, .fromByteUnits(1));
-        defer allocator.free(data);
-
-        const png_signature = "\x89PNG\r\n\x1a\n";
-        if (data.len < 24 or !std.mem.eql(u8, data[0..8], png_signature)) return error.InvalidRasterImage;
-        if (!std.mem.eql(u8, data[12..16], "IHDR")) return error.InvalidRasterImage;
-
-        const width = std.mem.readInt(u32, data[16..][0..4], .big);
-        const height = std.mem.readInt(u32, data[20..][0..4], .big);
-        if (width == 0 or height == 0) return error.InvalidRasterImage;
-        return .{ .width = width, .height = height };
     }
 
     // =========================================================================
@@ -3430,6 +3433,110 @@ pub const Document = struct {
     }
 
     /// Detect images from already-decoded page content.
+    /// Painted vector-path inventory, independent of text and image extraction.
+    pub fn getPageVectorEvidenceFromContent(self: *Document, page_idx: usize, allocator: std.mem.Allocator, scratch_allocator: std.mem.Allocator, content: []const u8) !vector_evidence.Evidence {
+        return self.getPageVectorEvidenceFromContentWithLimits(page_idx, allocator, scratch_allocator, content, .{});
+    }
+
+    pub fn getPageVectorEvidenceFromContentWithLimits(self: *Document, page_idx: usize, allocator: std.mem.Allocator, scratch_allocator: std.mem.Allocator, content: []const u8, limits: vector_evidence.Limits) !vector_evidence.Evidence {
+        if (page_idx >= self.pages.items.len) return error.PageNotFound;
+        var builder = vector_evidence.Builder{ .allocator = allocator, .limits = limits };
+        defer builder.deinit();
+        var traversal = form_scope.Traversal{ .page_index = @intCast(page_idx), .max_invocations = limits.max_form_invocations };
+        const context = self.contentContext(page_idx, scratch_allocator, &traversal);
+        try self.collectVectorEvidence(content, &context, &builder, .{});
+        return builder.finish();
+    }
+
+    fn collectVectorEvidence(self: *Document, content: []const u8, context: *const ExtractionContext, builder: *vector_evidence.Builder, initial: vector_evidence.Graphics) anyerror!void {
+        // Bound cumulative input to the additional vector lexer, including
+        // repeated Form placements. Earlier PDF decompression is independent.
+        if (content.len > builder.limits.max_content_bytes - builder.content_bytes) {
+            builder.limited(true);
+            return;
+        }
+        builder.content_bytes += @intCast(content.len);
+        var token_arena = std.heap.ArenaAllocator.init(context.scratch_allocator);
+        defer token_arena.deinit();
+        var lexer = interpreter.ContentLexer.init(token_arena.allocator(), content);
+        var operands: [128]interpreter.Operand = undefined;
+        var count: usize = 0;
+        var collector = vector_evidence.Collector{ .builder = builder, .graphics = initial, .scope = context.scope };
+        while (!builder.stopped) {
+            const token_start = lexer.pos;
+            const token = (lexer.next() catch |err| {
+                if (err == error.OutOfMemory) return err;
+                builder.unknown();
+                break;
+            }) orelse break;
+            if (token == .number and !vectorNumberTokenIsValid(content[token_start..lexer.pos], token.number)) {
+                builder.unknown();
+                break;
+            }
+            if (token != .operator) {
+                if (count == operands.len) {
+                    builder.limited(true);
+                    break;
+                }
+                _ = pushOperand(&operands, &count, token);
+                continue;
+            }
+            if (!builder.operator()) break;
+            const op = token.operator;
+            if (std.mem.eql(u8, op, "Do")) {
+                if (count != 1 or operands[0] != .name) {
+                    builder.unknown();
+                } else self.collectVectorForm(operands[0].name, context, builder, collector.graphics) catch |err| {
+                    if (err == error.OutOfMemory) return err;
+                    if (err == error.FormDepthLimitExceeded or err == error.FormInvocationLimitExceeded) builder.limited(true) else builder.unknown();
+                };
+            } else try collector.consume(op, operands[0..count]);
+            count = 0;
+            // No shape borrows operands. Bound temporary decoded strings to one
+            // operator rather than retaining every text token on the page.
+            _ = token_arena.reset(.retain_capacity);
+        }
+        if (count != 0 and !builder.stopped) builder.unknown();
+        collector.endStream();
+    }
+
+    fn vectorNumberTokenIsValid(raw: []const u8, value: f64) bool {
+        // The shared permissive lexer can replace an invalid numeric token
+        // with zero. Validate its original bytes before using path geometry.
+        if (!std.math.isFinite(value) or raw.len == 0) return false;
+        var start = raw.len;
+        while (start > 0 and raw[start - 1] != 0 and !std.ascii.isWhitespace(raw[start - 1])) start -= 1;
+        const parsed = std.fmt.parseFloat(f64, raw[start..]) catch return false;
+        return std.math.isFinite(parsed);
+    }
+
+    fn collectVectorForm(self: *Document, name: []const u8, context: *const ExtractionContext, builder: *vector_evidence.Builder, parent: vector_evidence.Graphics) anyerror!void {
+        // Image Do is deliberately excluded from painted-path evidence.
+        const parent_resources = context.resources orelse return error.MissingVectorResources;
+        const xobjects = try resolveContextDict(context, parent_resources.get("XObject") orelse return error.MissingVectorXObjects);
+        const object = xobjects.get(name) orelse return error.MissingFormXObject;
+        const form = (try resolveForm(context, name)) orelse {
+            const resolved = try resolveContextObject(context, object);
+            if (resolved == .stream and std.mem.eql(u8, resolved.stream.dict.getName("Subtype") orelse "", "Image")) return;
+            return error.UnsupportedVectorXObject;
+        };
+        const traversal = context.traversal orelse return error.MissingFormTraversal;
+        const scope = try traversal.enter(.{ .object_num = form.reference.num, .generation = form.reference.gen });
+        defer traversal.leave();
+        var arena = std.heap.ArenaAllocator.init(context.scratch_allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
+        var child = context.*;
+        child.scratch_allocator = scratch;
+        child.scope = scope;
+        if (form.stream.dict.get("Resources")) |resources| child.resources = try resolveContextDict(context, resources);
+        var graphics = parent;
+        graphics.paint_state = try formGraphicsState(parent.paint_state, form.stream.dict);
+        if (graphics.paint_state.clip_unknown and !parent.paint_state.clip_unknown) builder.unknown();
+        try self.collectVectorEvidence(content, &child, builder, graphics);
+    }
+
     pub fn getPageImagesFromContent(
         self: *Document,
         page_idx: usize,
@@ -5844,6 +5951,108 @@ fn formTraversalPdfWithPageFont(allocator: std.mem.Allocator, page_content: []co
     return pdf.toOwnedSlice(allocator);
 }
 
+test "vector evidence Form placements apply matrix once and preserve scoped clip" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "q 1 0 0 1 20 50 cm /Fm Do Q q 1 0 0 1 100 50 cm /Fm Do Q /Im Do", "1 2 3 4 re f 200 200 2 2 re f", "/Resources 7 0 R /Matrix [2 0 0 3 10 20]");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var evidence = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "q 1 0 0 1 20 50 cm /Fm Do Q q 1 0 0 1 100 50 cm /Fm Do Q /Im Do");
+    defer evidence.deinit();
+    try std.testing.expectEqual(.complete, evidence.status);
+    try std.testing.expectEqual(@as(usize, 4), evidence.shapes.len);
+    try std.testing.expectEqualDeep(layout.BBox{ .x0 = 32, .y0 = 76, .x1 = 38, .y1 = 88 }, evidence.shapes[0].bbox);
+    try std.testing.expectEqualDeep(layout.BBox{ .x0 = 112, .y0 = 76, .x1 = 118, .y1 = 88 }, evidence.shapes[2].bbox);
+    try std.testing.expectEqual(.inside, evidence.shapes[0].clip_state);
+    try std.testing.expectEqual(.outside, evidence.shapes[1].clip_state);
+    try std.testing.expectEqual(@as(?u32, 6), evidence.shapes[0].content_scope.?.stream_object_num);
+    try std.testing.expect(evidence.shapes[0].content_scope.?.invocation_index != evidence.shapes[2].content_scope.?.invocation_index);
+}
+
+test "vector evidence Form cycles are partial and invocation operator caps are shared" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Fm Do", "0 0 2 2 re f /Fm Do", "/Resources 7 0 R");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var cycle = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "/Fm Do");
+    defer cycle.deinit();
+    try std.testing.expectEqual(.partial, cycle.status);
+    try std.testing.expectEqual(@as(usize, 1), cycle.shapes.len);
+    var limited = try doc.getPageVectorEvidenceFromContentWithLimits(0, allocator, allocator, "/Fm Do /Fm Do", .{ .max_form_invocations = 1 });
+    defer limited.deinit();
+    try std.testing.expectEqual(.limited, limited.status);
+    try std.testing.expectEqual(@as(usize, 1), limited.shapes.len);
+    var ops = try doc.getPageVectorEvidenceFromContentWithLimits(0, allocator, allocator, "/Fm Do", .{ .max_operators = 2 });
+    defer ops.deinit();
+    try std.testing.expectEqual(.limited, ops.status);
+    try std.testing.expectEqual(@as(u32, 2), ops.operator_count);
+    try std.testing.expectEqual(@as(usize, 0), ops.shapes.len);
+    var bytes_limited = try doc.getPageVectorEvidenceFromContentWithLimits(0, allocator, allocator, "/Fm Do", .{ .max_content_bytes = 6 });
+    defer bytes_limited.deinit();
+    try std.testing.expectEqual(.limited, bytes_limited.status);
+    try std.testing.expectEqual(@as(u32, 6), bytes_limited.content_bytes);
+    try std.testing.expectEqual(@as(usize, 0), bytes_limited.shapes.len);
+}
+
+fn vectorFormAllocationProbe(allocator: std.mem.Allocator, doc: *Document) !void {
+    var evidence = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "q 1 0 0 1 20 50 cm /Fm Do Q /Fm Do");
+    defer evidence.deinit();
+    try std.testing.expectEqual(@as(usize, 2), evidence.shapes.len);
+}
+
+test "vector evidence unresolved Do is partial while known images are ignored" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Missing Do /Im Do", "0 0 2 2 re f", "");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var missing = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "/Missing Do");
+    defer missing.deinit();
+    try std.testing.expectEqual(.partial, missing.status);
+    try std.testing.expectEqual(@as(u32, 1), missing.unknown_count);
+    var image = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "/Im Do");
+    defer image.deinit();
+    try std.testing.expectEqual(.complete, image.status);
+    try std.testing.expectEqual(@as(usize, 0), image.shapes.len);
+    const resources = doc.pages.items[0].resources;
+    defer doc.pages.items[0].resources = resources;
+    doc.pages.items[0].resources = null;
+    var absent = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "/Fm Do");
+    defer absent.deinit();
+    try std.testing.expectEqual(.partial, absent.status);
+    try std.testing.expectEqual(@as(u32, 1), absent.unknown_count);
+}
+
+test "vector evidence malformed numeric bytes cannot become synthetic zero coordinates" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "", "", "");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    for ([_][]const u8{ "+ 0 2 3 re f", "0 0 - 3 re f", "0 0 . 3 re f" }) |content| {
+        var evidence = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, content);
+        defer evidence.deinit();
+        try std.testing.expectEqual(.partial, evidence.status);
+        try std.testing.expectEqual(@as(usize, 0), evidence.shapes.len);
+    }
+    var valid = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "% ignored numeric comment 123\n -1 .5 2 3 re f");
+    defer valid.deinit();
+    try std.testing.expectEqual(.complete, valid.status);
+    try std.testing.expectEqualDeep(layout.BBox{ .x0 = -1, .y0 = 0.5, .x1 = 1, .y1 = 3.5 }, valid.shapes[0].bbox);
+}
+
+test "vector evidence Form frames free partial output at every allocation failure" {
+    const allocator = std.testing.allocator;
+    const bytes = try formTraversalPdf(allocator, "/Fm Do", "1 2 3 4 re f", "/Resources 7 0 R /Matrix [2 0 0 3 10 20]");
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    var warmup = try doc.getPageVectorEvidenceFromContent(0, allocator, allocator, "/Fm Do");
+    warmup.deinit();
+    try std.testing.checkAllAllocationFailures(allocator, vectorFormAllocationProbe, .{doc});
+}
+
 test "Form traversal resolves scoped named ActualText and preserves inherited page resources" {
     const allocator = std.testing.allocator;
     for ([_][]const u8{ "", "/Resources 7 0 R" }) |resources| {
@@ -6598,6 +6807,79 @@ test "search candidate union ownership is safe across every allocation failure" 
     );
 }
 
+fn pageGeometryDocumentFixture(allocator: std.mem.Allocator) ![]u8 {
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(allocator);
+    var writer = runtime.arrayListWriter(&bytes, allocator);
+    const objects = [_][]const u8{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [10 20 110 220] /CropBox [25 40 100 200] /Rotate 90 /UserUnit 3 >>",
+        "<< /Type /Page /Parent 2 0 R /UserUnit 5 0 R /Rotate 0 >>",
+        "<< /Type /Page /Parent 2 0 R >>",
+        "2",
+    };
+    var offsets: [objects.len]usize = undefined;
+    try writer.writeAll("%PDF-1.7\n");
+    for (objects, 0..) |object, index| {
+        offsets[index] = bytes.items.len;
+        try writer.print("{d} 0 obj\n{s}\nendobj\n", .{ index + 1, object });
+    }
+    const xref_offset = bytes.items.len;
+    try writer.print("xref\n0 {d}\n0000000000 65535 f \n", .{objects.len + 1});
+    for (offsets) |offset| try writer.print("{d:0>10} 00000 n \n", .{offset});
+    try writer.print("trailer\n<< /Size {d} /Root 1 0 R >>\nstartxref\n{d}\n%%EOF\n", .{ objects.len + 1, xref_offset });
+    return bytes.toOwnedSlice(allocator);
+}
+
+test "document page geometry preserves raw origins inherited boxes and leaf UserUnit" {
+    const allocator = std.testing.allocator;
+    const bytes = try pageGeometryDocumentFixture(allocator);
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    try std.testing.expectEqual(@as(usize, 2), doc.pageCount());
+    const first = doc.getPageGeometry(0).?;
+    const second = doc.getPageGeometry(1).?;
+    try std.testing.expectEqual(@as(f64, 2), first.user_unit);
+    try std.testing.expectEqual(@as(f64, 1), second.user_unit);
+    try std.testing.expectEqual(page_geometry.QuarterTurn.clockwise_90, second.rotation);
+    try std.testing.expectEqual(layout.BBox{ .x0 = 10, .y0 = 20, .x1 = 110, .y1 = 220 }, first.media_box);
+    try std.testing.expectEqual(layout.BBox{ .x0 = 25, .y0 = 40, .x1 = 100, .y1 = 200 }, first.crop_box);
+    try std.testing.expectEqual(@as(f64, 100), doc.getPageInfo(0).?.width);
+    try std.testing.expectEqual(@as(f64, 200), doc.getPageInfo(0).?.height);
+    try std.testing.expectEqual(@as(f64, 200), first.media.width_points);
+    try std.testing.expectEqual(@as(f64, 400), first.media.height_points);
+    try std.testing.expect(doc.getPageGeometry(2) == null);
+}
+
+test "document page geometry literal quarter transforms and unsupported geometry" {
+    const allocator = std.testing.allocator;
+    const bytes = try pageGeometryDocumentFixture(allocator);
+    defer allocator.free(bytes);
+    const doc = try Document.openFromMemory(allocator, bytes, ErrorConfig.default());
+    defer doc.close();
+    const point: page_geometry.Point = .{ .x = 40, .y = 50 };
+    const expected_media = [_]page_geometry.Point{ .{ .x = 60, .y = 340 }, .{ .x = 60, .y = 60 }, .{ .x = 140, .y = 60 }, .{ .x = 340, .y = 140 } };
+    const expected_crop = [_]page_geometry.Point{ .{ .x = 30, .y = 300 }, .{ .x = 20, .y = 30 }, .{ .x = 120, .y = 20 }, .{ .x = 300, .y = 120 } };
+    for ([_]i32{ 0, 90, 180, 270 }, 0..) |rotation, index| {
+        doc.pages.items[0].rotation = rotation;
+        const model = doc.getPageGeometry(0).?;
+        try std.testing.expectEqual(expected_media[index], try page_geometry.mapPoint(model.pdfToDisplay(.media), point));
+        try std.testing.expectEqual(expected_crop[index], try page_geometry.mapPoint(model.pdfToDisplay(.crop), point));
+        try std.testing.expectEqual(point, try page_geometry.mapPoint(model.displayToPdf(.crop), expected_crop[index]));
+    }
+    doc.pages.items[0].rotation = 45;
+    try std.testing.expect(doc.getPageGeometry(0) == null);
+    doc.pages.items[0].rotation = 0;
+    for ([_]f64{ 0, -1, std.math.nan(f64), std.math.inf(f64), 75001 }) |unit| {
+        doc.pages.items[0].user_unit = unit;
+        try std.testing.expect(doc.getPageGeometry(0) == null);
+    }
+    doc.pages.items[0].user_unit = 1;
+    doc.pages.items[0].crop_box = .{ 300, 400, 400, 500 };
+    try std.testing.expect(doc.getPageGeometry(0) == null);
+}
+
 test "formula crop geometry is padded clamped and top-left mapped" {
     const geometry = Document.formulaCropGeometry(
         .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 },
@@ -6644,7 +6926,7 @@ test "regional OCR preflight preserves unsupported and bounded outcomes" {
     defer memory.deinit(allocator);
     try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_requires_file, memory.diagnostic_code.?);
     doc.source_path = try allocator.dupe(u8, "unused.pdf");
-    doc.pages.items[0].rotation = 90;
+    doc.pages.items[0].rotation = 45;
     var rotated = try doc.rasterizeOcrRegionDetailed(allocator, 0, bbox, .{});
     defer rotated.deinit(allocator);
     try std.testing.expectEqual(ocr.DiagnosticCode.rasterizer_rotation_unsupported, rotated.diagnostic_code.?);

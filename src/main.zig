@@ -2039,8 +2039,23 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
     try runtime.writeAllFile(raster_file,
         \\#!/bin/sh
         \\last=""
-        \\for arg do last="$arg"; done
-        \\printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\000\310\000\000\000\144' > "$last.png"
+        \\previous=""
+        \\for arg do
+        \\  case "$previous" in -W) width="$arg" ;; -H) height="$arg" ;; esac
+        \\  previous="$arg"
+        \\  last="$arg"
+        \\done
+        \\emit_u32() {
+        \\  for bit_shift in 24 16 8 0; do
+        \\    octal=$(printf '%03o' "$((($1 >> bit_shift) & 255))")
+        \\    printf '%b' "\\$octal"
+        \\  done
+        \\}
+        \\{
+        \\  printf '\211PNG\r\n\032\n\000\000\000\rIHDR'
+        \\  emit_u32 "$width"
+        \\  emit_u32 "$height"
+        \\} > "$last.png"
         \\
     );
     runtime.closeFile(raster_file);
@@ -2057,7 +2072,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.17.0","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.19.0","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(formula_file);
@@ -2131,7 +2146,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         const requests = try runtime.readFileAllocAlignedCwd(allocator, requests_path, .fromByteUnits(1));
         defer allocator.free(requests);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"record_type\":\"specialist_request\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.17.0\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.19.0\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"source_id\":\"external-specialist-cli\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_kind\":\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_outputs\"") != null);

@@ -1494,6 +1494,10 @@ fn writePageRouteRecord(writer: anytype, document_id: []const u8, source_id: ?[]
         try writer.print(",\"route_trace_id\":\"route-page-{d}\"", .{route.page_index});
     }
     try writer.print(",\"trace_kind\":\"page_route\",\"page_index\":{},\"region_index\":null,\"stage\":\"route_decision\"", .{route.page_index});
+    try writer.writeAll(",\"page_geometry\":");
+    try writePageGeometry(writer, if (@hasField(@TypeOf(route), "page_geometry")) route.page_geometry else null);
+    try writer.writeAll(",\"vector_evidence\":");
+    try writePageVectorEvidence(writer, if (@hasField(@TypeOf(route), "vector_evidence")) route.vector_evidence else null);
     try writeRouteFields(writer, route.route, route.reason_mask, route.span_count, 0, route.image_count, route.char_count, route.signals, route.bbox);
     try writeCoverage(writer, assessment);
     try specialist_protocol.writeRouteTraceSpecialistFieldsWithReason(writer, route.route, route.reason_mask, route.page_index, null);
@@ -1519,6 +1523,43 @@ fn writePageRouteRecord(writer: anytype, document_id: []const u8, source_id: ?[]
     try writer.writeByte('}');
 }
 
+fn writeExactBBox(writer: anytype, bbox: @import("layout.zig").BBox) !void {
+    try writer.print("{{\"x0\":{d},\"y0\":{d},\"x1\":{d},\"y1\":{d}}}", .{ bbox.x0, bbox.y0, bbox.x1, bbox.y1 });
+}
+
+fn writePageVectorEvidence(writer: anytype, value: ?@import("vector_routing.zig").Summary) !void {
+    const evidence = value orelse return writer.writeAll("null");
+    try writer.print("{{\"status\":\"{s}\",\"shape_count\":{},\"unknown_count\":{},\"ignored_rule_count\":{},\"clipped_out_count\":{},\"native_accounted_count\":{},\"simple_graphic_count\":{},\"ambiguous_shape_count\":{},\"candidate_region_count\":{},\"max_shapes\":{},\"max_segments_per_path\":{},\"max_operators\":{},\"max_candidate_regions\":{},\"operator_count\":{},\"content_bytes\":{},\"max_content_bytes\":{},\"max_graphics_depth\":{},\"max_form_invocations\":{}}}", .{
+        @tagName(evidence.status),       evidence.shape_count,            evidence.unknown_count,         evidence.ignored_rule_count,
+        evidence.clipped_out_count,      evidence.native_accounted_count, evidence.simple_graphic_count,  evidence.ambiguous_shape_count,
+        evidence.candidate_region_count, evidence.max_shapes,             evidence.max_segments_per_path, evidence.max_operators,
+        evidence.max_candidate_regions,  evidence.operator_count,         evidence.content_bytes,         evidence.max_content_bytes,
+        evidence.max_graphics_depth,     evidence.max_form_invocations,
+    });
+}
+
+fn writeRegionVectorEvidence(writer: anytype, value: ?@import("vector_routing.zig").Candidate) !void {
+    const evidence = value orelse return writer.writeAll("null");
+    try writer.print("{{\"shape_count\":{},\"segment_count\":{},\"subpath_count\":{},\"native_coverage\":{d:.6},\"decision\":\"unexplained_vector\",\"bbox\":", .{
+        evidence.shape_count, evidence.segment_count, evidence.subpath_count, evidence.native_coverage,
+    });
+    try writeExactBBox(writer, evidence.bbox);
+    try writer.writeByte('}');
+}
+
+fn writePageGeometry(writer: anytype, value: ?@import("page_geometry.zig").PageGeometry) !void {
+    const geometry = value orelse return writer.writeAll("null");
+    try writer.print("{{\"coordinate_space\":\"pdf_user_space\",\"user_unit\":{d},\"rotation_degrees\":{},\"media_box\":", .{ geometry.user_unit, @backingInt(geometry.rotation) });
+    try writeExactBBox(writer, geometry.media_box);
+    try writer.writeAll(",\"crop_box\":");
+    try writeExactBBox(writer, geometry.crop_box);
+    try writer.print(",\"display\":{{\"box\":\"crop_box\",\"origin\":\"top_left\",\"unit\":\"point\",\"width\":{d},\"height\":{d},\"pdf_to_display\":", .{ geometry.crop.width_points, geometry.crop.height_points });
+    try specialist_protocol.writeMatrix(writer, geometry.crop.pdf_to_display);
+    try writer.writeAll(",\"display_to_pdf\":");
+    try specialist_protocol.writeMatrix(writer, geometry.crop.display_to_pdf);
+    try writer.writeAll("}}");
+}
+
 fn writeRegionRouteRecord(writer: anytype, document_id: []const u8, source_id: ?[]const u8, input_sha256: ?[]const u8, route: anytype, route_index: u32, stream_meta: ?StreamRecordMeta, assessment: coverage.Assessment) !void {
     try writeRecordHeader(writer, "route_trace");
     if (stream_meta) |meta| try writeStreamMeta(writer, meta);
@@ -1530,6 +1571,8 @@ fn writeRegionRouteRecord(writer: anytype, document_id: []const u8, source_id: ?
         try writer.print(",\"route_trace_id\":\"route-region-{d}\"", .{route.region_index});
     }
     try writer.print(",\"trace_kind\":\"region_route\",\"page_index\":{},\"region_index\":{},\"stage\":\"route_decision\"", .{ route.page_index, route.region_index });
+    try writer.writeAll(",\"vector_evidence\":");
+    try writeRegionVectorEvidence(writer, if (@hasField(@TypeOf(route), "vector_evidence")) route.vector_evidence else null);
     try writer.writeAll(",\"layout_block_index\":");
     try writeOptionalU32(writer, route.layout_block_index);
     try writer.writeAll(",\"block_kind\":");
@@ -2427,6 +2470,8 @@ fn writeReasonArray(writer: anytype, mask: u32) !void {
         .{ .bit = 10, .name = "layout_route_stub" },
         .{ .bit = 11, .name = "table_route_stub" },
         .{ .bit = 12, .name = "formula_route_stub" },
+        .{ .bit = 13, .name = "unexplained_vector" },
+        .{ .bit = 14, .name = "vector_evidence_limited" },
     };
 
     try writer.writeByte('[');
