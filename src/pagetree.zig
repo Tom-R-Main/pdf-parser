@@ -27,6 +27,8 @@ pub const Page = struct {
     crop_box: [4]f64,
     /// Rotation in degrees (0, 90, 180, 270)
     rotation: i32,
+    /// Leaf-only physical scale per PDF user-space unit; NaN if specified but invalid.
+    user_unit: f64 = 1,
     /// Inherited Resources dictionary
     resources: ?Object.Dict,
 };
@@ -526,16 +528,44 @@ fn walkPageTree(
         }
     } else if (std.mem.eql(u8, type_name, "Page")) {
         // Leaf node - add to pages list
+        const user_unit = try leafUserUnit(allocator, data, xref, dict, cache, options);
         pages.append(allocator, .{
             .ref = node_ref,
             .dict = dict,
             .media_box = mediabox,
             .crop_box = cropbox orelse mediabox,
             .rotation = rotation,
+            .user_unit = user_unit,
             .resources = resources,
         }) catch return PageTreeError.OutOfMemory;
     }
     // Ignore unknown types
+}
+
+fn leafUserUnit(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    xref: *const XRefTable,
+    dict: Object.Dict,
+    cache: *std.AutoHashMap(u32, Object),
+    options: BuildOptions,
+) PageTreeError!f64 {
+    var value = dict.get("UserUnit") orelse return 1;
+    // UserUnit is not inherited. Bound indirect chains, including cyclic refs,
+    // and retain invalid specified values as unavailable geometry, not unit 1.
+    var remaining: usize = 16;
+    while (value == .reference) {
+        if (remaining == 0) return std.math.nan(f64);
+        remaining -= 1;
+        value = resolveRefWithOptions(allocator, data, xref, value.reference, cache, options) catch return error.OutOfMemory;
+    }
+    const number: f64 = switch (value) {
+        .integer => |integer| @floatFromInt(integer),
+        .real => |real| real,
+        else => return std.math.nan(f64),
+    };
+    if (!std.math.isFinite(number) or number <= 0 or number > 75000) return std.math.nan(f64);
+    return number;
 }
 
 fn emit(allocator: std.mem.Allocator, options: BuildOptions, diagnostic: structural.Diagnostic) void {
@@ -675,4 +705,83 @@ test "extractBox" {
     try std.testing.expectApproxEqRel(@as(f64, 612), box.?[2], 0.001);
 
     _ = allocator;
+}
+
+fn userUnitPageFixture(allocator: std.mem.Allocator, data: []const u8, object_count: u32) ![]Page {
+    var xref = XRefTable.init(allocator);
+    defer xref.deinit();
+    var trailer_entries = [_]Object.Dict.Entry{.{ .key = "Root", .value = .{ .reference = .{ .num = 1, .gen = 0 } } }};
+    xref.trailer = .{ .entries = &trailer_entries };
+    var number: u32 = 1;
+    while (number <= object_count) : (number += 1) {
+        var needle_buffer: [32]u8 = undefined;
+        const needle = try std.fmt.bufPrint(&needle_buffer, "{d} 0 obj", .{number});
+        const offset = std.mem.indexOf(u8, data, needle) orelse return error.MissingTestObject;
+        try xref.entries.put(number, .{ .offset = offset, .gen_or_index = 0, .entry_type = .in_use });
+    }
+    return buildPageTreeWithOptions(allocator, data, &xref, .{ .recover = false });
+}
+
+test "UserUnit is leaf only while page boxes and rotation remain inherited" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const data =
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n" ++
+        "2 0 obj << /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] /UserUnit 3 /MediaBox [10 20 110 220] /CropBox [25 40 100 200] /Rotate 90 >> endobj\n" ++
+        "3 0 obj << /Type /Page /Parent 2 0 R /UserUnit 2 >> endobj\n" ++
+        "4 0 obj << /Type /Page /Parent 2 0 R >> endobj\n";
+    const pages = try userUnitPageFixture(arena.allocator(), data, 4);
+    try std.testing.expectEqual(@as(usize, 2), pages.len);
+    try std.testing.expectEqual(@as(f64, 2), pages[0].user_unit);
+    try std.testing.expectEqual(@as(f64, 1), pages[1].user_unit);
+    for (pages) |page| {
+        try std.testing.expectEqualSlices(f64, &.{ 10, 20, 110, 220 }, &page.media_box);
+        try std.testing.expectEqualSlices(f64, &.{ 25, 40, 100, 200 }, &page.crop_box);
+        try std.testing.expectEqual(@as(i32, 90), page.rotation);
+    }
+}
+
+test "UserUnit resolves indirect integer and real numbers without fabricating invalid values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const data =
+        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n" ++
+        "2 0 obj << /Type /Pages /Count 4 /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /MediaBox [0 0 100 200] >> endobj\n" ++
+        "3 0 obj << /Type /Page /Parent 2 0 R /UserUnit 7 0 R >> endobj\n" ++
+        "4 0 obj << /Type /Page /Parent 2 0 R /UserUnit 8 0 R >> endobj\n" ++
+        "5 0 obj << /Type /Page /Parent 2 0 R /UserUnit 0 >> endobj\n" ++
+        "6 0 obj << /Type /Page /Parent 2 0 R /UserUnit /Invalid >> endobj\n" ++
+        "7 0 obj 1.5 endobj\n" ++
+        "8 0 obj 2 endobj\n";
+    const pages = try userUnitPageFixture(arena.allocator(), data, 8);
+    try std.testing.expectEqual(@as(usize, 4), pages.len);
+    try std.testing.expectEqual(@as(f64, 1.5), pages[0].user_unit);
+    try std.testing.expectEqual(@as(f64, 2), pages[1].user_unit);
+    try std.testing.expect(std.math.isNan(pages[2].user_unit));
+    try std.testing.expect(std.math.isNan(pages[3].user_unit));
+}
+
+test "UserUnit invalid numbers missing refs and cyclic refs stay unavailable" {
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    try cache.put(7, .{ .reference = .{ .num = 8, .gen = 0 } });
+    try cache.put(8, .{ .reference = .{ .num = 7, .gen = 0 } });
+    var entries = [_]Object.Dict.Entry{.{ .key = "UserUnit", .value = .{ .integer = 0 } }};
+    const dict: Object.Dict = .{ .entries = &entries };
+    const values = [_]Object{
+        .{ .integer = -1 },
+        .{ .integer = 75001 },
+        .{ .real = std.math.nan(f64) },
+        .{ .real = std.math.inf(f64) },
+        .{ .reference = .{ .num = 99, .gen = 0 } },
+        .{ .reference = .{ .num = 7, .gen = 0 } },
+    };
+    for (values) |value| {
+        entries[0].value = value;
+        try std.testing.expect(std.math.isNan(try leafUserUnit(std.testing.allocator, "", &xref, dict, &cache, .{})));
+    }
+    entries[0].value = .{ .integer = 75000 };
+    try std.testing.expectEqual(@as(f64, 75000), try leafUserUnit(std.testing.allocator, "", &xref, dict, &cache, .{}));
 }

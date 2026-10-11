@@ -98,7 +98,8 @@ These forward `--ocr-max-image-pixels`, `--ocr-max-image-bytes`,
 `--ocr-max-regions` and `--ocr-max-attempts`. Caps bound accepted rasters and
 per-page invocation counts; child RSS and temporary disk growth are outside
 these budgets. Crop records retain actual PDF-space bounds, accepted PNG SHA-256
-and byte length. Rotation is explicitly unsupported for OCR crops.
+and byte length. Declared quarter-turn rotations use the page's raster transform;
+unsupported rotations retain explicit refusal outcomes.
 
 The result retains the manifest, raw JSONL, all protocol records, spans, blocks
 and parser chunks. Its `sourceText` is exact block text in artifact order joined
@@ -122,14 +123,20 @@ projection is the entire source.
 
 `locateSourceRange` validates the exact source-text hash and UTF-16 range, then
 returns intersecting span/block/page evidence and synthetic gaps. Span bboxes
-remain PDF-space boxes, not precise character quads or viewer pixels. Apply a
-page-specific rotation/crop/display transform in the host. Synthetic whitespace
+remain raw PDF user-space boxes with span precision. Schema `0.18.x` exposes
+the page's rotation, effective CropBox and UserUnit through
+`getPageGeometry(document, pageIndex)`, which returns geometry or null.
+`mapPdfBBoxToDisplay(bbox, geometry, {scale})` and
+`mapDisplayBBoxToPdf(bbox, geometry, {scale})` map all four corners through the
+declared forward/inverse matrices. `scale` must be finite and positive; it
+converts physical display points to the viewer's units. Null geometry withholds
+a mapping. These helpers do not supply character quads. Synthetic whitespace
 has null span geometry. Bind stored locators to `inputSha256`, source identity,
 text hash/view and the record ids; do not resolve them against another run by
 phrase alone.
 
 `parseArtifactJsonl(rawJsonl, {inputSha256, expectedSourceId})` validates manifest-first batch
-ordering, schema `0.14.x`/`0.15.x`/`0.16.x`/`0.17.x`, input/provenance identity, text hashes, range boundaries,
+ordering, schema `0.14.x` through `0.19.x`, input/provenance identity, text hashes, range boundaries,
 full source-map coverage, referenced artifact sets and page relationships. It
 rejects truncated/malformed streams, forged synthetic text and mismatched source
 views. This is a batch reader; use `extractPdfPages` for lifecycle streams.
@@ -139,7 +146,7 @@ views. This is a batch reader; use `extractPdfPages` for lifecycle streams.
 extraction adapter always binds it to the input hash supplied to the CLI.
 For `0.14.x` only, chunks can carry an internal label when manifest/provenance
 source identity is null. The reader retains that label as metadata; it cannot
-override manifest, input hash or provenance identity. Current `0.15.x`–`0.17.x` records
+override manifest, input hash or provenance identity. Current `0.15.x`–`0.19.x` records
 must agree with the manifest, including null when no source id was supplied.
 
 Specialist records retain their legacy shared provenance labels; uniqueness is
@@ -147,7 +154,7 @@ checked with their actual request/attempt/response/result ids. Some current tabl
 provenance block references describe pre-reconciliation indices. The adapter
 preserves those raw values and reports missing references as
 `unresolvedProvenanceLinks`, rather than using them for source-text locators.
-Core span/block/chunk maps remain strict. In schema `0.15.x`–`0.17.x`, `document.tables`
+Core span/block/chunk maps remain strict. In schema `0.15.x`–`0.19.x`, `document.tables`
 exposes table/cell `reconciled_block_ids` checked against owning source spans.
 Span `reconciled_block_id` and ownership provenance must agree with block maps;
 cells must share their table's page. Use these authoritative fields for links.
@@ -187,6 +194,66 @@ scope identifies the retained occurrence, while raw glyph inventory distinguishe
 the contributing invocations. The adapter rejects out-of-page or malformed scopes and inconsistent
 specialist context. A locator's `sourceSpanId` resolves to the retained span and
 its scope; null scope explicitly withholds that attribution.
+
+Schema `0.18.x` adds nullable `page_route.page_geometry`, OCR attempt
+`raster_transform`, formula attempt `config.crop_transform`, and specialist
+request `crop_geometry`. The reader validates declared geometry against the
+page boxes, quarter-turn rotation, UserUnit and dimensions. Older supported
+schema families retain their existing contract. A page's display uses the
+effective CropBox in physical points; raster crops use MediaBox. Existing native,
+Form, OCR and table bboxes remain unrotated raw PDF coordinates. One raw unit is
+UserUnit physical points. Legacy PageInfo dimensions and the manifest's
+`display_transform:null` are retained for compatibility.
+
+Raster contexts contain `pixel_to_pdf`, `rasterizer_dpi`, `pixel_width` and
+`pixel_height`. The pixel matrix maps top-left crop-local pixel edges to raw PDF
+coordinates. Keep it with accepted crop evidence; do not infer it from a bbox
+and requested DPI. Whole-page OCR maps accepted dimensions to exact MediaBox
+extents, while regional crops retain their outward pixel-grid extent. Formula
+child requests receive accepted crop geometry; public crop paths and request
+geometry remain redacted. Quarter-turn support follows declared page rotation
+and does not detect scan orientation. Invalid or unsupported geometry remains
+unknown and does not relax pixel, byte, region or attempt caps.
+
+On rotated OCR pages, inferred tables do not replace the accepted OCR word
+sequence or become table artifacts. The raw coordinate axes do not establish
+the recognizer's rows and columns; rotated table reconstruction remains pending.
+
+Schema `0.19.x` retains the geometry, paint and content-scope checks from earlier
+versions and requires nullable `vector_evidence` on page and region routes.
+Known page summaries expose bounded collection status and classified shape
+counts, operator counts and cumulative lexer-input bytes. Declared bounds are
+512 shapes, 512 segments per path, 100,000 operators, 8 MiB of vector-lexer
+input across page and Forms, graphics depth 32, 256 Form invocations and
+64 candidates. Initial PDF decompression and whole-process RSS are outside
+these vector bounds. Known regional candidates expose shape/segment/subpath counts, native
+coverage and `decision:"unexplained_vector"`. The reader checks the declared
+caps and counters, candidate counts, reasons and same-scope OCR request links before returning
+a document or delivering a streamed page. Page summaries may describe more
+candidates than a retained regional subset. Explicit null evidence remains
+unknown; the adapter does not infer vector text or synthesize spans.
+Each regional payload also retains its exact PDF-space `bbox`, contained by
+the routed bbox within serialization rounding. A larger image OCR route can
+cover that candidate and reuse its request; native coverage describes the
+candidate bbox rather than the larger route.
+Recovery requires nonblank retained fresh OCR text with a bbox intersecting the
+exact candidate extent with positive area. A completed OCR attempt that finds
+text only elsewhere in a reused bitmap crop leaves that candidate unresolved.
+This tests text availability; the merged bbox and extraction completeness remain
+unverified.
+
+Vector candidates express geometric suspicion and use the existing OCR crop
+path and quotas. Display axes guide grouping when page geometry is known;
+source boxes and locators remain raw PDF user-space evidence. Rules, simple
+boxes, native-accounted shapes and isolated logos/symbols can be withheld.
+`partial` and `limited` statuses do not establish visibility or complete page
+coverage. Rotated table promotion remains deferred.
+Native coverage uses rectangle unions with at most 64 intersections per
+shape/candidate query and 1,000,000 span checks during page classification.
+Candidate-merge coverage uses its own bounded check budget. Exhaustion yields
+partial evidence and withholds the affected candidate, rather than assigning
+zero coverage. Captured clipping restricts native accounting; it does not prove
+final pixel visibility.
 
 ActualText replacements are preserved once per scope in `sourceText` and parser
 chunks. Unequal glyph/character counts retain span-bbox precision; no exact
@@ -233,17 +300,26 @@ as `memory_limit`/`output_limit`, without a complete receipt.
 ## Adoption and verification
 
 Readers limited to `0.11.x`/`0.13.x` must add
-`0.17.x` with contract tests before changing their parser pin. The adapter retains
-`0.14.x`, `0.15.x` and `0.16.x` reader support. Applications must pair
+`0.19.x` with contract tests before changing their parser pin. The adapter retains
+`0.14.x` through `0.18.x` reader support. Applications must pair
 their adopted parser revision with the selected Zig 0.17/compiler/archive identities
 and run its baseline CPU/runtime smoke lane. Formula children must echo the new
-request schema version. Neither host is changed by this work.
+request schema version. Host adoption remains a separate step.
+
+Schema `0.17` landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6),
+merge commit `9cac608`, with all six CI checks green. The coordinate and rotated
+OCR continuation is locally checked schema `0.18`. The `0.17` CI result does
+not qualify this continuation. Schemas `0.18` and `0.19` are committed on
+`codex/coordinate-vector-ocr`. Schema `0.19` adds bounded vector candidates.
+The new vector suite passes all 13 tests with no skips, including
+actual OCR in both SDK formats and disjoint output in a reused bitmap crop.
+Remote CI, merge and host adoption remain separate.
 
 Run the local adapter regressions and actual CLI composition test:
 
 ```sh
 zig build --summary all
-node --test integrations/javascript/*.test.mjs
+node --test --test-concurrency=1 integrations/javascript/*.test.mjs
 zig build test --summary all
 ```
 

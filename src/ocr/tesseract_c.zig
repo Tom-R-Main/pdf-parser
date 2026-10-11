@@ -79,7 +79,8 @@ fn recognizeRegionEnabled(
     if (!options.enable_tesseract_c) unreachable;
     const c = enabled.c;
 
-    if (input.pixel_width == 0 or input.pixel_height == 0) return error.EmptyImage;
+    try input.validateGeometry();
+    if (input.pixel_width > std.math.maxInt(c_int) or input.pixel_height > std.math.maxInt(c_int)) return error.InvalidRasterDimensions;
 
     const image_path_z = try allocator.dupeSentinel(u8, input.image_path, 0);
     defer allocator.free(image_path_z);
@@ -98,6 +99,7 @@ fn recognizeRegionEnabled(
     var pix = c.pixRead(image_path_z.ptr);
     if (pix == null) return error.ImageReadFailed;
     defer c.pixDestroy(&pix);
+    if (c.pixGetWidth(pix.?) != input.pixel_width or c.pixGetHeight(pix.?) != input.pixel_height) return error.InvalidRasterDimensions;
 
     c.TessBaseAPISetImage2(api, pix.?);
     c.TessBaseAPISetSourceResolution(api, @intCast(config.dpi));
@@ -167,7 +169,8 @@ fn appendWordSpan(
     var right: c_int = 0;
     var bottom: c_int = 0;
     if (c.TessPageIteratorBoundingBox(page_iterator, c.RIL_WORD, &left, &top, &right, &bottom) == 0) return;
-    if (right <= left or bottom <= top or left < 0 or top < 0) return;
+    if (right <= left or bottom <= top or left < 0 or top < 0) return error.InvalidWordBounds;
+    const bbox = try input.mapWordBBox(@intCast(left), @intCast(top), @intCast(right - left), @intCast(bottom - top));
 
     var is_bold: c_int = 0;
     var is_italic: c_int = 0;
@@ -193,15 +196,10 @@ fn appendWordSpan(
     errdefer allocator.free(text);
 
     const confidence = c.TessResultIteratorConfidence(iterator, c.RIL_WORD);
+    if (!std.math.isFinite(confidence)) return error.InvalidConfidence;
     try spans.append(allocator, layout.TextSpan.init(.{
         .page_index = input.page_index,
-        .bbox = mapPixelBBox(
-            input,
-            @intCast(left),
-            @intCast(top),
-            @intCast(right - left),
-            @intCast(bottom - top),
-        ),
+        .bbox = bbox,
         .text = text,
         .source = .fresh_ocr,
         .confidence = @max(0.0, @min(1.0, confidence / 100.0)),
@@ -212,24 +210,39 @@ fn appendWordSpan(
         },
         .block_id = block_id,
         .line_id = line_id,
+        .leading_boundary = wordBoundary(spans.items, block_id, line_id),
     }));
 }
 
-fn mapPixelBBox(input: types.OcrInput, left: u32, top: u32, width: u32, height: u32) layout.BBox {
-    const pdf_width = input.pdf_bbox.x1 - input.pdf_bbox.x0;
-    const pdf_height = input.pdf_bbox.y1 - input.pdf_bbox.y0;
-    const x_scale = pdf_width / @as(f64, @floatFromInt(input.pixel_width));
-    const y_scale = pdf_height / @as(f64, @floatFromInt(input.pixel_height));
+fn wordBoundary(spans: []const layout.TextSpan, block_id: u32, line_id: u32) layout.TextBoundary {
+    if (spans.len == 0) return .region_break;
+    const previous = spans[spans.len - 1];
+    if (previous.block_id != block_id) return .block_break;
+    if (previous.line_id != line_id) return .line_break;
+    return .space;
+}
 
-    const x0 = input.pdf_bbox.x0 + @as(f64, @floatFromInt(left)) * x_scale;
-    const x1 = x0 + @as(f64, @floatFromInt(width)) * x_scale;
-    const y1 = input.pdf_bbox.y1 - @as(f64, @floatFromInt(top)) * y_scale;
-    const y0 = y1 - @as(f64, @floatFromInt(height)) * y_scale;
+test "C word boundaries begin each accepted region and follow selected positions" {
+    try std.testing.expectEqual(layout.TextBoundary.region_break, wordBoundary(&.{}, 8, 3));
+    const spans = [_]layout.TextSpan{layout.TextSpan.init(.{
+        .bbox = .{ .x0 = 0, .y0 = 0, .x1 = 10, .y1 = 10 },
+        .text = "previous accepted",
+        .block_id = 8,
+        .line_id = 3,
+    })};
+    try std.testing.expectEqual(layout.TextBoundary.space, wordBoundary(&spans, 8, 3));
+    try std.testing.expectEqual(layout.TextBoundary.line_break, wordBoundary(&spans, 8, 4));
+    try std.testing.expectEqual(layout.TextBoundary.block_break, wordBoundary(&spans, 9, 4));
+}
 
-    return .{
-        .x0 = x0,
-        .y0 = y0,
-        .x1 = x1,
-        .y1 = y1,
-    };
+test "enabled C backend validates geometry before loading an image" {
+    if (!options.enable_tesseract_c) return error.SkipZigTest;
+    try std.testing.expectError(error.InvalidMatrix, recognizeRegion(std.testing.allocator, .{
+        .page_index = 0,
+        .pdf_bbox = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 },
+        .image_path = "unused.png",
+        .pixel_width = 100,
+        .pixel_height = 100,
+        .pixel_to_pdf = .{ 1, 0, 0, 1, std.math.nan(f64), 0 },
+    }, .{ .backend = .tesseract_c }));
 }

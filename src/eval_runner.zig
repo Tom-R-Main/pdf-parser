@@ -2249,8 +2249,23 @@ test "eval runner adaptive mode emits OCR text metrics and counters" {
     const fake_rasterizer =
         \\#!/bin/sh
         \\last=""
-        \\for arg do last="$arg"; done
-        \\printf '\211PNG\r\n\032\n\000\000\000\rIHDR\000\000\003\350\000\000\007\320' > "$last.png"
+        \\previous=""
+        \\for arg do
+        \\  case "$previous" in -W) width="$arg" ;; -H) height="$arg" ;; esac
+        \\  previous="$arg"
+        \\  last="$arg"
+        \\done
+        \\emit_u32() {
+        \\  for bit_shift in 24 16 8 0; do
+        \\    octal=$(printf '%03o' "$((($1 >> bit_shift) & 255))")
+        \\    printf '%b' "\\$octal"
+        \\  done
+        \\}
+        \\{
+        \\  printf '\211PNG\r\n\032\n\000\000\000\rIHDR'
+        \\  emit_u32 "$width"
+        \\  emit_u32 "$height"
+        \\} > "$last.png"
         \\
     ;
     var raster_buf: [96]u8 = undefined;

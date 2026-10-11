@@ -28,7 +28,13 @@ pub fn assessRegion(result: anytype, route: anytype) Assessment {
         assessment.requested_recovery = true;
         const state = ocrState(result, route.page_index, route.region_index, route.bbox);
         assessment.recovery_state = combine(assessment.recovery_state, state);
-        unresolved = state != .completed or countRecognized(result, route.page_index, route.bbox, .fresh_ocr) == 0;
+        // A reused bitmap target can be larger than its unexplained vector
+        // candidate. Output elsewhere in that crop does not recover the candidate.
+        const recognized_bbox = if (@hasField(@TypeOf(route), "vector_evidence"))
+            if (route.vector_evidence) |candidate| candidate.bbox else route.bbox
+        else
+            route.bbox;
+        unresolved = state != .completed or countRecognized(result, route.page_index, recognized_bbox, .fresh_ocr) == 0;
     }
     if (route.route.needs_formula_model) {
         assessment.requested_recovery = true;
@@ -190,6 +196,7 @@ const TestRoute = struct {
     region_index: u32 = 0,
     bbox: layout.BBox = .{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 100 },
     route: struct { needs_ocr: bool = false, needs_formula_model: bool = false, needs_table_model: bool = false } = .{},
+    vector_evidence: ?struct { bbox: layout.BBox } = null,
 };
 const TestOcrStatus = enum { not_invoked, completed, empty, unavailable, failed, timeout, invalid_output };
 const TestOcrAttempt = struct { page_index: u32 = 0, region_index: ?u32 = null, crop_bbox: ?layout.BBox = null, status: TestOcrStatus, selected: bool = false };
@@ -228,6 +235,27 @@ test "regional OCR recovery scopes include derived regions but exclude disjoint 
     };
     try std.testing.expectEqual(Status.recovery_required, assessPage(result, 0).status);
     try std.testing.expectEqual(@as(usize, 1), assessPage(result, 0).unresolved_region_count);
+}
+
+test "reused OCR crops require recognized text within the vector candidate" {
+    const candidate_box = layout.BBox{ .x0 = 20, .y0 = 20, .x1 = 40, .y1 = 40 };
+    const route = TestRoute{ .route = .{ .needs_ocr = true }, .vector_evidence = .{ .bbox = candidate_box } };
+    const disjoint = testSpan(.fresh_ocr, .{ .x0 = 50, .y0 = 50, .x1 = 60, .y1 = 60 });
+    var result = TestResult{
+        .region_routes = &.{route},
+        .ocr_attempts = &.{.{ .region_index = 0, .status = .completed, .selected = true }},
+        .reconciled = .{ .spans = &.{disjoint} },
+    };
+    const unresolved = assessRegion(result, route);
+    try std.testing.expectEqual(@as(usize, 1), unresolved.recognized_span_count);
+    try std.testing.expectEqual(@as(usize, 1), unresolved.unresolved_region_count);
+    try std.testing.expectEqual(Status.recovery_required, unresolved.status);
+    try std.testing.expectEqual(Status.recovery_required, assessPage(result, 0).status);
+    const overlapping = testSpan(.fresh_ocr, candidate_box);
+    result.reconciled.spans = &.{overlapping};
+    try std.testing.expectEqual(Status.recovered, assessRegion(result, route).status);
+    try std.testing.expectEqual(Status.recovered, assessPage(result, 0).status);
+    try std.testing.expectEqual(Completeness.unverified, assessPage(result, 0).completeness);
 }
 
 test "coverage retains nonpainting clipped and uncertain evidence counts" {

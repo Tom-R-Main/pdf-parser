@@ -145,7 +145,7 @@ jobs:
           sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
           tesseract --version
           pdftoppm -v
-          node --test integrations/javascript/*.test.mjs
+          node --test --test-concurrency=1 integrations/javascript/*.test.mjs
 
   python:
     name: Python ${{ matrix.python-version }} bindings and wheel

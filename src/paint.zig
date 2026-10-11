@@ -1,19 +1,10 @@
 //! Conservative content-stream graphics evidence in PDF user space.
 const std = @import("std");
 const layout = @import("layout.zig");
+const page_geometry = @import("page_geometry.zig");
 
-pub const identity: [6]f64 = .{ 1, 0, 0, 1, 0, 0 };
-
-pub fn concat(outer: [6]f64, inner: [6]f64) [6]f64 {
-    return .{
-        outer[0] * inner[0] + outer[2] * inner[1],
-        outer[1] * inner[0] + outer[3] * inner[1],
-        outer[0] * inner[2] + outer[2] * inner[3],
-        outer[1] * inner[2] + outer[3] * inner[3],
-        outer[0] * inner[4] + outer[2] * inner[5] + outer[4],
-        outer[1] * inner[4] + outer[3] * inner[5] + outer[5],
-    };
-}
+pub const identity = page_geometry.identity;
+pub const concat = page_geometry.concat;
 
 pub const State = struct {
     ctm: [6]f64 = identity,

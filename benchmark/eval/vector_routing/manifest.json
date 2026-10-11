@@ -1,0 +1,468 @@
+{
+  "generator": "generate_fixtures.py",
+  "font": "Bitstream Vera",
+  "font_sha256": "c4c45690b345435b2cba52ecabe275f05e49b389b39fe68ad03afbb551288d3d",
+  "font_program_embedded": false,
+  "font_license_file": "font-license.txt",
+  "pdf_page_bbox": [
+    0,
+    0,
+    420,
+    300
+  ],
+  "fixtures": [
+    {
+      "id": "outlined-text",
+      "file": "outlined-text.pdf",
+      "bytes": 7865,
+      "sha256": "a120d0a06e6b06f9046cf4411fd719337cb868f02a7154c8751d1c684f2d0568",
+      "native_text": [],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "mixed-native-outlines",
+      "file": "mixed-native-outlines.pdf",
+      "bytes": 7933,
+      "sha256": "e20a70fdd29ca6f743f26282b5f719e1af3089f64902c86f3c63eea62f578b0c",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "partial-native-clip",
+      "file": "partial-native-clip.pdf",
+      "bytes": 7972,
+      "sha256": "38ec8304c2a3ac6d5c405cf890074f27ff5e4deaceb21c81a6ffbc4844d025d7",
+      "native_text": [
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "chart-labels",
+      "file": "chart-labels.pdf",
+      "bytes": 7878,
+      "sha256": "603574c63694ab829361aa2628ac9f5ad8fe433998b79451c4f4269e29536519",
+      "native_text": [
+        "Chart caption."
+      ],
+      "outlined_text": [
+        "VECTOR",
+        "EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          160.1875,
+          139.660156,
+          257.875,
+          157.8125
+        ],
+        [
+          162.355469,
+          79.660156,
+          280.644531,
+          97.8125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "transformed-form",
+      "file": "transformed-form.pdf",
+      "bytes": 7722,
+      "sha256": "bd625fecad029ee802aa8065f201dfdee7d40ceb119dd71fb0e06fb7e26955e7",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "sheared-form",
+      "file": "sheared-form.pdf",
+      "bytes": 7728,
+      "sha256": "ea380cd9fb9a97d639fb12d5a0f5995c8afea9ed8a211c227ba0c1ecc48f117d",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "ambiguous",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "quarter-turn-outlines",
+      "file": "quarter-turn-outlines.pdf",
+      "bytes": 7899,
+      "sha256": "ca18e1000763b181d27ce66a388611a58327ea00094902284675974ec6d09cbe",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          152.1875,
+          30.1875,
+          170.339844,
+          256.839844
+        ]
+      ],
+      "pages": 1,
+      "rotation": 90
+    },
+    {
+      "id": "clipped-out",
+      "file": "clipped-out.pdf",
+      "bytes": 7956,
+      "sha256": "03447a3542f221f3d564e59b0865205c21416a6f3031c963de9a8909874c6347",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "thin-stroked-rule",
+      "file": "thin-stroked-rule.pdf",
+      "bytes": 682,
+      "sha256": "cfe11b4ed83e1d47ebcfb7069f963c2536a757d356878da67c949454ae41c3d0",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "thin-filled-rule",
+      "file": "thin-filled-rule.pdf",
+      "bytes": 673,
+      "sha256": "221bd1b85944d7ae83ab85b3aa195595389ce956ac43db6b35012b481a1c7f92",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "native-highlight",
+      "file": "native-highlight.pdf",
+      "bytes": 681,
+      "sha256": "75619070767e8c20428e16b439b9c9298f890626d07643400ef2c4ca72afd32f",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "filled-box",
+      "file": "filled-box.pdf",
+      "bytes": 679,
+      "sha256": "c358d9bc1bde5da74675c410a49f5a01d1f0520b7e00716d295e2c04bc3b7ce3",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "border",
+      "file": "border.pdf",
+      "bytes": 678,
+      "sha256": "28d56dd3ccff016388562404f0f7aded0c68641ef2ed8d977b7af347b4f632f7",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "single-logo",
+      "file": "single-logo.pdf",
+      "bytes": 757,
+      "sha256": "b2b4923aecc5e9c4cc4fc66296441a2aa72b389301a1ab3c48abb272d7ba2418",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "no_candidate",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "dense-graphics",
+      "file": "dense-graphics.pdf",
+      "bytes": 1636,
+      "sha256": "f070262f60eff6933a3bc616a6ec0cad71c1cf011363dc5d9a713e785b4fee0e",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "ambiguous",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "repeated-multipage",
+      "file": "repeated-multipage.pdf",
+      "bytes": 29417,
+      "sha256": "9542b81898fb78ea4800f1301f843cad1617ee1cafe69757f0ff014f72204cf4",
+      "native_text": [
+        "Native evidence remains.",
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE",
+        "VECTOR EVIDENCE",
+        "VECTOR EVIDENCE",
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ],
+        [
+          40.21875,
+          64.603516,
+          304.646484,
+          85.78125
+        ],
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ],
+        [
+          40.21875,
+          64.603516,
+          304.646484,
+          85.78125
+        ]
+      ],
+      "pages": 2,
+      "rotation": 0
+    },
+    {
+      "id": "rule-through-outlines",
+      "file": "rule-through-outlines.pdf",
+      "bytes": 7960,
+      "sha256": "11a730c563868cef7436e454523b2020ad0f2ce409cdb69c6c5c90edcd77b5f7",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "stroked-letterforms",
+      "file": "stroked-letterforms.pdf",
+      "bytes": 7939,
+      "sha256": "b498d1e3a1e8a8f07c17939614de0e9dbf4084e53e13a0e475e42493c95a8253",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "compound-fill",
+      "file": "compound-fill.pdf",
+      "bytes": 7907,
+      "sha256": "c50de265482f539d7c71e5e4ad0406e7cc72c28909f23b3f536fd448a1ab9d7c",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "fused-panel",
+      "file": "fused-panel.pdf",
+      "bytes": 7978,
+      "sha256": "5467f456c8a6d10f8f0f8ccddfe46a1f582a0e04378f7f46184b87e4346b8c37",
+      "native_text": [
+        "Native evidence remains.",
+        "Panel text."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "ambiguous",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "image-overlap",
+      "file": "image-overlap.pdf",
+      "bytes": 8620,
+      "sha256": "afcce11a41cbcecd2d736d7b2aa4ebe1084e69f086a6d4441ac2ddf60b0e14de",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [
+        "VECTOR EVIDENCE"
+      ],
+      "routing_expectation": "candidate",
+      "outlined_bboxes": [
+        [
+          40.21875,
+          159.603516,
+          304.646484,
+          180.78125
+        ]
+      ],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "shape-cap",
+      "file": "shape-cap.pdf",
+      "bytes": 11699,
+      "sha256": "a9727e772c7976d248dc30bbde3daa3130a9970cf7a91f920a52c8250f212c98",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "limited",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    },
+    {
+      "id": "segment-cap",
+      "file": "segment-cap.pdf",
+      "bytes": 5888,
+      "sha256": "c58293a2fdbde0c2a66051ad98ed448cdfcf5829693797bf2f57f3555aa639fb",
+      "native_text": [
+        "Native evidence remains."
+      ],
+      "outlined_text": [],
+      "routing_expectation": "limited",
+      "outlined_bboxes": [],
+      "pages": 1,
+      "rotation": 0
+    }
+  ]
+}

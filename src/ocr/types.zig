@@ -1,4 +1,6 @@
+const std = @import("std");
 const layout = @import("../layout.zig");
+const page_geometry = @import("../page_geometry.zig");
 
 pub const Backend = enum {
     tesseract_cli,
@@ -99,8 +101,60 @@ pub const OcrInput = struct {
     image_path: []const u8,
     pixel_width: u32,
     pixel_height: u32,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
     image_sha256: ?[32]u8 = null,
     image_byte_length: ?usize = null,
+
+    pub fn validateGeometry(self: OcrInput) !void {
+        if (self.pixel_width == 0 or self.pixel_height == 0) return error.EmptyImage;
+        _ = try page_geometry.mapBBox(page_geometry.identity, self.pdf_bbox);
+        if (self.pdf_bbox.x1 <= self.pdf_bbox.x0 or self.pdf_bbox.y1 <= self.pdf_bbox.y0) return error.InvalidBox;
+        if (self.rasterizer_dpi) |dpi| {
+            if (!std.math.isFinite(dpi) or dpi <= 0) return error.InvalidDpi;
+        }
+        if (self.pixel_to_pdf) |matrix| {
+            _ = try page_geometry.inverse(matrix);
+            _ = try page_geometry.mapBBox(matrix, .{
+                .x0 = 0,
+                .y0 = 0,
+                .x1 = @floatFromInt(self.pixel_width),
+                .y1 = @floatFromInt(self.pixel_height),
+            });
+        }
+    }
+
+    pub fn mapWordBBox(self: OcrInput, left: u32, top: u32, width: u32, height: u32) !layout.BBox {
+        try self.validateGeometry();
+        const right = @as(u64, left) + width;
+        const bottom = @as(u64, top) + height;
+        if (width == 0 or height == 0 or right > self.pixel_width or bottom > self.pixel_height) return error.InvalidWordBounds;
+        if (self.pixel_to_pdf) |matrix| {
+            const bbox = try page_geometry.mapBBox(matrix, .{
+                .x0 = @floatFromInt(left),
+                .y0 = @floatFromInt(top),
+                .x1 = @floatFromInt(right),
+                .y1 = @floatFromInt(bottom),
+            });
+            if (bbox.x1 <= bbox.x0 or bbox.y1 <= bbox.y0) return error.InvalidWordBounds;
+            return bbox;
+        }
+        // Keep the original proportional calculation for callers without a
+        // raster transform, including its exact outward-crop bbox semantics.
+        const x_scale = (self.pdf_bbox.x1 - self.pdf_bbox.x0) / @as(f64, @floatFromInt(self.pixel_width));
+        const y_scale = (self.pdf_bbox.y1 - self.pdf_bbox.y0) / @as(f64, @floatFromInt(self.pixel_height));
+        const x0 = self.pdf_bbox.x0 + @as(f64, @floatFromInt(left)) * x_scale;
+        const y1 = self.pdf_bbox.y1 - @as(f64, @floatFromInt(top)) * y_scale;
+        const bbox = layout.BBox{
+            .x0 = x0,
+            .y0 = y1 - @as(f64, @floatFromInt(height)) * y_scale,
+            .x1 = x0 + @as(f64, @floatFromInt(width)) * x_scale,
+            .y1 = y1,
+        };
+        _ = try page_geometry.mapBBox(page_geometry.identity, bbox);
+        if (bbox.x1 <= bbox.x0 or bbox.y1 <= bbox.y0) return error.InvalidWordBounds;
+        return bbox;
+    }
 };
 
 pub const RasterizeOutcome = struct {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { terminateSubprocess } from './subprocess.mjs';
 import { ocrArguments } from './ocr-options.mjs';
+import { validatePageGeometry, validateRasterTransform, validateRasterPageContext } from './coordinates.mjs';
 
 export class PdfExtractionError extends Error {
   constructor(code, message, options) {
@@ -94,7 +95,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   });
   const manifest = records[0];
   if (!object(manifest) || manifest.record_type !== 'document_manifest') fail('Expected manifest first');
-  if (!/^0\.(14|15|16|17)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
+  if (!/^0\.(14|15|16|17|18|19)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
       typeof manifest.document_id !== 'string' || !manifest.document_id || !integer(manifest.page_count) ||
       manifest.input_sha256 !== inputSha256) fail('Unsupported schema or manifest input identity');
   if (!(manifest.source_id === null || (typeof manifest.source_id === 'string' && manifest.source_id.length > 0)) ||
@@ -221,7 +222,55 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   }
   const pageOutcomes = records.filter(record => record.record_type === 'route_trace' && record.trace_kind === 'page_route')
     .map(record => ({ pageIndex: record.page_index, ...record.coverage }));
-  if (/^0\.(16|17)\./u.test(manifest.schema_version)) {
+  if (/^0\.(18|19)\./u.test(manifest.schema_version)) {
+    const pageGeometry = new Map();
+    const boxClose = (actual, expected, marginX = 0, marginY = 0) => object(expected) &&
+      ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(expected[key]) &&
+        Math.abs(actual[key] - expected[key]) <= (key[0] === 'x' ? marginX : marginY) + 0.0055 + 64 * Number.EPSILON * Math.max(1, Math.abs(expected[key])));
+    const check = callback => { try { return callback(); } catch { fail('Invalid coordinate transform contract'); } };
+    for (const record of records.filter(record => record.record_type === 'route_trace' && record.trace_kind === 'page_route')) {
+      if (record.page_geometry === undefined) fail('Missing page geometry contract');
+      if (record.page_geometry !== null) pageGeometry.set(record.page_index, check(() => validatePageGeometry(record.page_geometry)));
+    }
+    for (const record of records) {
+      const geometry = pageGeometry.get(record.page_index);
+      if (record.record_type === 'specialist_attempt' && record.specialist_kind === 'ocr') {
+        const transform = record.raster_transform;
+        const execution = record.execution;
+        if (transform === undefined || !object(execution) || !integer(execution.pixel_width) || !integer(execution.pixel_height)) fail('Missing OCR raster transform contract');
+        if (transform === null) {
+          if (['completed', 'empty'].includes(record.attempt_status) || execution.pixel_width !== 0 || execution.pixel_height !== 0) fail('Missing accepted OCR raster transform');
+          continue;
+        }
+        const mapped = check(() => validateRasterTransform(transform));
+        if (transform.pixel_width !== execution.pixel_width || transform.pixel_height !== execution.pixel_height ||
+            (record.crop !== null && (!object(record.crop) || transform.pixel_width !== record.crop.pixel_width || transform.pixel_height !== record.crop.pixel_height)) ||
+            !boxClose(mapped, record.crop?.bbox ?? record.provenance.bbox)) fail('Inconsistent OCR raster evidence');
+        if (geometry) check(() => validateRasterPageContext(transform, geometry, record.config?.dpi, { fullPage: record.region_index === null }));
+      } else if (record.record_type === 'specialist_attempt' && record.specialist_kind === 'formula') {
+        if (!object(record.config) || typeof record.config.crop_backed !== 'boolean') fail('Invalid formula crop config');
+        const transform = record.config.crop_transform;
+        if (transform === undefined) fail('Missing formula crop transform contract');
+        if (transform === null) {
+          if (record.config.crop_backed === true) fail('Missing accepted formula crop transform');
+          continue;
+        }
+        const mapped = check(() => validateRasterTransform(transform));
+        const box = record.config.crop_bbox;
+        const matrix = transform.pixel_to_pdf;
+        const marginX = Math.abs(matrix[0]) + Math.abs(matrix[2]);
+        const marginY = Math.abs(matrix[1]) + Math.abs(matrix[3]);
+        if (record.config.crop_backed !== true || transform.pixel_width !== record.config.crop_pixel_width || transform.pixel_height !== record.config.crop_pixel_height ||
+            !boxClose(mapped, box, marginX, marginY) || mapped.x0 > box.x0 + 0.0055 || mapped.y0 > box.y0 + 0.0055 ||
+            mapped.x1 < box.x1 - 0.0055 || mapped.y1 < box.y1 - 0.0055) fail('Inconsistent formula raster evidence');
+        if (geometry) check(() => validateRasterPageContext(transform, geometry, record.config.crop_dpi));
+      } else if (record.record_type === 'specialist_request') {
+        if (record.crop_geometry === undefined) fail('Missing request crop geometry contract');
+        if (record.crop_geometry !== null) check(() => validateRasterTransform(record.crop_geometry));
+      }
+    }
+  }
+  if (/^0\.(16|17|18|19)\./u.test(manifest.schema_version)) {
     const validBox = box => object(box) && ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(box[key])) && box.x0 <= box.x1 && box.y0 <= box.y1;
     for (const span of spans) {
       const paint = span.paint;
@@ -232,7 +281,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
           (['inside', 'outside', 'partial'].includes(paint.clip_state) && paint.clip_bbox === null) ||
           (paint.paint_state === 'painting' && (paint.rendering_mode === null || [3, 7].includes(paint.rendering_mode))) ||
           (paint.paint_state === 'non_painting' && ![3, 7].includes(paint.rendering_mode))) fail('Invalid paint evidence');
-      if (manifest.schema_version.startsWith('0.17.')) {
+      if (/^0\.(17|18|19)\./u.test(manifest.schema_version)) {
         const scope = span.content_scope;
         if (!(scope === null || (object(scope) && scope.page_index === span.page_index &&
             integer(scope.stream_generation) && scope.stream_generation <= 65535 && integer(scope.invocation_index) && scope.invocation_index <= 0xffffffff &&
@@ -259,7 +308,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
           if (items === 'spans' && (!object(item.paint) || ['rendering_mode', 'paint_state', 'clip_state'].some(key => item.paint[key] !== original.paint[key]) ||
               (original.paint.clip_bbox === null ? item.paint.clip_bbox !== null : !validBox(item.paint.clip_bbox) ||
                 ['x0', 'y0', 'x1', 'y1'].some(key => item.paint.clip_bbox[key] !== original.paint.clip_bbox[key])))) fail('Inconsistent specialist paint evidence');
-          if (items === 'spans' && manifest.schema_version.startsWith('0.17.') &&
+          if (items === 'spans' && /^0\.(17|18|19)\./u.test(manifest.schema_version) &&
               (original.content_scope === null ? item.content_scope !== null : !object(item.content_scope) ||
                 ['page_index', 'stream_object_num', 'stream_generation', 'invocation_index'].some(key => item.content_scope[key] !== original.content_scope[key]))) fail('Inconsistent specialist content scope');
           seen.add(item[idField]);
@@ -306,7 +355,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
     const pageRoutes = new Set();
     for (const record of records.filter(record => record.record_type === 'route_trace' && ['page_route', 'region_route'].includes(record.trace_kind))) {
       const assessment = record.coverage;
-      if (/^0\.(16|17)\./u.test(manifest.schema_version) && (!object(assessment) || !['non_painting_span_count', 'clipped_out_span_count', 'uncertain_paint_span_count'].every(key => integer(assessment[key])))) fail('Invalid paint coverage counts');
+      if (/^0\.(16|17|18|19)\./u.test(manifest.schema_version) && (!object(assessment) || !['non_painting_span_count', 'clipped_out_span_count', 'uncertain_paint_span_count'].every(key => integer(assessment[key])))) fail('Invalid paint coverage counts');
       if (!integer(record.page_index) || record.page_index >= manifest.page_count ||
           !object(assessment) || !statuses.has(assessment.status) || assessment.completeness !== 'unverified' ||
           !recoveryStates.has(assessment.recovery_state) || typeof assessment.requested_recovery !== 'boolean' ||
@@ -321,6 +370,57 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
       } else if (assessment.recovery_state === 'not_required' || !['recovery_required', 'recovery_failed', 'recovered'].includes(assessment.status) ||
           (assessment.status === 'recovery_failed') !== failedStates.has(assessment.recovery_state) ||
           (assessment.status === 'recovered' && (assessment.recovery_state !== 'completed' || assessment.recognized_span_count === 0 || assessment.unresolved_region_count !== 0))) fail('Inconsistent recovery assessment');
+    }
+  }
+  if (manifest.schema_version.startsWith('0.19.')) {
+    const classified = ['ignored_rule_count', 'clipped_out_count', 'native_accounted_count', 'simple_graphic_count', 'ambiguous_shape_count'];
+    const limits = { max_shapes: 512, max_segments_per_path: 512, max_operators: 100000, max_candidate_regions: 64,
+      max_content_bytes: 8388608, max_graphics_depth: 32, max_form_invocations: 256 };
+    const validBox = box => object(box) && ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(box[key])) && box.x0 < box.x1 && box.y0 < box.y1;
+    const containedBox = (inner, outer) => validBox(inner) && validBox(outer) && ['x0', 'y0', 'x1', 'y1'].every(key => {
+      // Route bboxes use two decimals; candidate evidence retains exact values.
+      const tolerance = 0.0055 + 64 * Number.EPSILON * Math.max(1, Math.abs(inner[key]), Math.abs(outer[key]));
+      return key.endsWith('0') ? inner[key] >= outer[key] - tolerance : inner[key] <= outer[key] + tolerance;
+    });
+    const pageEvidence = new Map();
+    const requests = new Map(records.filter(record => record.record_type === 'specialist_request').map(record => [record.request_id, record]));
+    const hasReason = record => Array.isArray(record.reasons) && record.reasons.includes('unexplained_vector') &&
+      Array.isArray(record.provenance.route_reasons) && record.provenance.route_reasons.includes('unexplained_vector');
+    const routeRecords = records.filter(record => record.record_type === 'route_trace' && ['page_route', 'region_route'].includes(record.trace_kind));
+    for (const record of routeRecords) {
+      if (record.vector_evidence === undefined) fail('Missing vector evidence');
+      if (record.trace_kind !== 'page_route') continue;
+      const value = record.vector_evidence;
+      if (value !== null) {
+        if (!object(value) || !['complete', 'partial', 'limited'].includes(value.status) ||
+            !['shape_count', 'unknown_count', 'candidate_region_count', 'operator_count', 'content_bytes', ...classified].every(key => integer(value[key])) ||
+            Object.entries(limits).some(([key, expected]) => value[key] !== expected) ||
+            value.shape_count > value.max_shapes || value.candidate_region_count > value.max_candidate_regions ||
+            value.operator_count > value.max_operators || value.content_bytes > value.max_content_bytes ||
+            classified.reduce((sum, key) => sum + value[key], 0) > value.shape_count ||
+            value.candidate_region_count > value.shape_count || (value.candidate_region_count > 0 && !hasReason(record))) fail('Invalid page vector evidence');
+      }
+      pageEvidence.set(record.page_index, { value, regions: new Set(), shapes: 0 });
+    }
+    for (const record of routeRecords.filter(record => record.trace_kind === 'region_route' && record.vector_evidence !== null)) {
+      const value = record.vector_evidence;
+      const page = pageEvidence.get(record.page_index);
+      if (!object(value) || !page?.value || !integer(record.region_index) || page.regions.has(record.region_index) ||
+          !['shape_count', 'segment_count', 'subpath_count'].every(key => integer(value[key]) && value[key] > 0) ||
+          value.decision !== 'unexplained_vector' || !Number.isFinite(value.native_coverage) || value.native_coverage < 0 || value.native_coverage > 1 ||
+          value.shape_count > page.value.shape_count || value.segment_count > value.shape_count * page.value.max_segments_per_path ||
+          value.subpath_count > value.segment_count || !containedBox(value.bbox, record.bbox) ||
+          record.route !== 'queue_ocr' || !hasReason(record) ||
+          record.specialist_status !== 'requested' || !Array.isArray(record.specialist_request_ids) ||
+          !record.specialist_request_ids.some(id => {
+            const request = requests.get(id);
+            return request?.requested_kind === 'ocr' && request.page_index === record.page_index && request.region_index === record.region_index;
+          })) fail('Invalid region vector evidence');
+      page.regions.add(record.region_index);
+      page.shapes += value.shape_count;
+      // A projection may retain only a subset of the page's candidate regions.
+      if (page.regions.size > page.value.candidate_region_count ||
+          page.shapes + classified.reduce((sum, key) => sum + page.value[key], 0) > page.value.shape_count) fail('Inconsistent vector candidate counts');
     }
   }
   const sourceMap = [];

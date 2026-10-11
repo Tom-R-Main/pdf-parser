@@ -64,6 +64,24 @@ pub fn recognizeRegionDetailed(
                     .duration_ms = elapsedMs(started_ns),
                     .diagnostic_code = .tesseract_c_backend_disabled,
                 };
+                switch (@as(anyerror, err)) {
+                    error.EmptyImage,
+                    error.InvalidBox,
+                    error.InvalidMatrix,
+                    error.SingularMatrix,
+                    error.InvalidPoint,
+                    error.InvalidDpi,
+                    error.InvalidRasterDimensions,
+                    error.InvalidWordBounds,
+                    error.InvalidConfidence,
+                    error.ImageReadFailed,
+                    => break :blk .{
+                        .status = .invalid_output,
+                        .duration_ms = elapsedMs(started_ns),
+                        .diagnostic_code = .invalid_tesseract_output,
+                    },
+                    else => {},
+                }
                 return err;
             };
             break :blk .{

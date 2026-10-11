@@ -795,7 +795,7 @@ fn shouldStartBlock(previous: ReconciledSpan, current: ReconciledSpan, options: 
         switch (boundary) {
             .join, .space => return false,
             .block_break, .region_break => return true,
-            .line_break => {},
+            .line_break => if (current.span.source == .fresh_ocr) return false,
         }
     }
     if (kindForSpan(previous.span) != kindForSpan(current.span)) return true;
@@ -809,7 +809,7 @@ fn shouldStartBlock(previous: ReconciledSpan, current: ReconciledSpan, options: 
 
 fn nativeBoundary(previous: TextSpan, current: TextSpan, options: ReconcileOptions) ?layout.TextBoundary {
     if (!options.preserve_input_order or previous.page_index != current.page_index or previous.source != current.source or
-        (current.source != .native_pdf and current.source != .embedded_ocr)) return null;
+        (current.source != .native_pdf and current.source != .embedded_ocr and current.source != .fresh_ocr)) return null;
     const boundary = current.leading_boundary orelse return null;
     if ((boundary == .join or boundary == .space) and
         (previous.line_id == null or current.line_id == null or previous.line_id.? != current.line_id.?)) return null;
@@ -1339,6 +1339,56 @@ test "native classified joins preserve superscripts and classified line breaks" 
     defer doc.deinit();
     try std.testing.expectEqualStrings("F1.25\nNext", doc.blocks[0].text);
     try std.testing.expectEqualStrings("F1.25\nNext", doc.chunks[0].content);
+}
+
+test "fresh OCR explicit boundaries survive inverse quarter-turn PDF boxes" {
+    const geometry = @import("page_geometry.zig");
+    const word_boxes = [_]BBox{
+        .{ .x0 = 10, .y0 = 10, .x1 = 30, .y1 = 20 },
+        .{ .x0 = 40, .y0 = 10, .x1 = 60, .y1 = 20 },
+        .{ .x0 = 10, .y0 = 30, .x1 = 40, .y1 = 40 },
+    };
+    for ([_]i32{ 90, 180, 270 }) |rotation| {
+        const page = try geometry.PageGeometry.init(.{ .x0 = 0, .y0 = 0, .x1 = 100, .y1 = 200 }, null, rotation, 1);
+        var spans: [3]TextSpan = undefined;
+        for (word_boxes, 0..) |box, index| {
+            spans[index] = TextSpan.init(.{
+                .bbox = try geometry.mapBBox(page.displayToPdf(.media), box),
+                .text = ([_][]const u8{ "ALPHA", "BETA", "GAMMA" })[index],
+                .source = .fresh_ocr,
+                .font = .{ .size = 10 },
+                .line_id = if (index < 2) 0 else 1,
+                .leading_boundary = ([_]layout.TextBoundary{ .region_break, .space, .line_break })[index],
+            });
+        }
+        var doc = try reconcile(std.testing.allocator, &.{.{ .spans = &spans }}, .{ .preserve_input_order = true });
+        defer doc.deinit();
+        try std.testing.expectEqual(@as(usize, 1), doc.blocks.len);
+        try std.testing.expectEqualStrings("ALPHA BETA\nGAMMA", doc.blocks[0].text);
+        try std.testing.expectEqualStrings("ALPHA BETA\nGAMMA", doc.chunks[0].content);
+        try std.testing.expectEqual(@as(usize, 6), doc.spans[1].block_text_start);
+        try std.testing.expectEqual(@as(usize, 11), doc.spans[2].block_text_start);
+    }
+}
+
+test "fresh OCR independent crop boundaries separate overlapping PDF regions" {
+    var first = testSpan("FIRST", .fresh_ocr, 10, 10, 20, 30);
+    first.line_id = 0;
+    first.leading_boundary = .region_break;
+    var second = testSpan("SECOND", .fresh_ocr, 10, 10, 20, 30);
+    second.line_id = 0;
+    second.leading_boundary = .region_break;
+    var third = testSpan("THIRD", .fresh_ocr, 10, 10, 20, 30);
+    third.line_id = 0;
+    third.leading_boundary = .block_break;
+    var doc = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, second, third } }}, .{ .preserve_input_order = true });
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), doc.blocks.len);
+    try std.testing.expectEqualStrings("FIRST", doc.blocks[0].text);
+    try std.testing.expectEqualStrings("SECOND", doc.blocks[1].text);
+    try std.testing.expectEqualStrings("THIRD", doc.blocks[2].text);
+    try std.testing.expectEqualStrings("FIRST\n\nSECOND\n\nTHIRD", doc.chunks[0].content);
+    for (doc.spans) |span| try std.testing.expectEqual(@as(usize, 0), span.block_text_start);
 }
 
 test "coordinate serializers include hocr alto and debug overlay" {

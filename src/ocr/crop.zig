@@ -1,6 +1,7 @@
 //! Pixel-aligned PDF crop geometry and bounded raster identity.
 const std = @import("std");
 const layout = @import("../layout.zig");
+const page_geometry = @import("../page_geometry.zig");
 const runtime = @import("../runtime.zig");
 
 pub const Geometry = struct {
@@ -12,32 +13,14 @@ pub const Geometry = struct {
 };
 
 pub fn geometry(page: layout.BBox, region: layout.BBox, padding: f64, dpi: u32) ?Geometry {
-    for ([_]f64{ page.x0, page.y0, page.x1, page.y1, region.x0, region.y0, region.x1, region.y1, padding }) |value| {
-        if (!std.math.isFinite(value)) return null;
-    }
-    if (dpi == 0 or padding < 0 or page.x1 <= page.x0 or page.y1 <= page.y0 or region.x1 <= region.x0 or region.y1 <= region.y0) return null;
-    const bbox = layout.BBox{
-        .x0 = @max(page.x0, region.x0 - padding),
-        .y0 = @max(page.y0, region.y0 - padding),
-        .x1 = @min(page.x1, region.x1 + padding),
-        .y1 = @min(page.y1, region.y1 + padding),
-    };
-    if (bbox.x1 <= bbox.x0 or bbox.y1 <= bbox.y0) return null;
-    const scale = @as(f64, @floatFromInt(dpi)) / 72.0;
-    const left = @floor((bbox.x0 - page.x0) * scale);
-    const top = @floor((page.y1 - bbox.y1) * scale);
-    const right = @ceil((bbox.x1 - page.x0) * scale);
-    const bottom = @ceil((page.y1 - bbox.y0) * scale);
-    const limit: f64 = @floatFromInt(std.math.maxInt(i32));
-    if (right > limit or bottom > limit or right <= left or bottom <= top) return null;
+    const page_transform = page_geometry.PageGeometry.init(page, null, 0, 1) catch return null;
+    const plan = page_transform.planCrop(region, .{ .padding_points = padding, .dpi = @floatFromInt(dpi) }) catch return null;
     return .{
-        // The raster is rounded outward; use its actual pixel boundaries for
-        // OCR coordinates rather than stretching words into the requested box.
-        .pdf_bbox = .{ .x0 = page.x0 + left / scale, .y0 = page.y1 - bottom / scale, .x1 = page.x0 + right / scale, .y1 = page.y1 - top / scale },
-        .x = @intFromFloat(left),
-        .y = @intFromFloat(top),
-        .width = @intFromFloat(right - left),
-        .height = @intFromFloat(bottom - top),
+        .pdf_bbox = plan.pdf_bbox,
+        .x = plan.x,
+        .y = plan.y,
+        .width = plan.width,
+        .height = plan.height,
     };
 }
 

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { extractPdfPages } from './stream.mjs';
+import { getPageGeometry } from './coordinates.mjs';
 
 const input = Buffer.from('%PDF-stream-test');
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -54,6 +55,50 @@ async function run(t, records = fixture(), extra = {}, code = '') {
   const receipt = await extractPdfPages(input, { binaryPath: driver.path, onPage: (page) => pages.push(page), ...extra });
   return { ...driver, pages, receipt };
 }
+
+function coordinateFixture() {
+  const records = fixture();
+  for (const record of records) {
+    record.schema_version = '0.18.0';
+    if (record.record_type === 'span') Object.assign(record, {
+      reconciled_block_id: `block-${record.page_index}`,
+      paint: { rendering_mode: 0, paint_state: 'painting', clip_state: 'unclipped', clip_bbox: null },
+      content_scope: { page_index: record.page_index, stream_object_num: null, stream_generation: 0, invocation_index: 0 },
+    });
+    if (record.record_type === 'page_finished') record.artifact_counts.route_traces = 1;
+    if (record.record_type === 'document_finished') record.artifact_counts.route_traces = 2;
+  }
+  for (let p = 0; p < 2; p++) {
+    const end = records.find(record => record.record_type === 'page_finished' && record.page_index === p);
+    const route = { ...end, record_type: 'route_trace', schema_name: 'route_trace', event_type: 'route_trace',
+      provenance: { ...end.provenance, artifact_id: `route-page-${p}` }, trace_kind: 'page_route',
+      coverage: { status: 'text_available', completeness: 'unverified', native_span_count: 1, recognized_span_count: 0,
+        requested_recovery: false, recovery_state: 'not_required', unresolved_region_count: 0,
+        non_painting_span_count: 0, clipped_out_span_count: 0, uncertain_paint_span_count: 0 },
+      page_geometry: { coordinate_space: 'pdf_user_space', user_unit: 1, rotation_degrees: p === 0 ? 90 : 270,
+        media_box: { x0: 0, y0: 0, x1: 20, y1: 40 }, crop_box: { x0: 0, y0: 0, x1: 20, y1: 40 },
+        display: { box: 'crop_box', origin: 'top_left', unit: 'point', width: 40, height: 20,
+          pdf_to_display: p === 0 ? [0, 1, 1, 0, 0, 0] : [0, -1, -1, 0, 40, 20],
+          display_to_pdf: p === 0 ? [0, 1, 1, 0, 0, 0] : [0, -1, -1, 0, 20, 40] } } };
+    records.splice(records.indexOf(end), 0, route);
+  }
+  records.forEach((record, index) => { record.event_index = index; });
+  return records;
+}
+
+test('0.18 stream pages retain their explicit global page geometry', async t => {
+  const result = await run(t, coordinateFixture());
+  assert.equal(result.receipt.schemaVersion, '0.18.0');
+  assert.deepEqual(result.pages.map(page => getPageGeometry(page, page.pageIndex).rotation_degrees), [90, 270]);
+});
+
+test('0.18 streaming refuses forged geometry before delivering that page', async t => {
+  const records = coordinateFixture();
+  records.find(record => record.trace_kind === 'page_route' && record.page_index === 1).page_geometry.display.pdf_to_display[4] += 1;
+  const pages = [];
+  await assert.rejects(run(t, records, { onPage: page => pages.push(page.pageIndex) }), { code: 'protocol' });
+  assert.deepEqual(pages, [0]);
+});
 
 test('streams isolated page projections with global IDs and accepts only final receipt', async (t) => {
   const result = await run(t);

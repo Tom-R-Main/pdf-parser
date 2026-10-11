@@ -78,7 +78,7 @@ async function consume(binaryPath, args, options, inputSha256) {
     const firstRecord = !manifest;
     if (firstRecord) {
       if (type !== 'document_manifest' || record.streaming !== true || record.sequence_scope !== 'document' ||
-        !/^0\.(14|15|16|17)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
+        !/^0\.(14|15|16|17|18|19)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
         typeof record.document_id !== 'string' || !record.document_id || record.input_sha256 !== inputSha256 || record.source_id !== inputSha256) fail('Invalid stream manifest');
       if (record.page_count > options.maxPages) throw new PdfExtractionError('output_limit', 'Stream exceeded its page-count budget');
       if (!Array.isArray(record.errors) || record.errors.length) fail('Stream manifest reports document errors');

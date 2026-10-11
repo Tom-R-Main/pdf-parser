@@ -33,12 +33,12 @@ pub fn recognizeRegionDetailed(
     input: types.OcrInput,
     config: types.OcrConfig,
 ) !types.RecognitionOutcome {
-    if (input.pixel_width == 0 or input.pixel_height == 0) {
+    input.validateGeometry() catch {
         return .{
             .status = .invalid_output,
             .diagnostic_code = .invalid_tesseract_output,
         };
-    }
+    };
 
     const psm_arg = try std.fmt.allocPrint(allocator, "{d}", .{config.psm.tesseractNumber()});
     defer allocator.free(psm_arg);
@@ -109,6 +109,8 @@ pub fn recognizeRegionDetailed(
         .pdf_bbox = input.pdf_bbox,
         .pixel_width = input.pixel_width,
         .pixel_height = input.pixel_height,
+        .pixel_to_pdf = input.pixel_to_pdf,
+        .rasterizer_dpi = input.rasterizer_dpi,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return .{
@@ -242,4 +244,43 @@ fn writeExecutableScript(path: []const u8, contents: []const u8) !void {
     try runtime.writeAllFile(file, contents);
     runtime.closeFile(file);
     try std.testing.expectEqual(@as(u8, 0), try runtime.runIgnored(&.{ "chmod", "+x", path }));
+}
+
+test "CLI forwards raster transform and refuses out of image OCR words" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    runtime.setIo(threaded.io());
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "pdf-parser-tesseract-matrix-{x}.sh", .{runtime.nanoTimestamp()});
+    defer runtime.deleteFileCwd(path);
+    var exec_buf: [144]u8 = undefined;
+    const executable = try std.fmt.bufPrint(&exec_buf, "./{s}", .{path});
+    const header = "#!/bin/sh\nprintf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n'\n";
+    try writeExecutableScript(path, header ++ "printf '5\\t1\\t1\\t1\\t1\\t1\\t10\\t20\\t30\\t5\\t90\\tMapped\\n'\n");
+    var input = testInput();
+    input.pixel_to_pdf = .{ 0, -0.5, -0.5, 0, 200, 300 };
+    input.rasterizer_dpi = 144;
+    var valid = try recognizeRegionDetailed(allocator, input, .{ .executable = executable });
+    defer valid.deinit(allocator);
+    try std.testing.expectEqual(types.AttemptStatus.completed, valid.status);
+    try std.testing.expectEqual(@as(usize, 1), valid.spans.len);
+    try std.testing.expectEqualDeep(layout.BBox{ .x0 = 187.5, .y0 = 280, .x1 = 190, .y1 = 295 }, valid.spans[0].bbox);
+    try std.testing.expectEqual(layout.TextBoundary.region_break, valid.spans[0].leading_boundary.?);
+    try writeExecutableScript(path, header ++ "printf '5\\t1\\t1\\t1\\t1\\t1\\t90\\t20\\t30\\t5\\t90\\tOutside\\n'\n");
+    var refused = try recognizeRegionDetailed(allocator, input, .{ .executable = executable });
+    defer refused.deinit(allocator);
+    try std.testing.expectEqual(types.AttemptStatus.invalid_output, refused.status);
+    try std.testing.expectEqual(@as(usize, 0), refused.spans.len);
+    try std.testing.expectEqual(types.DiagnosticCode.invalid_tesseract_output, refused.diagnostic_code.?);
+}
+
+test "CLI refuses invalid geometry before invoking Tesseract" {
+    var input = testInput();
+    input.pixel_to_pdf = .{ 1, 0, 0, 1, std.math.nan(f64), 0 };
+    var outcome = try recognizeRegionDetailed(std.testing.allocator, input, .{ .executable = "missing-tesseract-geometry-refusal" });
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expectEqual(types.AttemptStatus.invalid_output, outcome.status);
+    try std.testing.expectEqual(types.DiagnosticCode.invalid_tesseract_output, outcome.diagnostic_code.?);
 }

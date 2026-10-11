@@ -1,0 +1,4 @@
+# Small generated correctness fixtures are intentionally versioned here.
+!*.pdf
+!font-license.txt
+!truth/*.txt

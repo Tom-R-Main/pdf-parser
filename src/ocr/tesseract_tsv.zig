@@ -2,12 +2,16 @@
 
 const std = @import("std");
 const layout = @import("../layout.zig");
+const types = @import("types.zig");
+const page_geometry = @import("../page_geometry.zig");
 
 pub const ParseInput = struct {
     page_index: u32,
     pdf_bbox: layout.BBox,
     pixel_width: u32,
     pixel_height: u32,
+    pixel_to_pdf: ?page_geometry.Matrix = null,
+    rasterizer_dpi: ?f64 = null,
 };
 
 const expected_header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext";
@@ -17,7 +21,16 @@ pub fn parse(
     tsv: []const u8,
     input: ParseInput,
 ) ![]layout.TextSpan {
-    if (input.pixel_width == 0 or input.pixel_height == 0) return error.EmptyImage;
+    const geometry = types.OcrInput{
+        .page_index = input.page_index,
+        .pdf_bbox = input.pdf_bbox,
+        .image_path = "",
+        .pixel_width = input.pixel_width,
+        .pixel_height = input.pixel_height,
+        .pixel_to_pdf = input.pixel_to_pdf,
+        .rasterizer_dpi = input.rasterizer_dpi,
+    };
+    try geometry.validateGeometry();
 
     var spans: std.ArrayList(layout.TextSpan) = .empty;
     errdefer {
@@ -26,6 +39,7 @@ pub fn parse(
     }
 
     var seen_header = false;
+    var previous_word: ?Row = null;
     var lines = std.mem.splitScalar(u8, tsv, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trimEnd(u8, raw_line, "\r");
@@ -39,13 +53,14 @@ pub fn parse(
 
         const row = try parseRow(line);
         if (row.level != 5 or row.confidence < 0 or row.text.len == 0) continue;
+        const bbox = try geometry.mapWordBBox(row.left, row.top, row.width, row.height);
 
         const text = try allocator.dupe(u8, row.text);
         errdefer allocator.free(text);
 
         try spans.append(allocator, layout.TextSpan.init(.{
             .page_index = input.page_index,
-            .bbox = mapPixelBBox(input, row.left, row.top, row.width, row.height),
+            .bbox = bbox,
             .text = text,
             .source = .fresh_ocr,
             .confidence = @max(0.0, @min(1.0, row.confidence / 100.0)),
@@ -56,7 +71,17 @@ pub fn parse(
             },
             .block_id = row.block_num,
             .line_id = row.line_num,
+            .leading_boundary = if (previous_word) |previous|
+                if (row.page_num != previous.page_num or row.block_num != previous.block_num)
+                    .block_break
+                else if (row.par_num != previous.par_num or row.line_num != previous.line_num)
+                    .line_break
+                else
+                    .space
+            else
+                .region_break,
         }));
+        previous_word = row;
     }
 
     if (!seen_header) return error.InvalidTsvHeader;
@@ -65,8 +90,11 @@ pub fn parse(
 
 const Row = struct {
     level: u8,
+    page_num: u32,
     block_num: u32,
+    par_num: u32,
     line_num: u32,
+    word_num: u32,
     left: u32,
     top: u32,
     width: u32,
@@ -85,40 +113,26 @@ fn parseRow(line: []const u8) !Row {
     }
     fields[11] = rest;
 
+    const confidence = std.fmt.parseFloat(f32, fields[10]) catch return error.InvalidConfidence;
+    if (!std.math.isFinite(confidence)) return error.InvalidConfidence;
     return .{
         .level = try parseUnsigned(u8, fields[0]),
+        .page_num = try parseUnsigned(u32, fields[1]),
         .block_num = try parseUnsigned(u32, fields[2]),
+        .par_num = try parseUnsigned(u32, fields[3]),
         .line_num = try parseUnsigned(u32, fields[4]),
+        .word_num = try parseUnsigned(u32, fields[5]),
         .left = try parseUnsigned(u32, fields[6]),
         .top = try parseUnsigned(u32, fields[7]),
         .width = try parseUnsigned(u32, fields[8]),
         .height = try parseUnsigned(u32, fields[9]),
-        .confidence = std.fmt.parseFloat(f32, fields[10]) catch return error.InvalidConfidence,
+        .confidence = confidence,
         .text = fields[11],
     };
 }
 
 fn parseUnsigned(comptime T: type, value: []const u8) !T {
     return std.fmt.parseInt(T, value, 10) catch return error.InvalidCoordinate;
-}
-
-fn mapPixelBBox(input: ParseInput, left: u32, top: u32, width: u32, height: u32) layout.BBox {
-    const pdf_width = input.pdf_bbox.x1 - input.pdf_bbox.x0;
-    const pdf_height = input.pdf_bbox.y1 - input.pdf_bbox.y0;
-    const x_scale = pdf_width / @as(f64, @floatFromInt(input.pixel_width));
-    const y_scale = pdf_height / @as(f64, @floatFromInt(input.pixel_height));
-
-    const x0 = input.pdf_bbox.x0 + @as(f64, @floatFromInt(left)) * x_scale;
-    const x1 = x0 + @as(f64, @floatFromInt(width)) * x_scale;
-    const y1 = input.pdf_bbox.y1 - @as(f64, @floatFromInt(top)) * y_scale;
-    const y0 = y1 - @as(f64, @floatFromInt(height)) * y_scale;
-
-    return .{
-        .x0 = x0,
-        .y0 = y0,
-        .x1 = x1,
-        .y1 = y1,
-    };
 }
 
 fn freeTestSpans(spans: []layout.TextSpan) void {
@@ -176,4 +190,113 @@ test "parse skips empty and rejected word rows" {
     defer freeTestSpans(spans);
 
     try std.testing.expectEqual(@as(usize, 0), spans.len);
+}
+
+fn mappingTestInput() ParseInput {
+    return .{
+        .page_index = 3,
+        .pdf_bbox = .{ .x0 = 10, .y0 = 20, .x1 = 200, .y1 = 300 },
+        .pixel_width = 100,
+        .pixel_height = 100,
+    };
+}
+
+test "TSV uses literal quarter turn and affine four corner pixel mapping" {
+    const row = expected_header ++ "\n5\t1\t1\t1\t1\t1\t10\t20\t30\t5\t90\tword\n";
+    const cases = [_]struct { matrix: page_geometry.Matrix, expected: layout.BBox }{
+        .{ .matrix = .{ 0, -0.5, -0.5, 0, 200, 300 }, .expected = .{ .x0 = 187.5, .y0 = 280, .x1 = 190, .y1 = 295 } },
+        .{ .matrix = .{ -0.5, 0, 0, 0.5, 200, 20 }, .expected = .{ .x0 = 180, .y0 = 30, .x1 = 195, .y1 = 32.5 } },
+        .{ .matrix = .{ 0, 0.5, 0.5, 0, 10, 20 }, .expected = .{ .x0 = 20, .y0 = 25, .x1 = 22.5, .y1 = 40 } },
+        // A shear with opposite edge extrema requires all four corners.
+        .{ .matrix = .{ 1, 0.5, -1, 1, 10, 20 }, .expected = .{ .x0 = -5, .y0 = 45, .x1 = 30, .y1 = 65 } },
+    };
+    for (cases) |case| {
+        var input = mappingTestInput();
+        input.pixel_to_pdf = case.matrix;
+        input.rasterizer_dpi = 144;
+        const spans = try parse(std.testing.allocator, row, input);
+        defer freeTestSpans(spans);
+        try std.testing.expectEqual(@as(usize, 1), spans.len);
+        try std.testing.expectEqualDeep(case.expected, spans[0].bbox);
+        try std.testing.expectEqual(layout.TextBoundary.region_break, spans[0].leading_boundary.?);
+    }
+}
+
+test "TSV boundaries follow selected word identities and isolate independent regions" {
+    const tsv = expected_header ++ "\n" ++
+        "5\t1\t8\t1\t1\t1\t0\t0\t10\t10\t-1\trejected\n" ++
+        "5\t1\t8\t1\t1\t2\t0\t0\t10\t10\t90\t\n" ++
+        "5\t1\t1\t1\t1\t1\t10\t20\t10\t5\t90\tA\n" ++
+        "5\t1\t99\t1\t9\t1\t0\t0\t10\t10\t-1\tignored\n" ++
+        "5\t1\t1\t1\t1\t2\t30\t20\t10\t5\t90\tB\n" ++
+        "5\t1\t1\t1\t2\t1\t10\t40\t10\t5\t90\tC\n" ++
+        "5\t1\t1\t2\t1\t1\t10\t60\t10\t5\t90\tD\n" ++
+        "5\t1\t2\t1\t1\t1\t10\t80\t10\t5\t90\tE\n";
+    var input = mappingTestInput();
+    input.pixel_to_pdf = .{ 0, -0.5, -0.5, 0, 200, 300 };
+    // Each OCR call begins a region even when its first selected IDs match
+    // those of another crop. Skipped words never determine a boundary.
+    for (0..2) |_| {
+        const spans = try parse(std.testing.allocator, tsv, input);
+        defer freeTestSpans(spans);
+        try std.testing.expectEqual(@as(usize, 5), spans.len);
+        for (spans, [_]layout.TextBoundary{ .region_break, .space, .line_break, .line_break, .block_break }) |span, expected| {
+            try std.testing.expectEqual(expected, span.leading_boundary.?);
+        }
+    }
+}
+
+test "TSV refuses invalid image transform dpi and accepted word bounds" {
+    const row = expected_header ++ "\n5\t1\t1\t1\t1\t1\t10\t20\t30\t5\t90\tword\n";
+    var input = mappingTestInput();
+    input.pixel_width = 0;
+    try std.testing.expectError(error.EmptyImage, parse(std.testing.allocator, row, input));
+    input = mappingTestInput();
+    input.pixel_height = 0;
+    try std.testing.expectError(error.EmptyImage, parse(std.testing.allocator, row, input));
+    input = mappingTestInput();
+    input.pdf_bbox.x0 = std.math.nan(f64);
+    try std.testing.expectError(error.InvalidBox, parse(std.testing.allocator, row, input));
+    input = mappingTestInput();
+    input.pdf_bbox.x1 = input.pdf_bbox.x0;
+    try std.testing.expectError(error.InvalidBox, parse(std.testing.allocator, row, input));
+    input = mappingTestInput();
+    for ([_]page_geometry.Matrix{ .{ std.math.nan(f64), 0, 0, 1, 0, 0 }, .{ 1, 0, 0, 1, std.math.inf(f64), 0 } }) |matrix| {
+        input.pixel_to_pdf = matrix;
+        try std.testing.expectError(error.InvalidMatrix, parse(std.testing.allocator, row, input));
+    }
+    input.pixel_to_pdf = .{ 0, 0, 0, 1, 0, 0 };
+    try std.testing.expectError(error.SingularMatrix, parse(std.testing.allocator, row, input));
+    input = mappingTestInput();
+    for ([_]f64{ 0, -1, std.math.nan(f64), std.math.inf(f64) }) |dpi| {
+        input.rasterizer_dpi = dpi;
+        try std.testing.expectError(error.InvalidDpi, parse(std.testing.allocator, row, input));
+    }
+    input = mappingTestInput();
+    for ([_][]const u8{
+        "5\t1\t1\t1\t1\t1\t90\t20\t30\t5\t90\tword\n",
+        "5\t1\t1\t1\t1\t1\t10\t99\t30\t5\t90\tword\n",
+        "5\t1\t1\t1\t1\t1\t10\t20\t0\t5\t90\tword\n",
+        "5\t1\t1\t1\t1\t1\t4294967295\t0\t4294967295\t5\t90\tword\n",
+    }) |bad_row| {
+        const data = try std.mem.concat(std.testing.allocator, u8, &.{ row, bad_row });
+        defer std.testing.allocator.free(data);
+        // A later malformed word must release the earlier accepted span.
+        try std.testing.expectError(error.InvalidWordBounds, parse(std.testing.allocator, data, input));
+    }
+}
+
+test "TSV rejects malformed selected identities and nonfinite confidence" {
+    for ([_]struct { row: []const u8, failure: anyerror }{
+        .{ .row = "5\t1\t1\tbad\t1\t1\t0\t0\t5\t5\t90\tword\n", .failure = error.InvalidCoordinate },
+        .{ .row = "5\t1\t1\t1\t1\tbad\t0\t0\t5\t5\t90\tword\n", .failure = error.InvalidCoordinate },
+        .{ .row = "5\t1\t1\t1\t1\t1\t-1\t0\t5\t5\t90\tword\n", .failure = error.InvalidCoordinate },
+        .{ .row = "5\t1\t1\t1\t1\t1\t0\t0\t5\t5\tnan\tword\n", .failure = error.InvalidConfidence },
+        .{ .row = "5\t1\t1\t1\t1\t1\t0\t0\t5\t5\tinf\tword\n", .failure = error.InvalidConfidence },
+        .{ .row = "5\t1\t1\n", .failure = error.InvalidTsvRow },
+    }) |case| {
+        const data = try std.mem.concat(std.testing.allocator, u8, &.{ expected_header, "\n", case.row });
+        defer std.testing.allocator.free(data);
+        try std.testing.expectError(case.failure, parse(std.testing.allocator, data, mappingTestInput()));
+    }
 }

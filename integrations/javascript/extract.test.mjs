@@ -85,6 +85,127 @@ function scopeFixture() {
   return records;
 }
 
+function coordinateFixture() {
+  const records = scopeFixture();
+  for (const record of records) record.schema_version = '0.18.0';
+  records[7].page_geometry = {
+    coordinate_space: 'pdf_user_space', user_unit: 2, rotation_degrees: 0,
+    media_box: { x0: 0, y0: 0, x1: 100, y1: 100 }, crop_box: { x0: 0, y0: 0, x1: 100, y1: 100 },
+    display: { box: 'crop_box', origin: 'top_left', unit: 'point', width: 200, height: 200,
+      pdf_to_display: [2, 0, 0, -2, 0, 200], display_to_pdf: [0.5, 0, 0, -0.5, 0, 100] },
+  };
+  Object.assign(records[9].config, { dpi: 72, max_image_pixels: 4096 });
+  Object.assign(records[9].crop, { dpi: 72, pixel_width: 100, pixel_height: 20 });
+  records[9].execution = { pixel_width: 100, pixel_height: 20 };
+  records[9].raster_transform = { pixel_to_pdf: [0.5, 0, 0, -0.5, 10, 30], rasterizer_dpi: 144, pixel_width: 100, pixel_height: 20 };
+  records[8].crop_geometry = null;
+  return records;
+}
+
+test('0.18 coordinate evidence preserves source text paint and content scope', () => {
+  const records = coordinateFixture();
+  const document = parse(records);
+  assert.equal(document.sourceText, parse(scopeFixture()).sourceText);
+  assert.deepEqual(document.spans[0].paint, records[1].paint);
+  assert.deepEqual(document.spans[0].content_scope, records[1].content_scope);
+});
+
+test('0.18 accepts explicit unavailable page geometry and null preflight raster metadata', () => {
+  const records = coordinateFixture();
+  records[7].page_geometry = null;
+  Object.assign(records[9], { raster_transform: null, attempt_status: 'not_invoked', selected: false, execution: { pixel_width: 0, pixel_height: 0 } });
+  Object.assign(records[9].crop, { pixel_width: 0, pixel_height: 0, image_sha256: null, image_byte_length: null });
+  Object.assign(records[10], { status: 'not_invoked', selected_attempt_id: null });
+  assert.ok(parse(records));
+});
+
+test('0.18 accepts valid large-origin regional raster transforms', () => {
+  const records = coordinateFixture();
+  records[7].page_geometry = {
+    coordinate_space: 'pdf_user_space', user_unit: 1, rotation_degrees: 0,
+    media_box: { x0: 10000, y0: 10000, x1: 10100, y1: 10200 }, crop_box: { x0: 10000, y0: 10000, x1: 10100, y1: 10200 },
+    display: { box: 'crop_box', origin: 'top_left', unit: 'point', width: 100, height: 200,
+      pdf_to_display: [1, 0, 0, -1, -10000, 10200], display_to_pdf: [1, 0, 0, -1, 10000, 10200] },
+  };
+  records[9].config.dpi = records[9].crop.dpi = 200;
+  Object.assign(records[9].crop, { pixel_width: 17, pixel_height: 19, bbox: { x0: 10000, y0: 10193.16, x1: 10006.12, y1: 10200 } });
+  records[9].execution = { pixel_width: 17, pixel_height: 19 };
+  records[9].raster_transform = { pixel_to_pdf: [0.36, 0, 0, -0.36, 10000, 10200], rasterizer_dpi: 200, pixel_width: 17, pixel_height: 19 };
+  assert.ok(parse(records));
+});
+
+for (const [name, mutate] of [
+  ['missing page geometry', r => { delete r[7].page_geometry; }],
+  ['missing request crop geometry', r => { delete r[8].crop_geometry; }],
+  ['empty MediaBox', r => { r[7].page_geometry.media_box.x1 = 0; }],
+  ['CropBox outside MediaBox', r => { r[7].page_geometry.crop_box.x1 = 101; }],
+  ['nonquarter rotation', r => { r[7].page_geometry.rotation_degrees = 45; }],
+  ['invalid UserUnit', r => { r[7].page_geometry.user_unit = 0; }],
+  ['excessive UserUnit', r => { r[7].page_geometry.user_unit = 75001; }],
+  ['forged display size', r => { r[7].page_geometry.display.width = 199; }],
+  ['wrong display unit', r => { r[7].page_geometry.display.unit = 'pixel'; }],
+  ['forged canonical translation', r => { r[7].page_geometry.display.pdf_to_display[4] = 1; r[7].page_geometry.display.display_to_pdf[4] = -0.5; }],
+  ['forged inverse', r => { r[7].page_geometry.display.display_to_pdf[4] = 1; }],
+  ['missing inherited paint', r => { delete r[1].paint; }],
+  ['missing inherited content scope', r => { delete r[1].content_scope; }],
+  ['missing raster transform', r => { delete r[9].raster_transform; }],
+  ['null accepted raster', r => { r[9].raster_transform = null; }],
+  ['nonfinite raster matrix', r => { r[9].raster_transform.pixel_to_pdf[0] = Infinity; }],
+  ['singular raster matrix', r => { r[9].raster_transform.pixel_to_pdf[0] = 0; }],
+  ['zero raster dimensions', r => { r[9].raster_transform.pixel_width = 0; }],
+  ['fractional raster dimensions', r => { r[9].raster_transform.pixel_width = 0.5; }],
+  ['overflowing raster dimensions', r => { r[9].raster_transform.pixel_width = 0x80000000; }],
+  ['missing raster DPI', r => { r[9].raster_transform.rasterizer_dpi = null; }],
+  ['wrong effective DPI', r => { r[9].raster_transform.rasterizer_dpi = 72; }],
+  ['inconsistent accepted dimensions', r => { r[9].execution.pixel_width = 99; }],
+  ['inconsistent crop dimensions', r => { r[9].crop.pixel_height = 19; }],
+  ['forged raster translation', r => { r[9].raster_transform.pixel_to_pdf[4] = 11; }],
+  ['wrong raster orientation', r => { r[9].raster_transform.pixel_to_pdf = [-0.5, 0, 0, 0.5, 60, 20]; }],
+  ['wrong regional pixel scale', r => { r[9].raster_transform.pixel_to_pdf[0] = 0.51; r[9].crop.bbox = { ...bbox, x1: 61 }; }],
+]) test(`0.18 coordinate contract rejects ${name}`, () => {
+  const records = coordinateFixture();
+  mutate(records);
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
+function addFormulaCoordinates(records) {
+  const request = structuredClone(records[8]);
+  Object.assign(request, { request_id: 'formula-request', requested_kind: 'formula', region_index: 1 });
+  request.provenance.artifact_id = 'formula-request';
+  const attempt = structuredClone(records[9]);
+  Object.assign(attempt, { attempt_id: 'formula-attempt', request_id: request.request_id, specialist_kind: 'formula', region_index: 1,
+    config: { crop_backed: true, crop_bbox: { x0: 10.2, y0: 20.2, x1: 59.8, y1: 29.8 }, crop_dpi: 72,
+      crop_pixel_width: 100, crop_pixel_height: 20, crop_transform: structuredClone(records[9].raster_transform) } });
+  attempt.provenance.artifact_id = 'formula-attempt';
+  records.push(request, attempt);
+  records[0].artifact_counts.specialist_requests++;
+  records[0].artifact_counts.specialist_attempts++;
+  return attempt;
+}
+test('0.18 formula raster maps outward pixel bounds separately from requested bbox', () => {
+  const records = coordinateFixture();
+  const attempt = addFormulaCoordinates(records);
+  assert.ok(parse(records));
+  attempt.config.crop_transform = null;
+  attempt.config.crop_backed = false;
+  assert.ok(parse(records));
+});
+for (const [name, mutate] of [
+  ['missing formula transform', a => { delete a.config.crop_transform; }],
+  ['null accepted formula transform', a => { a.config.crop_transform = null; }],
+  ['formula dimension mismatch', a => { a.config.crop_pixel_width = 99; }],
+  ['formula effective DPI mismatch', a => { a.config.crop_transform.rasterizer_dpi = 72; }],
+  ['formula bbox missing', a => { a.config.crop_bbox = null; }],
+  ['formula bbox outside raster', a => { a.config.crop_bbox.x0 = 9; }],
+  ['formula bbox exceeds outward rounding', a => { a.config.crop_bbox.x0 = 11; }],
+  ['nonfinite request crop geometry', (a, r) => { r[11].crop_geometry = { ...a.config.crop_transform, rasterizer_dpi: null }; }],
+]) test(`0.18 coordinate contract rejects ${name}`, () => {
+  const records = coordinateFixture();
+  const attempt = addFormulaCoordinates(records);
+  mutate(attempt, records);
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
 test('content scopes retain page roots and repeated Form identities', () => {
   const records = scopeFixture();
   records[1].content_scope = { page_index: 0, stream_object_num: 42, stream_generation: 2, invocation_index: 1 };
