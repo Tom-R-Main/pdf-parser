@@ -98,7 +98,8 @@ These forward `--ocr-max-image-pixels`, `--ocr-max-image-bytes`,
 `--ocr-max-regions` and `--ocr-max-attempts`. Caps bound accepted rasters and
 per-page invocation counts; child RSS and temporary disk growth are outside
 these budgets. Crop records retain actual PDF-space bounds, accepted PNG SHA-256
-and byte length. Rotation is explicitly unsupported for OCR crops.
+and byte length. Declared quarter-turn rotations use the page's raster transform;
+unsupported rotations retain explicit refusal outcomes.
 
 The result retains the manifest, raw JSONL, all protocol records, spans, blocks
 and parser chunks. Its `sourceText` is exact block text in artifact order joined
@@ -307,10 +308,10 @@ request schema version. Host adoption remains a separate step.
 
 Schema `0.17` landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6),
 merge commit `9cac608`, with all six CI checks green. The coordinate and rotated
-OCR continuation is locally checked, uncommitted schema `0.18`. The `0.17`
-CI result does not qualify this continuation.
-Schema `0.19` adds bounded vector candidates; it is locally checked and
-uncommitted. The new vector suite passes all 13 tests with no skips, including
+OCR continuation is locally checked schema `0.18`. The `0.17` CI result does
+not qualify this continuation. Schemas `0.18` and `0.19` are committed on
+`codex/coordinate-vector-ocr`. Schema `0.19` adds bounded vector candidates.
+The new vector suite passes all 13 tests with no skips, including
 actual OCR in both SDK formats and disjoint output in a reused bitmap crop.
 Remote CI, merge and host adoption remain separate.
 
@@ -318,7 +319,7 @@ Run the local adapter regressions and actual CLI composition test:
 
 ```sh
 zig build --summary all
-node --test integrations/javascript/*.test.mjs
+node --test --test-concurrency=1 integrations/javascript/*.test.mjs
 zig build test --summary all
 ```
 

@@ -1,6 +1,6 @@
 # Parser, Research consumer, and Editorial consumer implementation plan
 
-Status: phases 0/1, reconciled table links, bounded streaming and recovery assessments landed in [PR #5](https://github.com/Tom-R-Main/pdf-parser/pull/5), merge commit `0dd534d`. Paint/clipping, bounded regional OCR and text fidelity landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6), merge commit `9cac608`, with all six CI checks green for schema 0.17. Coordinate transforms and rotated OCR are locally checked, uncommitted schema 0.18. Bounded vector routing is locally checked, uncommitted schema 0.19; remote CI and merge remain separate. Host adoption remains pending, 2026-10-11. All writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Richer hierarchy/figures and host rollout remain planned.
+Status: phases 0/1, reconciled table links, bounded streaming and recovery assessments landed in [PR #5](https://github.com/Tom-R-Main/pdf-parser/pull/5), merge commit `0dd534d`. Paint/clipping, bounded regional OCR and text fidelity landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6), merge commit `9cac608`, with all six CI checks green for schema 0.17. Coordinate transforms and rotated OCR (schema 0.18) and bounded vector routing (schema 0.19) are locally checked and committed on `codex/coordinate-vector-ocr`; remote CI and merge remain separate. Host adoption remains pending, 2026-10-11. All writes are restricted to pdf-parser: planned host edits below remain adoption instructions. Based on the [local reference review](local-reference-review-2026-10-09.md) and [host use-case review](host-usecase-reference-review-2026-10-10.md). Richer hierarchy/figures and host rollout remain planned.
 
 ## Delivery order and ownership
 
@@ -360,8 +360,8 @@ Whole-Python-process shutdown remains unqualified, and `memcheck_proven` remains
 false. These checks do not establish a whole-process memory bound.
 
 Evidence and checked binaries are retained under ignored
-`benchmark/eval/outputs/vector-routing-2026-10-11/`. This unit remains
-uncommitted; no remote CI or merge is claimed.
+`benchmark/eval/outputs/vector-routing-2026-10-11/`. This unit is committed on
+`codex/coordinate-vector-ocr`; no remote CI or merge is claimed here.
 
 Table topology and reading order need new held-out suites; the earlier
 reading-order holdout must not be retuned or promoted. Host adoption remains a

@@ -6,7 +6,8 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.0` (locally checked, uncommitted).
+Current development schema version: `0.19.0` (locally checked, committed on
+`codex/coordinate-vector-ocr`).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
 `0.11.0`; the development suffix keeps post-release schema `0.19.0` artifacts
@@ -38,7 +39,7 @@ Schema `0.19.0` adds required nullable vector evidence on page and region route
 traces. Bounded path collection proposes geometric OCR candidates without
 changing the raw-coordinate or source-text contract. Readers must explicitly
 accept `0.19.x`; formula children must echo it. This unit is locally checked and
-uncommitted. Its [qualification](parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked)
+committed. Its [qualification](parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked)
 is separate from earlier local results and remote CI.
 
 Schema `0.18.0` adds nullable page geometry, OCR raster transforms and formula
@@ -191,9 +192,9 @@ open before page artifacts exist, so they include the same artifact slots with
 such as native text, span modeling, layout reconstruction, complexity routing,
 reconciliation, table reconstruction, form fields, OCR adapter support, formula
 routing, specialist protocol support, debug assets, and streaming. Formula
-recognition remains false because the configured formula adapter currently
-operates on native span/block context without a rendered visual crop. It is a
-protocol and lifecycle integration, not yet evidence of visual formula quality.
+recognition is true to advertise the configured crop-backed formula adapter.
+This capability flag does not establish visual formula accuracy or imply that
+an enabled recognizer is bundled.
 
 ### `span`
 
