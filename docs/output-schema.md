@@ -518,9 +518,11 @@ reconciled block owns it. Its `provenance.block_ids` agrees with that owner.
 The older numeric `block_id` retains its layout-index meaning.
 
 Tables and nested cells have `reconciled_block_ids`. These list the reconciled
-owners of their `source_span_ids` on the same page. Source spans are selected
-by the existing span-center-inside-bbox rule; a bbox intersection alone does
-not establish ownership. A spanning block can therefore belong to multiple
+owners of their `source_span_ids` on the same page. Reconstructed cell spans
+retain their selected cell identity through reconciliation, including centers
+exactly on shared rules. Blank cells claim no text spans. Other spans retain
+the span-center-inside-bbox fallback; a bbox intersection alone does not
+establish ownership. A spanning block can therefore belong to multiple
 cells. Legacy table `block_index`, `block_count` and `provenance.block_ids`
 retain pre-reconciliation indices and must not be used as authoritative links.
 These additions establish source linkage, not table topology accuracy.

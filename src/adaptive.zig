@@ -2153,7 +2153,7 @@ fn appendTableCellSpans(
             if (std.mem.trim(u8, cell.text, " \t\r\n").len == 0) continue;
             const text = try allocator.dupe(u8, cell.text);
             errdefer allocator.free(text);
-            try spans.append(allocator, layout.TextSpan.init(.{
+            var span = layout.TextSpan.init(.{
                 .page_index = cell.bounds.page_index,
                 .bbox = cell.bounds.bbox,
                 .text = text,
@@ -2163,7 +2163,13 @@ fn appendTableCellSpans(
                 .block_id = cell.bounds.block_id,
                 .line_id = cell.bounds.line_id,
                 .mcid = cell.bounds.mcid,
-            }));
+            });
+            span.table_cell_owner = .{
+                .layout_block_index = table.block_index,
+                .row_index = cell.row_index,
+                .column_index = cell.column_index,
+            };
+            try spans.append(allocator, span);
         }
     }
 }

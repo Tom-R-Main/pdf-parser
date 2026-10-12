@@ -28,6 +28,11 @@ def records():
 
 
 class VerificationTest(unittest.TestCase):
+    def test_public_command_uses_supported_ocr_disable_flag(self):
+        command = VERIFY.extraction_command("parser", "input.pdf", "stream-jsonl")
+        self.assertIn("--no-ocr", command)
+        self.assertNotIn("--disable-ocr", command)
+
     def test_valid_stream_and_artifact(self):
         self.assertEqual(VERIFY.score_records(records(), truth(), "stream-jsonl")["verdict"], "verified")
         artifact = [r for r in records() if r["record_type"] in ("span", "block", "document_manifest")]

@@ -157,6 +157,10 @@ def execute(command, stem, timeout):
     return code, stdout
 
 
+def extraction_command(cli, pdf, output_format):
+    return [str(cli), "extract-adaptive", "--input", str(pdf), "--format", output_format, "--no-ocr"]
+
+
 def run(cli, output, split, eval_cli=None, timeout=60):
     freeze_hash = check_freeze()
     metadata = [json.loads(line) for line in (ROOT / "metadata.jsonl").read_text().splitlines()]
@@ -176,7 +180,7 @@ def run(cli, output, split, eval_cli=None, timeout=60):
         truth = json.loads((ROOT / "truth" / f"{doc_id}.json").read_text())
         pdf = ROOT / "corpus" / f"{doc_id}.pdf"
         for fmt in ("artifact-jsonl", "stream-jsonl"):
-            command = [str(cli), "extract-adaptive", "--input", str(pdf), "--format", fmt, "--disable-ocr"]
+            command = extraction_command(cli, pdf, fmt)
             code, stdout = execute(command, output / f"{doc_id}-{fmt}", timeout)
             try:
                 score = score_records(parse_records(stdout), truth, fmt, code)

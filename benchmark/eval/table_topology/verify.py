@@ -16,6 +16,10 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def extraction_command(binary, pdf, output_format):
+    return [str(binary), "extract-adaptive", "--no-ocr", "--input", str(pdf), "--format", output_format]
+
+
 def score(records, truth, family, output_format="artifact-jsonl"):
     failures = []
     if not records or records[0].get("record_type") != "document_manifest":
@@ -109,7 +113,7 @@ def main():
         if case["split"] != args.split:continue
         truth = json.loads((ROOT/case["truth"]).read_text())
         for fmt in ("artifact-jsonl", "stream-jsonl"):
-            command = [str(binary),"extract-adaptive","--disable-ocr","--input",str(ROOT/case["pdf"]),"--format",fmt]
+            command = extraction_command(binary, ROOT/case["pdf"], fmt)
             result = subprocess.run(command,capture_output=True,timeout=30)
             name = case["id"]+"-"+fmt
             (args.output/(name+".jsonl")).write_bytes(result.stdout)

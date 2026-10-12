@@ -117,6 +117,9 @@ pub const TextSpan = struct {
     paint: PaintEvidence = .{},
     content_scope: ?form_scope.Scope = null,
     leading_boundary: ?TextBoundary = null,
+    // Internal ownership for reconstructed cells; geometry alone cannot
+    // distinguish a shared-rule center from its blank neighboring slot.
+    table_cell_owner: ?TableCellOwner = null,
 
     pub fn init(args: struct {
         page_index: u32 = 0,
@@ -162,6 +165,12 @@ pub const TextSpan = struct {
             .leading_boundary = args.leading_boundary,
         };
     }
+};
+
+pub const TableCellOwner = struct {
+    layout_block_index: u32,
+    row_index: u32,
+    column_index: u32,
 };
 
 pub const TextWord = struct {

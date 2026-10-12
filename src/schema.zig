@@ -1307,7 +1307,7 @@ fn writeTableRecord(allocator: std.mem.Allocator, writer: anytype, document_id: 
         try writer.writeAll(",\"cells\":[");
         for (row.cells, 0..) |cell, cell_index| {
             if (cell_index > 0) try writer.writeByte(',');
-            try writeCellJson(allocator, writer, document_id, source_id, input_sha256, result, table_index, cell, offsets, &scratch.cell_span_ids, stream_meta != null);
+            try writeCellJson(allocator, writer, document_id, source_id, input_sha256, result, table_index, table.block_index, cell, offsets, &scratch.cell_span_ids, stream_meta != null);
         }
         try writer.writeAll("]}");
     }
@@ -1340,12 +1340,13 @@ fn writeCellJson(
     input_sha256: ?[]const u8,
     result: anytype,
     table_index: u32,
+    layout_block_index: u32,
     cell: layout.TableCell,
     offsets: RecordOffsets,
     cell_span_ids: *std.ArrayList(u32),
     stream: bool,
 ) !void {
-    try collectCellSpanIds(allocator, cell_span_ids, result, cell, offsets);
+    try collectCellSpanIds(allocator, cell_span_ids, result, cell, layout_block_index, offsets);
 
     try writer.writeAll("{\"schema_name\":\"table_cell\",\"schema_version\":\"");
     try writer.writeAll(schema_version);
@@ -1379,7 +1380,7 @@ fn writeCellJson(
     try writer.writeAll(",\"source_span_ids\":");
     try writeSpanIdArray(writer, cell_span_ids.items);
     try writer.writeAll(",\"reconciled_block_ids\":");
-    try writeOwningBlockIds(writer, result, cell.bounds.page_index, cell.bounds.bbox, offsets);
+    try writeOwningBlockIdsForSpanIds(writer, result, cell_span_ids.items, offsets);
     try writeProvenancePrefix(writer, .{
         .document_id = document_id,
         .source_id = source_id,
@@ -2051,21 +2052,45 @@ fn writePaint(writer: anytype, paint: layout.PaintEvidence) !void {
     try specialist_protocol.writePaintEvidence(writer, paint);
 }
 
-fn collectCellSpanIds(allocator: std.mem.Allocator, span_ids: *std.ArrayList(u32), result: anytype, cell: layout.TableCell, offsets: RecordOffsets) !void {
+fn writeOwningBlockIdsForSpanIds(writer: anytype, result: anytype, span_ids: []const u32, offsets: RecordOffsets) !void {
+    try writer.writeByte('[');
+    var first = true;
+    for (result.reconciled.blocks) |block| {
+        var matched = false;
+        for (span_ids) |span_id| {
+            const local: usize = span_id - offsets.span_base;
+            if (local >= block.span_start and local - block.span_start < block.span_count) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) continue;
+        if (!first) try writer.writeByte(',');
+        try writer.print("\"block-{d}\"", .{offsets.block_base + block.id});
+        first = false;
+    }
+    try writer.writeByte(']');
+}
+
+fn collectCellSpanIds(allocator: std.mem.Allocator, span_ids: *std.ArrayList(u32), result: anytype, cell: layout.TableCell, layout_block_index: u32, offsets: RecordOffsets) !void {
     span_ids.clearRetainingCapacity();
+    if (std.mem.trim(u8, cell.text, " \t\r\n").len == 0) return;
+    const owner = layout.TableCellOwner{ .layout_block_index = layout_block_index, .row_index = cell.row_index, .column_index = cell.column_index };
     if (offsets.span_lookup) |lookup| {
         if (lookup.spanRange(cell.bounds.page_index)) |range| {
-            try collectSpanIdsInRange(allocator, span_ids, result.reconciled.spans[range.start..range.end], range.start, cell.bounds.page_index, cell.bounds.bbox, offsets.span_base);
+            try collectSpanIdsInRange(allocator, span_ids, result.reconciled.spans[range.start..range.end], range.start, cell.bounds.page_index, cell.bounds.bbox, owner, offsets.span_base);
         }
         return;
     }
-    try collectSpanIdsInRange(allocator, span_ids, result.reconciled.spans, 0, cell.bounds.page_index, cell.bounds.bbox, offsets.span_base);
+    try collectSpanIdsInRange(allocator, span_ids, result.reconciled.spans, 0, cell.bounds.page_index, cell.bounds.bbox, owner, offsets.span_base);
 }
 
-fn collectSpanIdsInRange(allocator: std.mem.Allocator, span_ids: *std.ArrayList(u32), spans: anytype, start_index: usize, page_index: u32, bbox: layout.BBox, span_base: u32) !void {
+fn collectSpanIdsInRange(allocator: std.mem.Allocator, span_ids: *std.ArrayList(u32), spans: anytype, start_index: usize, page_index: u32, bbox: layout.BBox, owner: layout.TableCellOwner, span_base: u32) !void {
     for (spans, start_index..) |span, span_index| {
         if (span.span.page_index != page_index) continue;
-        if (!centerInside(span.span.bbox, bbox)) continue;
+        if (span.span.table_cell_owner) |actual| {
+            if (!std.meta.eql(actual, owner)) continue;
+        } else if (!centerInside(span.span.bbox, bbox)) continue;
         try span_ids.append(allocator, span_base + @as(u32, @intCast(span_index)));
     }
 }
@@ -2651,6 +2676,42 @@ fn centerInside(inner: layout.BBox, outer: layout.BBox) bool {
     const x = (inner.x0 + inner.x1) / 2.0;
     const y = (inner.y0 + inner.y1) / 2.0;
     return x >= outer.x0 and x <= outer.x1 and y >= outer.y0 and y <= outer.y1;
+}
+
+test "cell ownership rejects shared-rule neighbors in indexed and streaming selections" {
+    const allocator = std.testing.allocator;
+    var span = layout.TextSpan.init(.{ .bbox = .{ .x0 = 215, .x1 = 225, .y0 = 675, .y1 = 685 }, .text = "Edge", .source = .table_model });
+    span.table_cell_owner = .{ .layout_block_index = 7, .row_index = 1, .column_index = 1 };
+    const spans = [_]struct { span: layout.TextSpan }{.{ .span = span }};
+    const blocks = [_]struct { id: u32, span_start: u32, span_count: u32 }{.{ .id = 3, .span_start = 0, .span_count = 1 }};
+    const result = .{ .reconciled = .{ .spans = &spans, .blocks = &blocks } };
+    const bounds = layout.TextSpan.init(.{ .bbox = .{ .x0 = 220, .x1 = 380, .y0 = 640, .y1 = 680 }, .text = "" });
+    const cell = layout.TableCell{ .bounds = bounds, .text = "Edge", .row_index = 1, .column_index = 1 };
+    var ids: std.ArrayList(u32) = .empty;
+    defer ids.deinit(allocator);
+    const ranges = [_]IndexRange{.{ .start = 0, .end = 1 }};
+    const lookup = SpanLookup{ .allocator = allocator, .span_ranges = @constCast(&ranges) };
+    for ([_]RecordOffsets{ .{ .span_base = 100, .block_base = 200 }, .{ .span_base = 100, .block_base = 200, .span_lookup = &lookup } }) |offsets| {
+        try collectCellSpanIds(allocator, &ids, result, cell, 7, offsets);
+        try std.testing.expectEqualSlices(u32, &.{100}, ids.items);
+        var neighbor = cell;
+        neighbor.text = "";
+        neighbor.column_index = 0;
+        try collectCellSpanIds(allocator, &ids, result, neighbor, 7, offsets);
+        try std.testing.expectEqual(@as(usize, 0), ids.items.len);
+        neighbor.text = "Different";
+        try collectCellSpanIds(allocator, &ids, result, neighbor, 7, offsets);
+        try std.testing.expectEqual(@as(usize, 0), ids.items.len);
+        try collectCellSpanIds(allocator, &ids, result, cell, 8, offsets);
+        try std.testing.expectEqual(@as(usize, 0), ids.items.len);
+    }
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    try writeOwningBlockIdsForSpanIds(runtime.arrayListWriter(&output, allocator), result, &.{100}, .{ .span_base = 100, .block_base = 200 });
+    try std.testing.expectEqualStrings("[\"block-203\"]", output.items);
+    output.clearRetainingCapacity();
+    try writeOwningBlockIdsForSpanIds(runtime.arrayListWriter(&output, allocator), result, &.{}, .{});
+    try std.testing.expectEqualStrings("[]", output.items);
 }
 
 fn findManualSpanForField(result: anytype, field: anytype) ?usize {

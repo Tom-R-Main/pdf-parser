@@ -13,6 +13,11 @@ def cell(text="Cash", column=0, rowspan=1, colspan=1, ids=None):
 
 
 class TopologyTests(unittest.TestCase):
+    def test_public_command_uses_supported_ocr_disable_flag(self):
+        command = verify.extraction_command("parser", "input.pdf", "artifact-jsonl")
+        self.assertIn("--no-ocr", command)
+        self.assertNotIn("--disable-ocr", command)
+
     def test_boundary_count_uses_exact_financial_tokens(self):
         values=["Cash","0","(640)"]
         cells=[cell(text,column=i,ids=[f"span-{i}"]) for i,text in enumerate(values)]
