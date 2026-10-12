@@ -1,0 +1,132 @@
+[
+  {
+    "id": "ncua-statements-dev", "source_id": "e013", "split": "dev", "pages": [3, 5],
+    "tables": [
+      {
+        "id": "balance", "page_index": 2, "bbox": [51, 139, 557, 650],
+        "context": "Balance sheets, dollars in thousands",
+        "rows": [
+          {"tokens": "Fund Balance with Treasury $ 28,485 $ 26,245"},
+          {"tokens": "Accounts Payable - Due to the NCUA Operating Fund $ - $ 19"},
+          {"tokens": "TOTAL ASSETS $ 20,553,523 $ 20,483,729"}
+        ]
+      },
+      {
+        "id": "net-cost", "page_index": 3, "bbox": [52, 272, 557, 658],
+        "context": "Net cost; July, year-to-date July 2023, year-to-date July 2022; thousands",
+        "rows": [
+          {"tokens": "Reserve Expense (Reduction) - 20,002 7,506"},
+          {"tokens": "AME Receivable Bad Debt Expense - (21,778) (51,864)"}
+        ]
+      },
+      {
+        "id": "net-position", "page_index": 4, "bbox": [52, 207, 559, 645],
+        "context": "Changes in net position; July 2023 and July 2022; thousands",
+        "rows": [
+          {"tokens": "Beginning Balances $ 3,258,998 $ 4,780,200"},
+          {"tokens": "Beginning Balances 16,916,436 15,783,657"},
+          {"tokens": "NET POSITION $ 20,346,828 $ 20,311,501", "occurrences": 2}
+        ]
+      }
+    ],
+    "relations": [
+      {"from": "balance", "to": "net-cost", "continues": false},
+      {"from": "net-cost", "to": "net-position", "continues": false}
+    ]
+  },
+  {
+    "id": "treasury-continuation-holdout", "source_id": "e012", "split": "holdout", "pages": [1, 3],
+    "tables": [
+      {
+        "id": "cash-1", "page_index": 0, "bbox": [36.8, 31.5, 581.1, 589.5], "column_count": 8,
+        "context": "Table II: independent deposit and withdrawal panels, millions",
+        "rows": [
+          {"tokens": "Dept of Agriculture (USDA) - misc 30 273 1,904", "prefix": true},
+          {"tokens": "USDA - Federal Crop Insurance Corp Fund 0 0 33", "prefix": true},
+          {"tokens": "Legislative Branch - misc 0 3 40", "prefix": true}
+        ]
+      },
+      {
+        "id": "cash-2", "page_index": 1, "bbox": [36.8, 341, 581.1, 735.7], "column_count": 8,
+        "context": "Table II - cont.; blank deposit detail region beside continuing withdrawals",
+        "rows": [
+          {"tokens": "Legislative Branch - Library of Congress 0 38 146", "prefix": true},
+          {"tokens": "Unclassified - Deposits 10 217 2,892", "prefix": true},
+          {"tokens": "Total Deposits 8,170 408,982 2,621,282", "prefix": true},
+          {"tokens": "Treasury General Account Total Deposits $ 224,427 $ 2,155,471 $ 17,629,416", "prefix": true}
+        ]
+      },
+      {
+        "id": "debt-face-value", "page_index": 1, "bbox": [36.8, 131.5, 581.1, 332], "column_count": 8,
+        "context": "Table IIIA public debt transactions, face value, millions",
+        "rows": [
+          {"tokens": "Government Account Series 570,559 7,051,129 67,726,222", "prefix": true},
+          {"tokens": "Total Issues $ 788,818 $ 8,823,334 $ 82,899,841", "prefix": true}
+        ]
+      },
+      {
+        "id": "debt-cash-basis", "page_index": 2, "bbox": [36.8, 570.5, 581.1, 735.7], "column_count": 8,
+        "context": "Table IIIB adjustment to cash basis; repeated amounts are not continuation",
+        "rows": [
+          {"tokens": "Public Debt Issues (Table IIIA) $ 788,818 $ 8,823,334 $ 82,899,841", "prefix": true},
+          {"tokens": "Government Account Transactions (-) 570,559 7,051,129 67,726,222", "prefix": true}
+        ]
+      },
+      {
+        "id": "debt-limit-groups", "page_index": 2, "bbox": [36.8, 408.5, 581.1, 560.5], "column_count": 5,
+        "context": "Table IIIC: integrated caption; closing balance and opening balance periods, millions",
+        "rows": [
+          {"tokens": "Debt Held by the Public $ 28,900,195 $ 28,924,758 $ 28,914,411 $ 28,307,312"},
+          {"tokens": "Intragovernmental Holdings 7,315,899 7,290,501 7,304,513 7,157,362"}
+        ],
+        "headers": [
+          {"text": "TABLE IIIC - Debt Subject to Limit", "row": 0, "column": 0, "rowspan": 1, "colspan": 5},
+          {"text": "Balance Transactions", "row": 1, "column": 0, "rowspan": 2, "colspan": 1},
+          {"text": "Closing balance today", "row": 1, "column": 1, "rowspan": 2, "colspan": 1},
+          {"text": "Opening balance", "row": 1, "column": 2, "rowspan": 1, "colspan": 3},
+          {"text": "Today", "row": 2, "column": 2, "rowspan": 1, "colspan": 1},
+          {"text": "This month", "row": 2, "column": 3, "rowspan": 1, "colspan": 1},
+          {"text": "Fiscal year", "row": 2, "column": 4, "rowspan": 1, "colspan": 1}
+        ]
+      }
+    ],
+    "relations": [
+      {"from": "cash-1", "to": "cash-2", "continues": true},
+      {"from": "debt-face-value", "to": "debt-cash-basis", "continues": false}
+    ]
+  },
+  {
+    "id": "construction-groups-holdout", "source_id": "e019", "split": "holdout", "pages": [3, 5],
+    "tables": [
+      {
+        "id": "annualized", "page_index": 2, "bbox": [40.5, 133.5, 544, 732], "column_count": 9,
+        "context": "Table 1 seasonally adjusted annual rate, millions",
+        "rows": [{"tokens": "Total Construction 2,196,060 2,206,880 2,194,337 2,191,059 2,184,796 2,135,771 -0.5 2.8"}]
+      },
+      {
+        "id": "unadjusted", "page_index": 3, "bbox": [40.5, 138.5, 559, 732], "column_count": 10,
+        "context": "Table 2 not seasonally adjusted monthly values, millions",
+        "rows": [{"tokens": "Total Construction 172,187 157,055 156,483 164,364 178,806 167,395 485,726 472,183 2.9"}]
+      },
+      {
+        "id": "variation", "page_index": 4, "bbox": [40.5, 110.5, 558, 729.7], "column_count": 6,
+        "context": "Table 3 percent; NA means Not applicable, not zero or blank",
+        "rows": [
+          {"tokens": "Total Construction 0.7 0.5 0.6 0.5 0.7"},
+          {"tokens": "Communication NA NA NA NA NA", "occurrences": 2}
+        ],
+        "headers": [
+          {"text": "Type of Construction", "row": 0, "column": 0, "rowspan": 2, "colspan": 1},
+          {"text": "Coefficient of variation", "row": 0, "column": 1, "rowspan": 1, "colspan": 2},
+          {"text": "Standard error", "row": 0, "column": 3, "rowspan": 1, "colspan": 3},
+          {"text": "Monthly estimate", "row": 1, "column": 1, "rowspan": 1, "colspan": 1},
+          {"text": "Year-to-date estimate", "row": 1, "column": 2, "rowspan": 1, "colspan": 1},
+          {"text": "Year-to-date change", "row": 1, "column": 3, "rowspan": 1, "colspan": 1},
+          {"text": "Month-to-month change", "row": 1, "column": 4, "rowspan": 1, "colspan": 1},
+          {"text": "Month-to-month change from prev. year", "row": 1, "column": 5, "rowspan": 1, "colspan": 1}
+        ]
+      }
+    ],
+    "relations": [{"from": "annualized", "to": "unadjusted", "continues": false}]
+  }
+]

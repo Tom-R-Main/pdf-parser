@@ -98,7 +98,11 @@ pub fn collectBatch(
     }
 
     for (0..pageCount(result)) |page_usize| {
-        const page_index: u32 = @intCast(page_usize);
+        // Routes retain original PDF page indices, including selected ranges.
+        const page_index: u32 = if (result.page_routes.len > 0)
+            result.page_routes[page_usize].page_index
+        else
+            @intCast(page_usize);
         for (page_asset_specs) |spec| {
             var record = try pageRecord(allocator, page_index, spec);
             errdefer record.deinit(allocator);
@@ -663,4 +667,105 @@ test "visual asset kind names are stable" {
     try std.testing.expectEqualStrings("table_grid_overlay_svg", assetKindName(.table_grid_overlay_svg));
     try std.testing.expectEqualStrings("route_trace_json", assetKindName(.route_trace_json));
     try std.testing.expectEqualStrings("glyph_trace_jsonl", assetKindName(.glyph_trace_jsonl));
+}
+
+test "batch assets preserve original selected pages and materialize matching source evidence" {
+    const adaptive = @import("adaptive.zig");
+    const allocator = std.testing.allocator;
+    var spans = [_]reconcile.ReconciledSpan{
+        .{
+            .span = layout.TextSpan.init(.{ .page_index = 2, .bbox = .{ .x0 = 31, .y0 = 47, .x1 = 91, .y1 = 59 }, .text = "Third source page" }),
+            .source_mask = 1,
+            .chosen_source = .native_pdf,
+            .confidence = 1,
+        },
+        .{
+            .span = layout.TextSpan.init(.{ .page_index = 6, .bbox = .{ .x0 = 111, .y0 = 127, .x1 = 171, .y1 = 139 }, .text = "Seventh source page" }),
+            .source_mask = 1,
+            .chosen_source = .native_pdf,
+            .confidence = 1,
+        },
+    };
+    var native_third = [_]layout.TextSpan{spans[0].span};
+    var native_seventh = [_]layout.TextSpan{spans[1].span};
+    var native_pages = [_][]layout.TextSpan{ &native_third, &native_seventh };
+    var routes = [_]adaptive.PageRoute{
+        .{ .page_index = 2, .bbox = .{ .x0 = 10, .y0 = 20, .x1 = 610, .y1 = 820 }, .span_count = 1, .image_count = 0, .char_count = 17, .signals = .{}, .route = .{ .native_fast_path = true }, .reason_mask = 0 },
+        .{ .page_index = 6, .bbox = .{ .x0 = 100, .y0 = 120, .x1 = 700, .y1 = 920 }, .span_count = 1, .image_count = 0, .char_count = 19, .signals = .{}, .route = .{ .native_fast_path = true }, .reason_mask = 0 },
+    };
+    var result = adaptive.Result{
+        .allocator = allocator,
+        .reconciled = .{ .allocator = allocator, .spans = &spans, .blocks = &.{}, .chunks = &.{} },
+        .native_pages = &native_pages,
+        .layout_blocks = &.{},
+        .page_routes = &routes,
+        .region_routes = &.{},
+        .trace_records = &.{},
+        .ocr_attempts = &.{},
+        .formula_attempts = &.{},
+        .formula_artifacts = &.{},
+        .form_fields = &.{},
+        .tables = &.{},
+        .reading_order_pages = &.{},
+    };
+
+    var dir_buf: [96]u8 = undefined;
+    const dir = try std.fmt.bufPrint(&dir_buf, "pdf-parser-selected-page-assets-{x}-{x}", .{ std.testing.random_seed, runtime.nanoTimestamp() });
+    // Do not delete a preexisting directory: only this test's new assets are owned.
+    try std.testing.expect(!runtime.dirExists(dir));
+    defer runtime.deleteTreeCwd(dir);
+    const records = try collectBatch(allocator, &result, dir, true);
+    defer deinitRecords(allocator, records);
+    try std.testing.expectEqual(assetCount(&result, true), records.len);
+    try std.testing.expectEqual(@as(usize, 16), records.len);
+
+    for (records[document_asset_specs.len..], 0..) |record, index| {
+        const expected_page: u32 = if (index < page_asset_specs.len) 2 else 6;
+        try std.testing.expectEqual(expected_page, record.page_index.?);
+        try std.testing.expect(record.sha256 != null);
+        try std.testing.expect(record.byte_length != null);
+        const filename_prefix = if (expected_page == 2) "page-0003." else "page-0007.";
+        try std.testing.expect(std.mem.startsWith(u8, std.fs.path.basename(record.path.?), filename_prefix));
+        const id_prefix = if (expected_page == 2) "page-2-" else "page-6-";
+        try std.testing.expect(std.mem.startsWith(u8, record.debug_asset_id, id_prefix));
+        if (!std.mem.eql(u8, record.asset_kind, "page_overlay_svg") and !std.mem.eql(u8, record.asset_kind, "glyph_trace_jsonl")) continue;
+        const bytes = try runtime.readFileAllocAlignedCwd(allocator, record.path.?, .fromByteUnits(1));
+        defer allocator.free(bytes);
+        try std.testing.expectEqual(bytes.len, record.byte_length.?);
+        const hash = try sha256Hex(allocator, bytes);
+        defer allocator.free(hash);
+        try std.testing.expectEqualStrings(hash, record.sha256.?);
+        if (std.mem.eql(u8, record.asset_kind, "page_overlay_svg")) {
+            const present_text = if (expected_page == 2) "Third source page" else "Seventh source page";
+            const absent_text = if (expected_page == 2) "Seventh source page" else "Third source page";
+            try std.testing.expect(std.mem.indexOf(u8, bytes, present_text) != null);
+            try std.testing.expect(std.mem.indexOf(u8, bytes, absent_text) == null);
+            const source_box = if (expected_page == 2) "viewBox=\"10.00 20.00 600.00 800.00\"" else "viewBox=\"100.00 120.00 600.00 800.00\"";
+            const source_coordinate = if (expected_page == 2) "x=\"31.00\" y=\"47.00\"" else "x=\"111.00\" y=\"127.00\"";
+            try std.testing.expect(std.mem.indexOf(u8, bytes, source_box) != null);
+            try std.testing.expect(std.mem.indexOf(u8, bytes, source_coordinate) != null);
+        } else {
+            const present_page = if (expected_page == 2) "\"page_index\":2," else "\"page_index\":6,";
+            const absent_page = if (expected_page == 2) "\"page_index\":6," else "\"page_index\":2,";
+            try std.testing.expect(std.mem.indexOf(u8, bytes, present_page) != null);
+            try std.testing.expect(std.mem.indexOf(u8, bytes, absent_page) == null);
+        }
+    }
+
+    // Full-document routes keep their existing indices and asset count.
+    routes[0].page_index = 0;
+    routes[1].page_index = 1;
+    const full_records = try collectBatch(allocator, &result, null, true);
+    defer deinitRecords(allocator, full_records);
+    try std.testing.expectEqual(@as(usize, 16), full_records.len);
+    try std.testing.expectEqual(@as(?u32, 0), full_records[4].page_index);
+    try std.testing.expectEqual(@as(?u32, 1), full_records[10].page_index);
+
+    // With no routes, retain the established contiguous extent fallback.
+    result.page_routes = &.{};
+    const fallback_records = try collectBatch(allocator, &result, null, true);
+    defer deinitRecords(allocator, fallback_records);
+    try std.testing.expectEqual(@as(usize, 46), fallback_records.len);
+    try std.testing.expectEqual(@as(?u32, 0), fallback_records[4].page_index);
+    try std.testing.expectEqual(@as(?u32, 6), fallback_records[40].page_index);
 }
