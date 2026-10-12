@@ -1,0 +1,79 @@
+{
+  "ambiguous_pairs": [],
+  "forbidden_precedence": [],
+  "nodes": [
+    {
+      "id": "introduction",
+      "page_index": 0,
+      "text_anchor": "DEV introduction"
+    },
+    {
+      "id": "header_left",
+      "page_index": 0,
+      "text_anchor": "DEV header left"
+    },
+    {
+      "id": "header_right",
+      "page_index": 0,
+      "text_anchor": "DEV header right"
+    },
+    {
+      "id": "row_one_left",
+      "page_index": 0,
+      "text_anchor": "DEV row one left"
+    },
+    {
+      "id": "row_one_right",
+      "page_index": 0,
+      "text_anchor": "DEV row one right"
+    },
+    {
+      "id": "row_two_left",
+      "page_index": 0,
+      "text_anchor": "DEV row two left"
+    },
+    {
+      "id": "row_two_right",
+      "page_index": 0,
+      "text_anchor": "DEV row two right"
+    },
+    {
+      "id": "conclusion",
+      "page_index": 0,
+      "text_anchor": "DEV conclusion"
+    }
+  ],
+  "relations": [],
+  "required_precedence": [
+    [
+      "introduction",
+      "header_left"
+    ],
+    [
+      "header_left",
+      "header_right"
+    ],
+    [
+      "header_right",
+      "row_one_left"
+    ],
+    [
+      "row_one_left",
+      "row_one_right"
+    ],
+    [
+      "row_one_right",
+      "row_two_left"
+    ],
+    [
+      "row_two_left",
+      "row_two_right"
+    ],
+    [
+      "row_two_right",
+      "conclusion"
+    ]
+  ],
+  "valid_orders": [],
+  "version": 1
+}

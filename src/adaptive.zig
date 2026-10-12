@@ -2046,12 +2046,15 @@ fn appendLayoutBlockSpans(
     block_index: usize,
 ) !void {
     const block = page_layout.blocks[block_index];
-    if (block.removed or block.lines.len == 0) return;
+    if (block.lines.len == 0) return;
+    // The table layer replaces the native page layer. Furniture suppression
+    // is a text-rendering choice, not authority to erase that source evidence.
 
     if (page_layout.tableForBlock(block_index)) |table| {
         if (tableHasUsefulTextRows(table)) {
-            try appendBlockLinesOutsideTable(allocator, spans, block, table);
-            try appendTableRowSpans(allocator, spans, table);
+            try appendBlockLinesOutsideTable(allocator, spans, block, table, true);
+            try appendTableCellSpans(allocator, spans, table);
+            try appendBlockLinesOutsideTable(allocator, spans, block, table, false);
             return;
         }
     }
@@ -2060,7 +2063,13 @@ fn appendLayoutBlockSpans(
         if (tableCoveringBlock(page_layout.tables, block_index)) |table| {
             skip_covered = tableHasUsefulTextRows(table);
         }
-        if (skip_covered) return;
+        if (skip_covered) {
+            if (tableCoveringBlock(page_layout.tables, block_index)) |table| {
+                try appendBlockLinesOutsideTable(allocator, spans, block, table, true);
+                try appendBlockLinesOutsideTable(allocator, spans, block, table, false);
+            }
+            return;
+        }
     }
 
     for (block.lines) |line| {
@@ -2131,29 +2140,37 @@ fn tableHasUsefulTextRows(table: *const layout.TableGrid) bool {
     return occupied_rows >= 2;
 }
 
-fn appendTableRowSpans(
+fn appendTableCellSpans(
     allocator: std.mem.Allocator,
     spans: *std.ArrayList(layout.TextSpan),
     table: *const layout.TableGrid,
 ) !void {
     for (table.rows) |row| {
-        const text = try tableRowTextOwned(allocator, row);
-        errdefer allocator.free(text);
-        if (text.len == 0) {
-            allocator.free(text);
-            continue;
+        for (row.cells) |cell| {
+            // A full-row bbox cannot identify which cell owns its text:
+            // its center can even fall in an empty numeric cell. Retain the
+            // already reconstructed cell granularity through reconciliation.
+            if (std.mem.trim(u8, cell.text, " \t\r\n").len == 0) continue;
+            const text = try allocator.dupe(u8, cell.text);
+            errdefer allocator.free(text);
+            var span = layout.TextSpan.init(.{
+                .page_index = cell.bounds.page_index,
+                .bbox = cell.bounds.bbox,
+                .text = text,
+                .source = .table_model,
+                .confidence = cell.confidence,
+                .font = stableFont(cell.bounds.font),
+                .block_id = cell.bounds.block_id,
+                .line_id = cell.bounds.line_id,
+                .mcid = cell.bounds.mcid,
+            });
+            span.table_cell_owner = .{
+                .layout_block_index = table.block_index,
+                .row_index = cell.row_index,
+                .column_index = cell.column_index,
+            };
+            try spans.append(allocator, span);
         }
-        try spans.append(allocator, layout.TextSpan.init(.{
-            .page_index = row.bounds.page_index,
-            .bbox = row.bounds.bbox,
-            .text = text,
-            .source = .table_model,
-            .confidence = table.confidence,
-            .font = stableFont(row.bounds.font),
-            .block_id = row.bounds.block_id,
-            .line_id = row.bounds.line_id,
-            .mcid = row.bounds.mcid,
-        }));
     }
 }
 
@@ -2162,9 +2179,12 @@ fn appendBlockLinesOutsideTable(
     spans: *std.ArrayList(layout.TextSpan),
     block: layout.LayoutBlock,
     table: *const layout.TableGrid,
+    before: bool,
 ) !void {
     for (block.lines) |line| {
         if (spansIntersect(line.bounds, table.bounds)) continue;
+        const above = line.bounds.y0 >= table.bounds.y1;
+        if (above != before) continue;
         try appendLineSpan(allocator, spans, line, block.confidence);
     }
 }
@@ -2209,21 +2229,6 @@ fn lineTextOwned(allocator: std.mem.Allocator, line: *const layout.TextLine) ![]
             try output.appendSlice(allocator, span.text);
             wrote = true;
         }
-    }
-
-    return output.toOwnedSlice(allocator);
-}
-
-fn tableRowTextOwned(allocator: std.mem.Allocator, row: layout.TableRow) ![]u8 {
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(allocator);
-
-    var wrote_cell = false;
-    for (row.cells) |cell| {
-        if (cell.text.len == 0) continue;
-        if (wrote_cell) try output.append(allocator, ' ');
-        try output.appendSlice(allocator, cell.text);
-        wrote_cell = true;
     }
 
     return output.toOwnedSlice(allocator);
@@ -3095,6 +3100,35 @@ test "mixed native OCR filter keeps image OCR and drops page furniture OCR" {
 
     try std.testing.expectEqual(@as(usize, 1), filtered.len);
     try std.testing.expectEqualStrings("scan text", filtered[0].text);
+}
+
+fn tableCellSpanAllocationProbe(allocator: std.mem.Allocator) !void {
+    var spans: std.ArrayList(layout.TextSpan) = .empty;
+    defer {
+        for (spans.items) |span| allocator.free(@constCast(span.text));
+        spans.deinit(allocator);
+    }
+    const left = layout.TextSpan.init(.{ .bbox = .{ .x0 = 10, .y0 = 50, .x1 = 40, .y1 = 62 }, .text = "" });
+    const right = layout.TextSpan.init(.{ .bbox = .{ .x0 = 100, .y0 = 50, .x1 = 110, .y1 = 62 }, .text = "" });
+    var cells = [_]layout.TableCell{
+        .{ .bounds = left, .text = "Cash", .row_index = 0, .column_index = 0 },
+        .{ .bounds = right, .text = "0", .row_index = 0, .column_index = 1 },
+        .{ .bounds = right, .text = "", .row_index = 0, .column_index = 2 },
+    };
+    var rows = [_]layout.TableRow{.{ .bounds = left, .cells = &cells, .row_index = 0 }};
+    const table = layout.TableGrid{ .bounds = left, .block_index = 0, .rows = &rows, .column_count = 3 };
+    try appendTableCellSpans(allocator, &spans, &table);
+    try std.testing.expectEqual(@as(usize, 2), spans.items.len);
+    try std.testing.expectEqualStrings("Cash", spans.items[0].text);
+    try std.testing.expectEqualStrings("0", spans.items[1].text);
+    try std.testing.expectEqualDeep(left.bbox, spans.items[0].bbox);
+    try std.testing.expectEqualDeep(right.bbox, spans.items[1].bbox);
+    try std.testing.expectEqual(layout.SourceKind.table_model, spans.items[0].source);
+}
+
+test "table evidence retains cell granularity and excludes blank placeholders" {
+    try tableCellSpanAllocationProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, tableCellSpanAllocationProbe, .{});
 }
 
 test "table layout layer suppresses represented OCR words but keeps residual totals" {

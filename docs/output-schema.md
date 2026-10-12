@@ -6,11 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.0` (locally checked, committed on
-`codex/coordinate-vector-ocr`).
+Current development schema version: `0.19.1` (local working-tree continuation).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.19.0` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.19.1` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -34,6 +33,17 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.19.1` fixes table evidence granularity and shared-rule assignment.
+Reconstructed table spans retain individual nonempty cell text and bounds,
+rather than synthesizing whole-row spans whose centers can falsely identify
+an empty cell. Shared rules assign a center to one band; surrounding prose
+is retained when a table layer replaces native page text. Fields, types,
+coordinate units and source kinds retain their existing meanings. Blank
+cells remain in the table grid and do not create text spans. Derived cell
+spans retain `table_model` provenance; they are not original native glyphs.
+Legacy native ordering also resets columns at corroborated section headings.
+This does not promote the separate diagnostic graph model.
 
 Schema `0.19.0` adds required nullable vector evidence on page and region route
 traces. Bounded path collection proposes geometric OCR candidates without
@@ -508,9 +518,11 @@ reconciled block owns it. Its `provenance.block_ids` agrees with that owner.
 The older numeric `block_id` retains its layout-index meaning.
 
 Tables and nested cells have `reconciled_block_ids`. These list the reconciled
-owners of their `source_span_ids` on the same page. Source spans are selected
-by the existing span-center-inside-bbox rule; a bbox intersection alone does
-not establish ownership. A spanning block can therefore belong to multiple
+owners of their `source_span_ids` on the same page. Reconstructed cell spans
+retain their selected cell identity through reconciliation, including centers
+exactly on shared rules. Blank cells claim no text spans. Other spans retain
+the span-center-inside-bbox fallback; a bbox intersection alone does not
+establish ownership. A spanning block can therefore belong to multiple
 cells. Legacy table `block_index`, `block_count` and `provenance.block_ids`
 retain pre-reconciliation indices and must not be used as authoritative links.
 These additions establish source linkage, not table topology accuracy.

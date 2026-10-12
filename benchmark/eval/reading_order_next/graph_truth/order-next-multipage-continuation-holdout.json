@@ -1,0 +1,39 @@
+{
+  "ambiguous_pairs": [],
+  "forbidden_precedence": [],
+  "nodes": [
+    {
+      "id": "page_one_open",
+      "page_index": 0,
+      "text_anchor": "SEALED page one open"
+    },
+    {
+      "id": "page_one_continue",
+      "page_index": 0,
+      "text_anchor": "SEALED page one continue"
+    },
+    {
+      "id": "page_two_resume",
+      "page_index": 1,
+      "text_anchor": "SEALED page two resume"
+    },
+    {
+      "id": "page_two_close",
+      "page_index": 1,
+      "text_anchor": "SEALED page two close"
+    }
+  ],
+  "relations": [],
+  "required_precedence": [
+    [
+      "page_one_open",
+      "page_one_continue"
+    ],
+    [
+      "page_two_resume",
+      "page_two_close"
+    ]
+  ],
+  "valid_orders": [],
+  "version": 1
+}

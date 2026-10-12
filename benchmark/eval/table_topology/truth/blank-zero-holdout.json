@@ -1,0 +1,66 @@
+[
+  {
+    "column_count": 2,
+    "rows": [
+      {
+        "row_index": 0,
+        "cells": [
+          {
+            "text": "H Account",
+            "row": 0,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1
+          },
+          {
+            "text": "H Amount",
+            "row": 0,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1
+          }
+        ]
+      },
+      {
+        "row_index": 1,
+        "cells": [
+          {
+            "text": "H Cash",
+            "row": 1,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1
+          },
+          {
+            "text": "0",
+            "row": 1,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1
+          }
+        ]
+      },
+      {
+        "row_index": 2,
+        "cells": [
+          {
+            "text": "H Debt",
+            "row": 2,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1
+          },
+          {
+            "text": "",
+            "row": 2,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1
+          }
+        ]
+      }
+    ],
+    "topology_required": true,
+    "source_ownership_required": true
+  }
+]

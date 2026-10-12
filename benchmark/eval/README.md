@@ -1,5 +1,12 @@
 # Evaluation Harness
 
+New frozen [table topology controls](table_topology/README.md) and
+[reading-order holdouts](reading_order_next/README.md) assess source ownership,
+physical cell spans and emitted order separately. The earlier reading-order
+promotion stop rule remains in force. Use `bounded_zig.py` for task-scoped
+compiler caches and preserved verification logs; its observed budget is not a
+filesystem quota.
+
 `pdf-parser` treats evaluation as a first-class build target:
 
 ```sh

@@ -1,0 +1,34 @@
+{
+  "ambiguous_pairs": [],
+  "forbidden_precedence": [],
+  "nodes": [
+    {
+      "id": "opening",
+      "page_index": 0,
+      "text_anchor": "DEV opening"
+    },
+    {
+      "id": "middle",
+      "page_index": 0,
+      "text_anchor": "DEV middle"
+    },
+    {
+      "id": "closing",
+      "page_index": 0,
+      "text_anchor": "DEV closing"
+    }
+  ],
+  "relations": [],
+  "required_precedence": [
+    [
+      "opening",
+      "middle"
+    ],
+    [
+      "middle",
+      "closing"
+    ]
+  ],
+  "valid_orders": [],
+  "version": 1
+}

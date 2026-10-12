@@ -1,0 +1,54 @@
+{
+  "document_precedence": [],
+  "nodes": [
+    {
+      "id": "left_open",
+      "page_index": 0,
+      "text_anchor": "DEV left open"
+    },
+    {
+      "id": "left_close",
+      "page_index": 0,
+      "text_anchor": "DEV left close"
+    },
+    {
+      "id": "right_open",
+      "page_index": 0,
+      "text_anchor": "DEV right open"
+    },
+    {
+      "id": "right_close",
+      "page_index": 0,
+      "text_anchor": "DEV right close"
+    }
+  ],
+  "page_local_precedence": [
+    [
+      "left_open",
+      "left_close"
+    ],
+    [
+      "left_close",
+      "right_open"
+    ],
+    [
+      "right_open",
+      "right_close"
+    ]
+  ],
+  "required_precedence": [
+    [
+      "left_open",
+      "left_close"
+    ],
+    [
+      "left_close",
+      "right_open"
+    ],
+    [
+      "right_open",
+      "right_close"
+    ]
+  ],
+  "version": 1
+}

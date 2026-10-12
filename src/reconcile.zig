@@ -761,6 +761,11 @@ fn findDuplicate(spans: []const ReconciledSpan, duplicate_index: *const Duplicat
     const same_page_indices = duplicate_index.indicesForPage(candidate.span.page_index) orelse return null;
     for (same_page_indices) |index| {
         const existing = spans[index];
+        if (existing.span.table_cell_owner) |owner| {
+            if (candidate.span.table_cell_owner) |other| {
+                if (!std.meta.eql(owner, other)) continue;
+            }
+        }
         // MCIDs identify marked-content groups, which may contain multiple
         // distinct spans. Duplicate identity still requires text and placement.
         if (!std.mem.eql(u8, normalizedText(existing.span.text), normalizedText(candidate.span.text))) continue;
@@ -772,6 +777,7 @@ fn findDuplicate(spans: []const ReconciledSpan, duplicate_index: *const Duplicat
 fn mergeDuplicate(allocator: std.mem.Allocator, existing: *ReconciledSpan, candidate: ReconciledSpan) void {
     const merged_mask = existing.source_mask | candidate.source_mask;
     const replace = sourceScore(candidate) > sourceScore(existing.*);
+    const cell_owner = existing.span.table_cell_owner orelse candidate.span.table_cell_owner;
 
     if (replace) {
         const old_span = existing.span;
@@ -783,6 +789,7 @@ fn mergeDuplicate(allocator: std.mem.Allocator, existing: *ReconciledSpan, candi
     }
 
     existing.source_mask = merged_mask;
+    existing.span.table_cell_owner = cell_owner;
     existing.source_count = countSourceBits(merged_mask);
     existing.duplicate_count += 1;
     existing.confidence = @max(existing.confidence, candidate.confidence);
@@ -1389,6 +1396,22 @@ test "fresh OCR independent crop boundaries separate overlapping PDF regions" {
     try std.testing.expectEqualStrings("THIRD", doc.blocks[2].text);
     try std.testing.expectEqualStrings("FIRST\n\nSECOND\n\nTHIRD", doc.chunks[0].content);
     for (doc.spans) |span| try std.testing.expectEqual(@as(usize, 0), span.block_text_start);
+}
+
+test "reconciliation preserves cell identities across overlap and native duplicates" {
+    var first = testSpan("0", .table_model, 210, 670, 230, 690);
+    first.table_cell_owner = .{ .layout_block_index = 7, .row_index = 1, .column_index = 1 };
+    var second = first;
+    second.table_cell_owner.?.column_index = 2;
+    const cells = [_]TextSpan{ first, second };
+    var doc = try reconcile(std.testing.allocator, &.{.{ .spans = &cells }}, .{});
+    defer doc.deinit();
+    try std.testing.expectEqual(@as(usize, 2), doc.spans.len);
+    const native = testSpan("0", .native_pdf, 210, 670, 230, 690);
+    var merged = try reconcile(std.testing.allocator, &.{ .{ .spans = &.{native} }, .{ .spans = &.{first} } }, .{});
+    defer merged.deinit();
+    try std.testing.expectEqual(@as(usize, 1), merged.spans.len);
+    try std.testing.expectEqualDeep(first.table_cell_owner, merged.spans[0].span.table_cell_owner);
 }
 
 test "coordinate serializers include hocr alto and debug overlay" {

@@ -62,7 +62,7 @@ async function cliRecords(t, name, flags = [], format = 'artifact-jsonl') {
     encoding: 'utf8', timeout: 45000, maxBuffer: 10 * 1024 * 1024,
   });
   const records = raw.trim().split('\n').map(JSON.parse);
-  assert.equal(records[0].schema_version, '0.19.0');
+  assert.equal(records[0].schema_version, '0.19.1');
   const document = format === 'artifact-jsonl' ? parseArtifactJsonl(raw, { inputSha256: createHash('sha256').update(bytes).digest('hex') }) : null;
   return { bytes, raw, records, document };
 }
@@ -194,7 +194,7 @@ test('deterministic regional vector OCR binds routes attempts source text chunks
   const pages = [];
   const receipt = await extractPdfPages(bytes, { binaryPath: fake.binaryPath, enableOcr: true, onPage: page => pages.push(page) });
   assert.equal(receipt.complete, true);
-  assert.equal(receipt.schemaVersion, '0.19.0');
+  assert.equal(receipt.schemaVersion, '0.19.1');
   assertNative(pages[0], 'mixed-native-outlines');
   assertLocated(pages[0], 'VECTOR EVIDENCE');
   const cropPaths = (await readFile(fake.log, 'utf8')).trim().split('\n');

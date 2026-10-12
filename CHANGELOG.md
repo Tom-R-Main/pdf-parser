@@ -4,6 +4,10 @@
 
 ### Added
 
+- Frozen development and holdout suites check table topology, exact cell source
+  ownership, and emitted reading order independently of graph diagnostics.
+- A project-local build monitor bounds observed compiler-cache allocation and
+  preserves logs and receipts outside the cache.
 - Schema 0.18 page geometry and pixel-to-PDF transforms preserve raw PDF
   coordinates through quarter-turn OCR, CropBox and UserUnit handling.
 - Schema 0.19 page and region route evidence explains bounded vector candidates
@@ -16,6 +20,12 @@
 
 ### Fixed
 
+- Schema 0.19.1 keeps reconstructed table evidence at cell granularity, assigns
+  shared-rule text once, and retains prose surrounding a promoted table.
+- Legacy native ordering resets columns at corroborated section headings.
+- Topology comparison checks physical grid dimensions, streaming verification
+  checks page identity, and exact financial tokens cannot be confused with
+  substrings inside other values.
 - Rotated OCR preserves recognized word order. Inferred tables on rotated pages
   remain withheld until their topology is qualified.
 - Partially clipped native spans no longer suppress outlines outside their clip.
