@@ -1,0 +1,41 @@
+{
+  "document_precedence": [],
+  "nodes": [
+    {
+      "id": "opening",
+      "page_index": 0,
+      "text_anchor": "SEALED opening"
+    },
+    {
+      "id": "middle",
+      "page_index": 0,
+      "text_anchor": "SEALED middle"
+    },
+    {
+      "id": "closing",
+      "page_index": 0,
+      "text_anchor": "SEALED closing"
+    }
+  ],
+  "page_local_precedence": [
+    [
+      "opening",
+      "middle"
+    ],
+    [
+      "middle",
+      "closing"
+    ]
+  ],
+  "required_precedence": [
+    [
+      "opening",
+      "middle"
+    ],
+    [
+      "middle",
+      "closing"
+    ]
+  ],
+  "version": 1
+}

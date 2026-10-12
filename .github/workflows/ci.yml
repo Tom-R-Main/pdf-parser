@@ -135,6 +135,33 @@ jobs:
       - name: Build shared library
         run: zig build shared --summary all
 
+      - name: Verify frozen topology and emitted-order controls
+        run: |
+          python3 -m unittest discover -s benchmark/eval -p 'test_table_compare.py'
+          python3 -m unittest discover -s benchmark/eval -p 'test_bounded_zig.py'
+          python3 -m unittest discover -s benchmark/eval/table_topology -p 'test_*.py'
+          python3 -m unittest discover -s benchmark/eval/reading_order_next -p 'test_*.py'
+          python3 benchmark/eval/table_topology/generate.py --check
+          python3 benchmark/eval/reading_order_next/generate.py --check
+          for split in dev holdout; do
+            python3 benchmark/eval/table_topology/verify.py \
+              --cli zig-out/bin/pdf-parser --split "$split" \
+              --output "benchmark/eval/outputs/topology-ci/$split"
+            python3 benchmark/eval/reading_order_next/verify.py \
+              --cli zig-out/bin/pdf-parser --split "$split" \
+              --output "benchmark/eval/outputs/reading-order-ci/$split"
+          done
+
+      - name: Upload topology and emitted-order evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: topology-and-emitted-order
+          path: |
+            benchmark/eval/outputs/topology-ci
+            benchmark/eval/outputs/reading-order-ci
+          if-no-files-found: warn
+
       - uses: actions/setup-node@v6
         with:
           node-version: "22"

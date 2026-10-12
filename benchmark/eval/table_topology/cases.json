@@ -1,0 +1,58 @@
+[
+  {
+    "id": "blank-zero-dev",
+    "split": "dev",
+    "pdf": "corpus/blank-zero-dev.pdf",
+    "truth": "truth/blank-zero-dev.json",
+    "family": "blank-zero"
+  },
+  {
+    "id": "reverse-multispan-dev",
+    "split": "dev",
+    "pdf": "corpus/reverse-multispan-dev.pdf",
+    "truth": "truth/reverse-multispan-dev.json",
+    "family": "reverse-multispan"
+  },
+  {
+    "id": "boundary-ownership-dev",
+    "split": "dev",
+    "pdf": "corpus/boundary-ownership-dev.pdf",
+    "truth": "truth/boundary-ownership-dev.json",
+    "family": "boundary-ownership"
+  },
+  {
+    "id": "graphic-axis-dev",
+    "split": "dev",
+    "pdf": "corpus/graphic-axis-dev.pdf",
+    "truth": "truth/graphic-axis-dev.json",
+    "family": "negative"
+  },
+  {
+    "id": "blank-zero-holdout",
+    "split": "holdout",
+    "pdf": "corpus/blank-zero-holdout.pdf",
+    "truth": "truth/blank-zero-holdout.json",
+    "family": "blank-zero"
+  },
+  {
+    "id": "reverse-multispan-holdout",
+    "split": "holdout",
+    "pdf": "corpus/reverse-multispan-holdout.pdf",
+    "truth": "truth/reverse-multispan-holdout.json",
+    "family": "reverse-multispan"
+  },
+  {
+    "id": "boundary-ownership-holdout",
+    "split": "holdout",
+    "pdf": "corpus/boundary-ownership-holdout.pdf",
+    "truth": "truth/boundary-ownership-holdout.json",
+    "family": "boundary-ownership"
+  },
+  {
+    "id": "graphic-axis-holdout",
+    "split": "holdout",
+    "pdf": "corpus/graphic-axis-holdout.pdf",
+    "truth": "truth/graphic-axis-holdout.json",
+    "family": "negative"
+  }
+]

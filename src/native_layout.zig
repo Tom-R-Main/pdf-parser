@@ -607,6 +607,7 @@ fn orderLinesByRegions(
     gutter: ?BBox,
 ) ![]u32 {
     const order = try allocator.alloc(u32, lines.len);
+    errdefer allocator.free(order);
     if (gutter == null) {
         for (order, 0..) |*entry, index| entry.* = @intCast(index);
         return order;
@@ -614,9 +615,18 @@ fn orderLinesByRegions(
 
     var output: std.ArrayList(u32) = .empty;
     defer output.deinit(allocator);
+    var weighted_size: f64 = 0;
+    var glyph_count: usize = 0;
+    var left_margin: f64 = std.math.inf(f64);
+    for (lines) |line| {
+        weighted_size += line.max_font_size * @as(f64, @floatFromInt(line.count));
+        glyph_count += line.count;
+        if (line.region_index == 0) left_margin = @min(left_margin, line.bbox.x0);
+    }
+    const body_size = if (glyph_count > 0) weighted_size / @as(f64, @floatFromInt(glyph_count)) else 12;
     var section_start: usize = 0;
     for (lines, 0..) |line, line_index| {
-        if (line.region_index != 2) continue;
+        if (line.region_index != 2 and !isColumnSectionHeading(lines, line_index, body_size, left_margin)) continue;
         try appendColumnSection(allocator, &output, lines, section_start, line_index);
         try output.append(allocator, @intCast(line_index));
         section_start = line_index + 1;
@@ -624,6 +634,39 @@ fn orderLinesByRegions(
     try appendColumnSection(allocator, &output, lines, section_start, lines.len);
     @memcpy(order, output.items);
     return order;
+}
+
+fn isColumnSectionHeading(lines: []const PendingLine, index: usize, body_size: f64, left_margin: f64) bool {
+    const heading = lines[index];
+    if (heading.region_index != 0 or heading.max_font_size < body_size * 1.18 or
+        heading.bbox.x0 > left_margin + heading.max_font_size) return false;
+    // A large left-column label is not by itself a section boundary. Require
+    // a clear baseline across both columns, then content in both flows below
+    // it before another heading. This leaves column-local headings local.
+    const tolerance = @max(1.5, heading.max_font_size * 0.55);
+    var previous_index = index;
+    while (previous_index > 0) {
+        previous_index -= 1;
+        const line = lines[previous_index];
+        if (line.baseline() - heading.baseline() > tolerance) break;
+        if (line.region_index == 1 and @abs(line.baseline() - heading.baseline()) <= tolerance) return false;
+    }
+    for (lines[index + 1 ..]) |line| {
+        if (heading.baseline() - line.baseline() > tolerance) break;
+        if (line.region_index == 1 and @abs(line.baseline() - heading.baseline()) <= tolerance) return false;
+    }
+    var has_left = false;
+    var has_right = false;
+    for (lines[index + 1 ..]) |line| {
+        if (line.baseline() >= heading.baseline() - tolerance) continue;
+        if (line.region_index == 2 or
+            (line.region_index == 0 and line.max_font_size >= body_size * 1.18 and
+                line.bbox.x0 <= left_margin + line.max_font_size)) break;
+        if (line.region_index == 0) has_left = true;
+        if (line.region_index == 1) has_right = true;
+        if (has_left and has_right) return true;
+    }
+    return false;
 }
 
 fn appendColumnSection(
@@ -1184,6 +1227,27 @@ test "scaled baseline bands retain mixed-font superscripts on the same line" {
     defer result.deinit();
     try std.testing.expectEqualStrings("F1.25", result.text);
     try std.testing.expectEqual(@as(usize, 1), result.lines.len);
+}
+
+test "column order resets at corroborated section headings" {
+    var lines: [10]PendingLine = undefined;
+    for (&lines, 0..) |*line, index| {
+        const local = index % 5;
+        const heading = local == 0;
+        const right = local == 2 or local == 4;
+        const y: f64 = 750 - @as(f64, @floatFromInt(index / 5)) * 190 -
+            (if (heading) @as(f64, 0) else if (local <= 2) @as(f64, 50) else @as(f64, 100));
+        line.* = .{ .start = index, .count = 20, .baseline_sum = y * 20, .baseline_count = 20, .max_font_size = if (heading) 18 else 12, .bbox = .{ .x0 = if (right) 330 else 60, .x1 = if (right) 500 else 200, .y0 = y, .y1 = y + 12 }, .region_index = if (right) 1 else 0 };
+    }
+    const gutter = BBox{ .x0 = 280, .x1 = 310, .y0 = 0, .y1 = 792 };
+    const order = try orderLinesByRegions(std.testing.allocator, &lines, gutter);
+    defer std.testing.allocator.free(order);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 3, 2, 4, 5, 6, 8, 7, 9 }, order);
+    // A right-flow label on the same baseline is contrary evidence, even
+    // when the left label is larger than body text.
+    lines[6].baseline_sum = lines[5].baseline_sum;
+    lines[6].region_index = 1;
+    try std.testing.expect(!isColumnSectionHeading(&lines, 5, 13, 60));
 }
 
 test "column gutter cannot split a continuous transformed word at paint boundaries" {

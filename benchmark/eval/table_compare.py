@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-TABLE_COMPARE_SCHEMA_VERSION = "0.3.0"
+TABLE_COMPARE_SCHEMA_VERSION = "0.4.0"
 DEFAULT_TOOLS = ("pdf-parser", "pymupdf-find-tables", "pdfplumber")
 
 
@@ -373,6 +373,8 @@ def table_metrics(predicted: list[dict[str, Any]], truth: list[dict[str, Any]]) 
     predicted_cells = flatten_cells(predicted)
     truth_cells = flatten_cells(truth)
     return {
+        "table_count_accuracy": float(len(predicted) == len(truth)),
+        "topology_accuracy": topology_accuracy(predicted, truth),
         "cell_text_accuracy": sequence_accuracy(
             [normalize_cell(cell.get("text", "")) for cell in predicted_cells],
             [normalize_cell(cell.get("text", "")) for cell in truth_cells],
@@ -386,6 +388,84 @@ def table_metrics(predicted: list[dict[str, Any]], truth: list[dict[str, Any]]) 
         "continuation_accuracy": continuation_accuracy(predicted, truth),
         "numeric_accuracy": numeric_accuracy(predicted_cells, truth_cells),
     }
+
+
+def table_topology(table: dict[str, Any]) -> list[tuple[int, int, int, int]] | None:
+    """Validate physical slots independently of flattened text accuracy.
+
+    Empty materialized placeholders under a merged cell are permitted. An
+    uncovered empty cell remains semantic, and a nonempty collision is invalid.
+    Truth can use compact rows with implicit columns; emitted grids use explicit
+    columns. Refuse excessive dimensions before expanding occupancy.
+    """
+    rows = table.get("rows", [])
+    if not isinstance(rows, list) or not rows or len(rows) > 1000:
+        return None
+    columns = table.get("column_count")
+    if columns is not None and (type(columns) is not int or not 0 < columns <= 1000):
+        return None
+    covered = set()
+    topology = []
+    for row_index, row in enumerate(rows):
+        if isinstance(row, dict) and (type(row.get("row_index", row_index)) is not int or row.get("row_index", row_index) != row_index):
+            return None
+        cells = row.get("cells", []) if isinstance(row, dict) else row
+        if not isinstance(cells, list) or len(cells) > 1000:
+            return None
+        next_column = 0
+        for cell in cells:
+            if not isinstance(cell, dict):
+                return None
+            if type(cell.get("row", row_index)) is not int or cell.get("row", row_index) != row_index:
+                return None
+            explicit = "column" in cell
+            if not explicit:
+                while (row_index, next_column) in covered:
+                    next_column += 1
+            column = cell.get("column", next_column)
+            rowspan, colspan = cell.get("rowspan", 1), cell.get("colspan", 1)
+            if any(type(v) is not int for v in (column, rowspan, colspan)) or column < 0 or rowspan < 1 or colspan < 1:
+                return None
+            if (row_index, column) in covered and normalize_cell(cell.get("text", "")) == "" and explicit:
+                next_column = max(next_column, column + 1)
+                continue
+            if row_index + rowspan > len(rows) or column + colspan > (columns or 1000):
+                return None
+            if rowspan * colspan > 100_000 or len(covered) + rowspan * colspan > 100_000:
+                return None
+            slots = {(r, c) for r in range(row_index, row_index + rowspan)
+                     for c in range(column, column + colspan)}
+            if slots & covered:
+                return None
+            covered.update(slots)
+            topology.append((row_index, column, rowspan, colspan))
+            next_column = column + colspan
+    return sorted(topology)
+
+
+def topology_accuracy(predicted: list[dict[str, Any]], truth: list[dict[str, Any]]) -> float | None:
+    if not truth:
+        return float(not predicted)
+    if not any(table.get("topology_required") is True for table in truth):
+        return None
+    if len(predicted) != len(truth):
+        return 0.0
+    correct = 0
+    for actual, expected in zip(predicted, truth):
+        expected_topology = table_topology(expected)
+        if expected_topology is None:
+            raise ValueError("invalid frozen table topology truth")
+        actual_topology = table_topology(actual)
+        if actual_topology is None:
+            continue
+        # Cell placement alone does not identify the whole grid: a declared
+        # extra empty column is still a topology error. Compact truth/baseline
+        # rows without dimensions retain their inferred extent.
+        expected_columns = expected.get("column_count", max((c + cs for _, c, _, cs in expected_topology), default=0))
+        actual_columns = actual.get("column_count", max((c + cs for _, c, _, cs in actual_topology), default=0))
+        correct += (actual_topology == expected_topology and actual_columns == expected_columns
+                    and len(actual["rows"]) == len(expected["rows"]))
+    return correct / len(truth)
 
 
 def flatten_cells(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -616,6 +696,8 @@ def failed(entry: Entry, tool: str, reason: str) -> dict[str, Any]:
 
 def empty_metrics() -> dict[str, None]:
     return {
+        "table_count_accuracy": None,
+        "topology_accuracy": None,
         "cell_text_accuracy": None,
         "role_accuracy": None,
         "bbox_iou": None,

@@ -1,0 +1,43 @@
+{
+  "ambiguous_pairs": [],
+  "forbidden_precedence": [],
+  "nodes": [
+    {
+      "id": "left_open",
+      "page_index": 0,
+      "text_anchor": "SEALED left open"
+    },
+    {
+      "id": "left_close",
+      "page_index": 0,
+      "text_anchor": "SEALED left close"
+    },
+    {
+      "id": "right_open",
+      "page_index": 0,
+      "text_anchor": "SEALED right open"
+    },
+    {
+      "id": "right_close",
+      "page_index": 0,
+      "text_anchor": "SEALED right close"
+    }
+  ],
+  "relations": [],
+  "required_precedence": [
+    [
+      "left_open",
+      "left_close"
+    ],
+    [
+      "left_close",
+      "right_open"
+    ],
+    [
+      "right_open",
+      "right_close"
+    ]
+  ],
+  "valid_orders": [],
+  "version": 1
+}

@@ -1,0 +1,4 @@
+SEALED page one open
+SEALED page one continue
+SEALED page two resume
+SEALED page two close

@@ -1,0 +1,132 @@
+{
+  "document_precedence": [],
+  "nodes": [
+    {
+      "id": "section_one",
+      "page_index": 0,
+      "text_anchor": "SEALED section one"
+    },
+    {
+      "id": "first_left_open",
+      "page_index": 0,
+      "text_anchor": "SEALED first left open"
+    },
+    {
+      "id": "first_left_close",
+      "page_index": 0,
+      "text_anchor": "SEALED first left close"
+    },
+    {
+      "id": "first_right_open",
+      "page_index": 0,
+      "text_anchor": "SEALED first right open"
+    },
+    {
+      "id": "first_right_close",
+      "page_index": 0,
+      "text_anchor": "SEALED first right close"
+    },
+    {
+      "id": "section_two",
+      "page_index": 0,
+      "text_anchor": "SEALED section two"
+    },
+    {
+      "id": "second_left_open",
+      "page_index": 0,
+      "text_anchor": "SEALED second left open"
+    },
+    {
+      "id": "second_left_close",
+      "page_index": 0,
+      "text_anchor": "SEALED second left close"
+    },
+    {
+      "id": "second_right_open",
+      "page_index": 0,
+      "text_anchor": "SEALED second right open"
+    },
+    {
+      "id": "second_right_close",
+      "page_index": 0,
+      "text_anchor": "SEALED second right close"
+    }
+  ],
+  "page_local_precedence": [
+    [
+      "section_one",
+      "first_left_open"
+    ],
+    [
+      "first_left_open",
+      "first_left_close"
+    ],
+    [
+      "first_left_close",
+      "first_right_open"
+    ],
+    [
+      "first_right_open",
+      "first_right_close"
+    ],
+    [
+      "first_right_close",
+      "section_two"
+    ],
+    [
+      "section_two",
+      "second_left_open"
+    ],
+    [
+      "second_left_open",
+      "second_left_close"
+    ],
+    [
+      "second_left_close",
+      "second_right_open"
+    ],
+    [
+      "second_right_open",
+      "second_right_close"
+    ]
+  ],
+  "required_precedence": [
+    [
+      "section_one",
+      "first_left_open"
+    ],
+    [
+      "first_left_open",
+      "first_left_close"
+    ],
+    [
+      "first_left_close",
+      "first_right_open"
+    ],
+    [
+      "first_right_open",
+      "first_right_close"
+    ],
+    [
+      "first_right_close",
+      "section_two"
+    ],
+    [
+      "section_two",
+      "second_left_open"
+    ],
+    [
+      "second_left_open",
+      "second_left_close"
+    ],
+    [
+      "second_left_close",
+      "second_right_open"
+    ],
+    [
+      "second_right_open",
+      "second_right_close"
+    ]
+  ],
+  "version": 1
+}

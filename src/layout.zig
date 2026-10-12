@@ -1622,7 +1622,7 @@ fn buildRuledTableGrid(
             if (!intersectsSpan(span, grid_bbox)) continue;
             const cx = (span.x0 + span.x1) / 2.0;
             const cy = (span.y0 + span.y1) / 2.0;
-            if (cy > top + 1.0 or cy < bottom - 1.0) continue;
+            if ((rowForY(ys.items, cy) orelse continue) != row_index) continue;
             const col_index = columnForX(xs.items, cx) orelse continue;
             try buckets[col_index].spans.append(allocator, span);
         }
@@ -1717,9 +1717,23 @@ fn intersectsSpan(a: TextSpan, b: TextSpan) bool {
 }
 
 fn columnForX(xs: []const f64, x: f64) ?usize {
-    if (xs.len < 2) return null;
+    if (xs.len < 2 or !std.math.isFinite(x)) return null;
+    // Tolerance applies only to the outside edge. Shared rules have one
+    // owner: the column to their right, never both adjacent columns.
+    if (x < xs[0] - 1.0 or x > xs[xs.len - 1] + 1.0) return null;
     for (0..xs.len - 1) |index| {
-        if (x >= xs[index] - 1.0 and x <= xs[index + 1] + 1.0) return index;
+        if (x < xs[index + 1] or index == xs.len - 2) return index;
+    }
+    return null;
+}
+
+fn rowForY(ys: []const f64, y: f64) ?usize {
+    if (ys.len < 2 or !std.math.isFinite(y)) return null;
+    // Coordinates descend in PDF space. A shared horizontal rule belongs
+    // to the row below it; the bottom outside edge remains inclusive.
+    if (y > ys[0] + 1.0 or y < ys[ys.len - 1] - 1.0) return null;
+    for (0..ys.len - 1) |index| {
+        if (y > ys[index + 1] or index == ys.len - 2) return index;
     }
     return null;
 }
@@ -2785,6 +2799,41 @@ test "layout reconstruction clusters lines and dehyphenates paragraphs" {
     const text = try result.getReconstructedText(allocator);
     defer allocator.free(text);
     try std.testing.expectEqualStrings("The document works.", text);
+}
+
+test "ruled table shared boundaries have exactly one band owner" {
+    const xs = [_]f64{ 60, 220, 380 };
+    const ys = [_]f64{ 720, 680, 640 };
+    try std.testing.expectEqual(@as(?usize, 1), columnForX(&xs, 220));
+    try std.testing.expectEqual(@as(?usize, 0), columnForX(&xs, 219.9));
+    try std.testing.expectEqual(@as(?usize, 1), rowForY(&ys, 680));
+    try std.testing.expectEqual(@as(?usize, 0), rowForY(&ys, 680.1));
+    try std.testing.expectEqual(@as(?usize, 1), rowForY(&ys, 679.9));
+    try std.testing.expectEqual(@as(?usize, 1), rowForY(&ys, 640));
+    try std.testing.expectEqual(@as(?usize, null), rowForY(&ys, 638));
+    try std.testing.expectEqual(@as(?usize, null), columnForX(&xs, std.math.nan(f64)));
+}
+
+test "ruled table text crossing a rule is not duplicated into adjacent rows" {
+    const spans = [_]TextSpan{
+        testSpan("Account", 70, 698, 115, 710),
+        testSpan("Amount", 230, 698, 275, 710),
+        testSpan("Boundary", 70, 674, 125, 686),
+        testSpan("0", 230, 655, 240, 667),
+    };
+    const rulings = [_]RulingLine{
+        .{ .orientation = .vertical, .bbox = .{ .x0 = 60, .x1 = 60, .y0 = 640, .y1 = 720 } },
+        .{ .orientation = .vertical, .bbox = .{ .x0 = 220, .x1 = 220, .y0 = 640, .y1 = 720 } },
+        .{ .orientation = .vertical, .bbox = .{ .x0 = 380, .x1 = 380, .y0 = 640, .y1 = 720 } },
+        .{ .orientation = .horizontal, .bbox = .{ .x0 = 60, .x1 = 380, .y0 = 720, .y1 = 720 } },
+        .{ .orientation = .horizontal, .bbox = .{ .x0 = 60, .x1 = 380, .y0 = 680, .y1 = 680 } },
+        .{ .orientation = .horizontal, .bbox = .{ .x0 = 60, .x1 = 380, .y0 = 640, .y1 = 640 } },
+    };
+    var result = try analyzeLayoutWithRulings(std.testing.allocator, &spans, 612, &rulings);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.tables.len);
+    try std.testing.expectEqualStrings("Account", result.tables[0].rows[0].cells[0].text);
+    try std.testing.expectEqualStrings("Boundary", result.tables[0].rows[1].cells[0].text);
 }
 
 test "layout reconstruction records two columns in reading order" {

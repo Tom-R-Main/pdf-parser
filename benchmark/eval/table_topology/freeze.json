@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "files_sha256": {
+    "corpus/blank-zero-dev.pdf": "cab2337385a3d7b1fbbda7cb270b8438ffa548a7d8a6dfb4c4db5de006451954",
+    "truth/blank-zero-dev.json": "1288e521deaad7f0d4a73dd15c4e147f4d3cf7976610000099d3170efefcb9ba",
+    "corpus/reverse-multispan-dev.pdf": "8a509aaa850909e8658b9cbc81b8363fb50b353c6bdb95fb21ee7ef66727ef7b",
+    "truth/reverse-multispan-dev.json": "4e868ae17ee04c6dc239ac103e3d0693598b2da2171a9c6bd2735999d860d7d5",
+    "corpus/boundary-ownership-dev.pdf": "5c667769fa17d1da0bb3a150956cc224d5e888e99f2f5bef07d024c842b6fcf0",
+    "truth/boundary-ownership-dev.json": "4e868ae17ee04c6dc239ac103e3d0693598b2da2171a9c6bd2735999d860d7d5",
+    "corpus/graphic-axis-dev.pdf": "f1c75bbd663dcd8b56d07ad42fbdd008fcd30593466784c9120deb36a1ccae60",
+    "truth/graphic-axis-dev.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "corpus/blank-zero-holdout.pdf": "8ee2f6ac7e259eb9b9ad422f7bbf11d6544ab4172a82810281f0ae711a29f015",
+    "truth/blank-zero-holdout.json": "8739254096f57bc3649c20a06bf9bba1f3649d8682c44e5e27e0ea64855a75b2",
+    "corpus/reverse-multispan-holdout.pdf": "2ad31d2e4ada32ddd708054ae88bc92333a0126bc69aafe655fb91eaacbb7165",
+    "truth/reverse-multispan-holdout.json": "f4a0d49cde509c25451057a77827cd4717985df1a2c08e10bb1ffbf937ef7712",
+    "corpus/boundary-ownership-holdout.pdf": "cf5f255e77473820ffd5e0d5f935bc4b96c9203d8bd6efe088fe1336b859ba4c",
+    "truth/boundary-ownership-holdout.json": "f4a0d49cde509c25451057a77827cd4717985df1a2c08e10bb1ffbf937ef7712",
+    "corpus/graphic-axis-holdout.pdf": "c25147643d69aa78cd81c4b5cbeeb430315ae479e702f2faf5e3bd19356c9155",
+    "truth/graphic-axis-holdout.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "cases.json": "393b43f757f197d805bbbfa47473b56cc9ec160c09943aa7bd8f8f64821e34d0"
+  },
+  "acceptance": {
+    "required": [
+      "one source span owner per semantic cell assignment",
+      "blank is distinct from zero",
+      "exact cell coordinates and spans on regular grids",
+      "reverse content streams retain visual cell text order",
+      "no table on graphic-axis controls"
+    ],
+    "boundary_case": "retain every input label exactly once; crossing lettering has no row-truth claim"
+  },
+  "scope": "Small synthetic reductions. Holdouts assessed after development; no rule tuning on holdout results."
+}

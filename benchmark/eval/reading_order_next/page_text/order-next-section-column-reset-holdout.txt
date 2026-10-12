@@ -1,0 +1,10 @@
+SEALED section one
+SEALED first left open
+SEALED first left close
+SEALED first right open
+SEALED first right close
+SEALED section two
+SEALED second left open
+SEALED second left close
+SEALED second right open
+SEALED second right close
