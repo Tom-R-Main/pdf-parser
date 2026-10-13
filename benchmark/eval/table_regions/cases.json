@@ -1,0 +1,50 @@
+[
+  {
+    "id": "stacked-different-grids",
+    "split": "dev",
+    "pdf": "corpus/stacked-different-grids.pdf",
+    "truth": "truth/stacked-different-grids.json"
+  },
+  {
+    "id": "partial-rules-statement",
+    "split": "dev",
+    "pdf": "corpus/partial-rules-statement.pdf",
+    "truth": "truth/partial-rules-statement.json"
+  },
+  {
+    "id": "centered-title-body-alignment",
+    "split": "dev",
+    "pdf": "corpus/centered-title-body-alignment.pdf",
+    "truth": "truth/centered-title-body-alignment.json"
+  },
+  {
+    "id": "complete-section-statement",
+    "split": "dev",
+    "pdf": "corpus/complete-section-statement.pdf",
+    "truth": "truth/complete-section-statement.json"
+  },
+  {
+    "id": "prose-diagram-negative",
+    "split": "dev",
+    "pdf": "corpus/prose-diagram-negative.pdf",
+    "truth": "truth/prose-diagram-negative.json"
+  },
+  {
+    "id": "mixed-ruled-borderless",
+    "split": "dev",
+    "pdf": "corpus/mixed-ruled-borderless.pdf",
+    "truth": "truth/mixed-ruled-borderless.json"
+  },
+  {
+    "id": "overlapping-width-prose",
+    "split": "dev",
+    "pdf": "corpus/overlapping-width-prose.pdf",
+    "truth": "truth/overlapping-width-prose.json"
+  },
+  {
+    "id": "adjacent-same-alignment",
+    "split": "dev",
+    "pdf": "corpus/adjacent-same-alignment.pdf",
+    "truth": "truth/adjacent-same-alignment.json"
+  }
+]

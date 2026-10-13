@@ -894,8 +894,8 @@ pub fn extractDocument(
         // OCR page those axes differ from the recognizer's rows and columns.
         // Retain its authoritative word order until table inference can share
         // the display transform; candidate routing may still describe evidence.
-        const promote_tables = page_ocr_spans == null or
-            (page_route.page_geometry != null and page_route.page_geometry.?.rotation == .none);
+        const promote_tables = page_view_quality_pass and (page_ocr_spans == null or
+            (page_route.page_geometry != null and page_route.page_geometry.?.rotation == .none));
         if (promote_tables) {
             for (page_layout.tables) |table| {
                 try tables.ensureUnusedCapacity(allocator, 1);
@@ -1328,6 +1328,10 @@ fn freeFormField(allocator: std.mem.Allocator, field: FormField) void {
 }
 
 fn copyTableGrid(allocator: std.mem.Allocator, source: layout.TableGrid) !layout.TableGrid {
+    const source_ids = try allocator.dupe(u32, source.source_span_indices);
+    errdefer allocator.free(source_ids);
+    const block_ids = try allocator.dupe(u32, source.member_block_indices);
+    errdefer allocator.free(block_ids);
     const rows = try allocator.alloc(layout.TableRow, source.rows.len);
     var completed_rows: usize = 0;
     errdefer {
@@ -1345,6 +1349,8 @@ fn copyTableGrid(allocator: std.mem.Allocator, source: layout.TableGrid) !layout
 
     var copied_table = source;
     copied_table.rows = rows;
+    copied_table.source_span_indices = source_ids;
+    copied_table.member_block_indices = block_ids;
     return copied_table;
 }
 
@@ -1380,6 +1386,8 @@ fn freeOwnedTableItems(allocator: std.mem.Allocator, tables: []layout.TableGrid)
             allocator.free(row.cells);
         }
         allocator.free(table.rows);
+        if (table.source_span_indices.len > 0) allocator.free(table.source_span_indices);
+        if (table.member_block_indices.len > 0) allocator.free(table.member_block_indices);
     }
 }
 
@@ -2024,15 +2032,18 @@ fn buildLayoutLayerSpans(
         for (spans.items) |span| allocator.free(@constCast(span.text));
         spans.deinit(allocator);
     }
+    const emitted = try allocator.alloc(bool, page_layout.tables.len);
+    defer allocator.free(emitted);
+    @memset(emitted, false);
 
     if (projected_block_order) |order| {
         for (order) |block_index| {
             if (block_index >= page_layout.blocks.len) return error.InvalidReadingOrderProjection;
-            try appendLayoutBlockSpans(allocator, &spans, page_layout, block_index);
+            try appendLayoutBlockSpans(allocator, &spans, page_layout, block_index, emitted);
         }
     } else {
         for (page_layout.blocks, 0..) |_, block_index| {
-            try appendLayoutBlockSpans(allocator, &spans, page_layout, block_index);
+            try appendLayoutBlockSpans(allocator, &spans, page_layout, block_index, emitted);
         }
     }
 
@@ -2044,9 +2055,28 @@ fn appendLayoutBlockSpans(
     spans: *std.ArrayList(layout.TextSpan),
     page_layout: *const layout.LayoutResult,
     block_index: usize,
+    emitted: []bool,
 ) !void {
     const block = page_layout.blocks[block_index];
     if (block.lines.len == 0) return;
+    if (page_layout.hasOwnedTables()) {
+        for (block.lines) |line| for (line.words) |word| for (word.spans) |leaf| {
+            if (page_layout.tableRegionForSpan(leaf)) |table_index| {
+                if (!emitted[table_index]) {
+                    try appendTableCellSpans(allocator, spans, &page_layout.tables[table_index]);
+                    emitted[table_index] = true;
+                }
+            } else {
+                var span = leaf;
+                span.preserve_source_identity = true;
+                span.text = try allocator.dupe(u8, leaf.text);
+                errdefer allocator.free(@constCast(span.text));
+                span.font = stableFont(leaf.font);
+                try spans.append(allocator, span);
+            }
+        };
+        return;
+    }
     // The table layer replaces the native page layer. Furniture suppression
     // is a text-rendering choice, not authority to erase that source evidence.
 
@@ -2085,6 +2115,7 @@ fn appendLayoutBlockSpans(
             for (line.words) |word| {
                 for (word.spans) |source_span| {
                     var span = source_span;
+                    span.preserve_source_identity = true;
                     span.text = try allocator.dupe(u8, source_span.text);
                     errdefer allocator.free(@constCast(span.text));
                     span.font = stableFont(source_span.font);
@@ -2115,6 +2146,7 @@ fn appendLayoutBlockSpans(
             .paint = line.bounds.paint,
             .content_scope = line.bounds.content_scope,
             .leading_boundary = line.bounds.leading_boundary,
+            .preserve_source_identity = true,
         }));
     }
 }
@@ -2128,16 +2160,7 @@ fn tableCoveringBlock(tables: []const layout.TableGrid, block_index: usize) ?*co
 }
 
 fn tableHasUsefulTextRows(table: *const layout.TableGrid) bool {
-    var occupied_rows: usize = 0;
-    for (table.rows) |row| {
-        for (row.cells) |cell| {
-            if (cell.text.len > 0) {
-                occupied_rows += 1;
-                break;
-            }
-        }
-    }
-    return occupied_rows >= 2;
+    return layout.tableHasUsefulRows(table.*);
 }
 
 fn appendTableCellSpans(
@@ -2165,7 +2188,7 @@ fn appendTableCellSpans(
                 .mcid = cell.bounds.mcid,
             });
             span.table_cell_owner = .{
-                .layout_block_index = table.block_index,
+                .region_index = table.region_index,
                 .row_index = cell.row_index,
                 .column_index = cell.column_index,
             };
@@ -2202,6 +2225,7 @@ fn appendLineSpan(
         return;
     }
     try spans.append(allocator, layout.TextSpan.init(.{
+        .preserve_source_identity = true,
         .page_index = line.bounds.page_index,
         .bbox = line.bounds.bbox,
         .text = text,
@@ -3200,6 +3224,9 @@ fn adaptiveOwnedListCleanupAllocationProbe(allocator: std.mem.Allocator) !void {
         .block_index = 0,
         .rows = &source_rows,
         .column_count = 1,
+        .region_index = 11,
+        .source_span_indices = &.{ 2, 7 },
+        .member_block_indices = &.{ 0, 3 },
     };
 
     var tables: std.ArrayList(layout.TableGrid) = .empty;
@@ -3209,6 +3236,11 @@ fn adaptiveOwnedListCleanupAllocationProbe(allocator: std.mem.Allocator) !void {
     }
     try tables.ensureUnusedCapacity(allocator, 1);
     tables.appendAssumeCapacity(try copyTableGrid(allocator, source_table));
+    try std.testing.expectEqual(@as(u32, 11), tables.items[0].region_index);
+    try std.testing.expectEqualSlices(u32, source_table.source_span_indices, tables.items[0].source_span_indices);
+    try std.testing.expectEqualSlices(u32, source_table.member_block_indices, tables.items[0].member_block_indices);
+    try std.testing.expect(source_table.source_span_indices.ptr != tables.items[0].source_span_indices.ptr);
+    try std.testing.expect(source_table.member_block_indices.ptr != tables.items[0].member_block_indices.ptr);
 
     const tail = try allocator.alloc(u8, 1);
     defer allocator.free(tail);
@@ -3220,6 +3252,63 @@ test "adaptive owned lists are safe across every allocation failure" {
         adaptiveOwnedListCleanupAllocationProbe,
         .{},
     );
+}
+
+test "two owned grids sharing one block preserve partial-line prose across projections" {
+    const allocator = std.testing.allocator;
+    const names = [_][]const u8{ "Upper", "Value", "First", "10", "Lower", "Value", "Second", "20", "Unowned prose" };
+    var native: [names.len]layout.TextSpan = undefined;
+    var words: [names.len]layout.TextWord = undefined;
+    for (&native, &words, names, 0..) |*span, *word, name, index| {
+        span.* = layout.TextSpan.init(.{ .bbox = .{ .x0 = 10, .y0 = 50, .x1 = 90, .y1 = 62 }, .text = name });
+        span.native_source_index = @intCast(index);
+        word.* = .{ .bounds = span.*, .spans = native[index .. index + 1] };
+    }
+    var cells: [8]layout.TableCell = undefined;
+    for (&cells, 0..) |*cell, index| cell.* = .{
+        .bounds = native[index],
+        .text = names[index],
+        .row_index = @intCast((index % 4) / 2),
+        .column_index = @intCast(index % 2),
+    };
+    var rows: [4]layout.TableRow = undefined;
+    for (&rows, 0..) |*row, index| row.* = .{ .bounds = native[index * 2], .cells = cells[index * 2 .. index * 2 + 2], .row_index = @intCast(index % 2) };
+    const tables = [_]layout.TableGrid{
+        .{ .bounds = native[0], .block_index = 0, .rows = rows[0..2], .column_count = 2, .region_index = 0, .source_span_indices = &.{ 0, 1, 2, 3 }, .member_block_indices = &.{0}, .projection_eligible = true },
+        .{ .bounds = native[4], .block_index = 0, .rows = rows[2..4], .column_count = 2, .region_index = 1, .source_span_indices = &.{ 4, 5, 6, 7 }, .member_block_indices = &.{0}, .projection_eligible = true },
+    };
+    const lines = [_]layout.TextLine{.{ .bounds = native[0], .words = &words, .baseline_y = 50 }};
+    const blocks = [_]layout.LayoutBlock{.{ .bounds = native[0], .lines = &lines, .column_index = 0, .kind = .paragraph }};
+    const page_layout: layout.LayoutResult = .{
+        .allocator = allocator,
+        .spans = &native,
+        .lines = &lines,
+        .columns = &.{},
+        .paragraphs = &.{},
+        .blocks = &blocks,
+        .tables = &tables,
+        .candidates = &.{},
+        .reading_order = &.{},
+    };
+    const projected = try buildLayoutLayerSpans(allocator, &page_layout, null);
+    defer {
+        for (projected) |span| allocator.free(@constCast(span.text));
+        allocator.free(projected);
+    }
+    try std.testing.expectEqual(@as(usize, names.len), projected.len);
+    for (projected[0..8], 0..) |span, index| {
+        const owner = span.table_cell_owner orelse return error.MissingTableOwner;
+        try std.testing.expectEqual(@as(u32, @intCast(index / 4)), owner.region_index);
+    }
+    try std.testing.expectEqualStrings("Unowned prose", projected[8].text);
+    try std.testing.expectEqual(@as(?layout.TableCellOwner, null), projected[8].table_cell_owner);
+    for ([_]bool{ false, true }) |markdown| {
+        const text = try page_layout.getRegionText(allocator, markdown, true);
+        defer allocator.free(text);
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "Upper"));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "Lower"));
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, "Unowned prose"));
+    }
 }
 
 test "regional OCR attempts preserve route identity and enforce per-page invocation cap" {

@@ -1,0 +1,237 @@
+{
+  "tables": [
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Item",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "June",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "May",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Earned",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "640",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "625",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Fees",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "35",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "20",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 3,
+          "cells": [
+            {
+              "text": "Total income",
+              "row": 3,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "675",
+              "row": 3,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "645",
+              "row": 3,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 4,
+          "cells": [
+            {
+              "text": "Wages",
+              "row": 4,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(310)",
+              "row": 4,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(305)",
+              "row": 4,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 5,
+          "cells": [
+            {
+              "text": "Rent",
+              "row": 5,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(90)",
+              "row": 5,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(90)",
+              "row": 5,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 6,
+          "cells": [
+            {
+              "text": "Total costs",
+              "row": 6,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(400)",
+              "row": 6,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(395)",
+              "row": 6,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 7,
+          "cells": [
+            {
+              "text": "Net",
+              "row": 7,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "275",
+              "row": 7,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "250",
+              "row": 7,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 390,
+        "x1": 540,
+        "y1": 708
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "Service account summary",
+      "region": {
+        "x0": 128,
+        "y0": 743,
+        "x1": 270,
+        "y1": 758
+      }
+    }
+  ],
+  "explanation": "A larger section gap and subtotal bands retain the complete eight-row statement."
+}

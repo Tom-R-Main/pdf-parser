@@ -171,6 +171,7 @@ pub const MarkdownRenderer = struct {
     }
 
     fn renderLayoutBlocks(self: *MarkdownRenderer, layout_result: *const LayoutResult) ![]u8 {
+        if (layout_result.hasOwnedTables()) return layout_result.getRegionText(self.allocator, true, false);
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
 

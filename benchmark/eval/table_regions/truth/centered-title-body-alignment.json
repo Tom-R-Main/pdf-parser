@@ -1,0 +1,161 @@
+{
+  "tables": [
+    {
+      "column_count": 4,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Team",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Budget",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Used",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Left",
+              "row": 0,
+              "column": 3,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Ops",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "80",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "76",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "4",
+              "row": 1,
+              "column": 3,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Desk",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "9",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "9",
+              "row": 2,
+              "column": 3,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 3,
+          "cells": [
+            {
+              "text": "Field",
+              "row": 3,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "",
+              "row": 3,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "(2)",
+              "row": 3,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 3,
+              "column": 3,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 532,
+        "x1": 540,
+        "y1": 708
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "Quarterly allocation review",
+      "region": {
+        "x0": 198,
+        "y0": 741,
+        "x1": 364,
+        "y1": 756
+      }
+    }
+  ],
+  "explanation": "Centered header words must fit columns supported by persistent body alignment."
+}

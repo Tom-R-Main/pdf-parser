@@ -670,13 +670,16 @@ and ruling lines, invokes OCR only for scanned routes, then reconciles native,
 OCR, table, formula, and form spans with typed provenance.
 
 The versioned JSON, artifact JSONL, and streaming JSONL schema is currently
-`0.19.2` in local development, with parser build identity `0.4.0-dev` after the
+`0.19.3` in local development, with parser build identity `0.4.0-dev` after the
 `v0.3.0` release. Schema `0.17.0` landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6)
 at `9cac608`, with all six CI checks green. Schemas `0.18.0` and `0.19.0` landed
 in [PR #7](https://github.com/Tom-R-Main/pdf-parser/pull/7) at `478d73a`, with all
 six PR CI checks green. Schema `0.19.1` landed in
 [PR #8](https://github.com/Tom-R-Main/pdf-parser/pull/8) at `1483f41`, with all
-six PR CI checks green. Schema `0.19.2` is a local working-tree continuation.
+six PR CI checks green. Schema `0.19.2` landed in
+[PR #9](https://github.com/Tom-R-Main/pdf-parser/pull/9) at `ab40fe5`, with all
+six PR CI checks green. Schema `0.19.3` is a
+[locally checked table-region continuation](docs/table-region-qualification.md).
 The `0.19` vector-routing continuation's 23 outlined-text and
 negative-control fixtures, 13 real CLI/SDK tests and both JSONL readers are
 qualified in the [implementation evidence](docs/parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked).

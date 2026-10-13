@@ -1,5 +1,10 @@
 # Evaluation Harness
 
+The independent [table region development controls](table_regions/README.md)
+check separated regions, persistent columns, exact source ownership, and prose
+retention in both public JSONL formats. Their drawing truth is frozen before
+assessment; they do not establish real-document or continuation accuracy.
+
 The [real-document table pack](table_topology_real/README.md) freezes selected
 merged headers and positive/negative continuation checks from three complete
 government originals. It preserves failed qualifications and uses local,

@@ -4,6 +4,10 @@
 
 ### Added
 
+- Independent development drawings check separated table regions, persistent
+  financial columns, exact source ownership and surrounding prose through both
+  public JSONL formats. Previously observed real-document holdouts stay frozen.
+
 - A source-bound real-document table pack freezes selected merged headers and
   continuation controls across separate development and holdout issuers. Local
   original PDFs stay outside Git; failed qualifications remain evidence.
@@ -23,6 +27,11 @@
   clipping, transformed Forms, rules, highlights, logos and resource refusal.
 
 ### Fixed
+
+- Schema 0.19.3 isolates table regions and assigns source membership explicitly,
+  retaining unrelated native text and distinguishing cells in separate regions.
+- The real-document gate rejects array-shaped public table bounds while retaining
+  the independently frozen truth coordinate format.
 
 - Schema 0.19.2 keeps batch debug assets bound to original document pages when
   extraction selects a window starting after page one.

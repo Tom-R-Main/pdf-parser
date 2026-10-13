@@ -10,3 +10,4 @@ eval/raw_cache/
 *.pdf
 !eval/corpus/**/*.pdf
 !eval/table_stress/corpus/**/*.pdf
+!eval/table_regions/corpus/*.pdf

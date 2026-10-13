@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.2` (local working-tree continuation).
+Current development schema version: `0.19.3` (locally checked continuation).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.19.2` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.19.3` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,15 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.19.3` isolates accepted table regions and uses exact source membership
+when replacing native text. Separate regions retain separate cell owners even
+when they share a layout block; text outside the accepted membership remains
+available. Persistent numeric columns use repeated body alignment. The public
+fields, types and documented meanings remain unchanged. Compatibility
+`block_index` and `block_count` describe the bounding layout-block interval;
+that interval is not authority to suppress unrelated text. Region inference
+retains native fallback on ambiguous or exhausted geometric evidence.
 
 Schema `0.19.2` fixes batch debug-asset page identity for a selected page window.
 Assets retain the original zero-based document page indices, matching their
@@ -530,6 +539,11 @@ the span-center-inside-bbox fallback; a bbox intersection alone does not
 establish ownership. A spanning block can therefore belong to multiple
 cells. Legacy table `block_index`, `block_count` and `provenance.block_ids`
 retain pre-reconciliation indices and must not be used as authoritative links.
+In `0.19.3`, table `source_span_ids` and `provenance.span_ids` enumerate the
+exact union of accepted cell sources; table `reconciled_block_ids` follows
+those sources. Cell `provenance.block_ids` agrees with its authoritative
+`reconciled_block_ids`. The legacy table block interval remains separate and
+does not authorize text suppression.
 These additions establish source linkage, not table topology accuracy.
 
 Page and region route traces include `coverage` with `status`, `completeness`,

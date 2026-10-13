@@ -1,0 +1,48 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 729 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 62 686 Tm (Team) Tj ET
+BT /F1 10 Tf 1 0 0 1 292 686 Tm (Budget) Tj ET
+BT /F1 10 Tf 1 0 0 1 398 686 Tm (Used) Tj ET
+BT /F1 10 Tf 1 0 0 1 488 686 Tm (Left) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 642 Tm (Ops) Tj ET
+BT /F1 10 Tf 1 0 0 1 313 642 Tm (80) Tj ET
+BT /F1 10 Tf 1 0 0 1 413 642 Tm (76) Tj ET
+BT /F1 10 Tf 1 0 0 1 519 642 Tm (4) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 598 Tm (Desk) Tj ET
+BT /F1 10 Tf 1 0 0 1 319 598 Tm (9) Tj ET
+BT /F1 10 Tf 1 0 0 1 419 598 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 519 598 Tm (9) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 554 Tm (Field) Tj ET
+BT /F1 10 Tf 1 0 0 1 407 554 Tm (\(2\)) Tj ET
+BT /F1 10 Tf 1 0 0 1 519 554 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 200 746 Tm (Quarterly allocation review) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001020 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1088
+%%EOF

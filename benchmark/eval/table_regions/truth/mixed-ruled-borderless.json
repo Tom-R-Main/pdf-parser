@@ -1,0 +1,203 @@
+{
+  "tables": [
+    {
+      "column_count": 2,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Port",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Active",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Elm",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "8",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Pine",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 604,
+        "x1": 530,
+        "y1": 724
+      }
+    },
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Shift",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Opened",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Closed",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Early",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "25",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "24",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Late",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 3,
+          "cells": [
+            {
+              "text": "Total",
+              "row": 3,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "25",
+              "row": 3,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "24",
+              "row": 3,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 342,
+        "x1": 540,
+        "y1": 486
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "New report begins below",
+      "region": {
+        "x0": 68,
+        "y0": 545,
+        "x1": 210,
+        "y1": 560
+      }
+    }
+  ],
+  "explanation": "A ruled table and a borderless table must coexist without suppressing either route."
+}
