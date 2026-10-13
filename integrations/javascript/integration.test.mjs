@@ -80,7 +80,7 @@ test('actual CLI -> validated rich text -> overlapping chunks -> page/span locat
   skip: available ? false : 'Build the parser with zig build to run the real CLI integration',
 }, async () => {
   const document = await extractPdfDocument(fixturePdf(), { binaryPath });
-  assert.equal(document.manifest.schema_version, '0.19.3');
+  assert.equal(document.manifest.schema_version, '0.19.4');
   assert.equal(document.spans.length, 4);
   assert.equal(document.blocks.length, 4);
   assert.equal(document.sourceText, Array(4).fill('Repeated evidence.').join('\n\n'));
@@ -141,7 +141,7 @@ test('actual multi-page stream preserves global ownership with page-local locato
   const receipt = await extractPdfPages(fixturePdf(), { binaryPath, onPage: async page => { pages.push(page); } });
   assert.equal(receipt.complete, true);
   assert.equal(receipt.pageCount, 2);
-  assert.equal(receipt.schemaVersion, '0.19.3');
+  assert.equal(receipt.schemaVersion, '0.19.4');
   assert.deepEqual(pages.map(page => page.pageIndex), [0, 1]);
   assert.equal(new Set(pages.flatMap(page => page.spans.map(span => span.span_id))).size, 4);
   for (const page of pages) {

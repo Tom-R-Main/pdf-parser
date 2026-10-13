@@ -12,7 +12,7 @@ const reconcile = @import("reconcile.zig");
 const runtime = @import("runtime.zig");
 const page_geometry = @import("page_geometry.zig");
 
-pub const schema_version = "0.19.3";
+pub const schema_version = "0.19.4";
 
 pub const SpecialistKind = enum {
     ocr,

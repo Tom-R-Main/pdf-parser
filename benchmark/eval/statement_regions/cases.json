@@ -1,0 +1,50 @@
+[
+  {
+    "id": "statement-section-labels-v1",
+    "split": "dev",
+    "pdf": "corpus/statement-section-labels-v1.pdf",
+    "truth": "truth/statement-section-labels-v1.json"
+  },
+  {
+    "id": "wrapped-label-before-values-v1",
+    "split": "dev",
+    "pdf": "corpus/wrapped-label-before-values-v1.pdf",
+    "truth": "truth/wrapped-label-before-values-v1.json"
+  },
+  {
+    "id": "wrapped-label-after-values-v1",
+    "split": "dev",
+    "pdf": "corpus/wrapped-label-after-values-v1.pdf",
+    "truth": "truth/wrapped-label-after-values-v1.json"
+  },
+  {
+    "id": "indented-hierarchy-sparse-subtotal-v1",
+    "split": "dev",
+    "pdf": "corpus/indented-hierarchy-sparse-subtotal-v1.pdf",
+    "truth": "truth/indented-hierarchy-sparse-subtotal-v1.json"
+  },
+  {
+    "id": "intervening-narrative-boundary-v1",
+    "split": "dev",
+    "pdf": "corpus/intervening-narrative-boundary-v1.pdf",
+    "truth": "truth/intervening-narrative-boundary-v1.json"
+  },
+  {
+    "id": "repeated-header-separate-statements-v1",
+    "split": "dev",
+    "pdf": "corpus/repeated-header-separate-statements-v1.pdf",
+    "truth": "truth/repeated-header-separate-statements-v1.json"
+  },
+  {
+    "id": "detached-label-fragment-boundary-v1",
+    "split": "dev",
+    "pdf": "corpus/detached-label-fragment-boundary-v1.pdf",
+    "truth": "truth/detached-label-fragment-boundary-v1.json"
+  },
+  {
+    "id": "section-heading-page-prose-negative-v1",
+    "split": "dev",
+    "pdf": "corpus/section-heading-page-prose-negative-v1.pdf",
+    "truth": "truth/section-heading-page-prose-negative-v1.json"
+  }
+]

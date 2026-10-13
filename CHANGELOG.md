@@ -4,6 +4,10 @@
 
 ### Added
 
+- Frozen statement drawings check section labels, directional wrapped rows,
+  indentation, sparse amounts and narrative boundaries through both JSONL
+  formats. Independent physical row envelopes reject incorrect attachments.
+
 - Independent development drawings check separated table regions, persistent
   financial columns, exact source ownership and surrounding prose through both
   public JSONL formats. Previously observed real-document holdouts stay frozen.
@@ -28,6 +32,10 @@
 
 ### Fixed
 
+- Schema 0.19.4 assembles corroborated section rows and wrapped labels without
+  suppressing refused native sources through heuristic fallback. Transformed
+  text uses private scale evidence while retaining public declared font sizes;
+  padded currency dashes preserve their literal text and amount columns.
 - Schema 0.19.3 isolates table regions and assigns source membership explicitly,
   retaining unrelated native text and distinguishing cells in separate regions.
 - The real-document gate rejects array-shaped public table bounds while retaining

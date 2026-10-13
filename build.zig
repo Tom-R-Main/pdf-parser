@@ -462,6 +462,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     const table_region_tests = b.step("test-table-regions", "Run table-region ownership, projection and integration tests");
     table_region_tests.dependOn(&run_layout_unit_tests.step);
+    table_region_tests.dependOn(&run_native_layout_unit_tests.step);
     table_region_tests.dependOn(&run_adaptive_unit_tests.step);
     table_region_tests.dependOn(&run_schema_unit_tests.step);
     table_region_tests.dependOn(&run_reconcile_unit_tests.step);

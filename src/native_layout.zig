@@ -299,10 +299,13 @@ pub fn buildLineSpans(
             var text: std.ArrayList(u8) = .empty;
             errdefer text.deinit(allocator);
             var segment_bbox = representative.bbox;
+            var layout_font_size: f64 = 0;
             for (segment_start..segment_end) |local_index| {
                 const ordered_index = start + local_index;
                 const boundary = result.boundaries[ordered_index];
                 const glyph = glyphs[result.ordered_glyph_indices[ordered_index]];
+                const point_size = baselineFontSize(glyph);
+                if (std.math.isFinite(point_size) and point_size > 0) layout_font_size = @max(layout_font_size, point_size);
                 segment_bbox = unionBox(segment_bbox, glyph.bbox);
                 if (local_index > segment_start and boundary.kind == .space and !endsInWhitespace(text.items) and !(glyph.actual_text and startsInWhitespace(glyph.text))) {
                     try text.append(allocator, ' ');
@@ -331,6 +334,7 @@ pub fn buildLineSpans(
                 .source = .native_pdf,
                 .confidence = lineConfidence(result, line),
                 .font = .{ .name = font_name, .size = representative.font_size },
+                .layout_font_size = if (layout_font_size > 0) layout_font_size else null,
                 .line_id = line.line_index,
                 .mcid = representative.mcid,
                 .unicode_map_error = representative.unicode_map_error,
@@ -1158,6 +1162,49 @@ fn testGlyph(text: []const u8, x: f64, y: f64, advance: f64) GlyphSpan {
         .text = text,
         .advance = advance,
     };
+}
+
+test "line spans retain original Tf while carrying private glyph normal scale" {
+    var glyph = testGlyph("A", 100, 700, 6);
+    glyph.font_size = 1;
+    glyph.text_matrix = .{ 12, 0, 0, 12, 100, 700 };
+    glyph.bbox.y0 = 698;
+    glyph.bbox.y1 = 710.28;
+    var result = try analyze(std.testing.allocator, &.{glyph}, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "A");
+    defer result.deinit();
+    const spans = try buildLineSpans(std.testing.allocator, &.{glyph}, &result, 0);
+    defer {
+        for (spans) |span| {
+            std.testing.allocator.free(@constCast(span.text));
+            if (span.font.name) |name| std.testing.allocator.free(@constCast(name));
+        }
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqual(@as(usize, 1), spans.len);
+    try std.testing.expectEqual(@as(f64, 1), spans[0].font.size);
+    try std.testing.expectEqual(@as(f64, 1), spans[0].font_size);
+    try std.testing.expectEqual(@as(?f64, 12), spans[0].layout_font_size);
+    try std.testing.expectApproxEqAbs(@as(f64, 12.28), spans[0].y1 - spans[0].y0, 0.000001);
+}
+
+test "line spans retain inverse-scaled Tf120 with private 12pt normal scale" {
+    var glyph = testGlyph("A", 100, 700, 6);
+    glyph.font_size = 120;
+    glyph.text_matrix = .{ 0.1, 0, 0, 0.1, 100, 700 };
+    var result = try analyze(std.testing.allocator, &.{glyph}, .{ .x0 = 0, .y0 = 0, .x1 = 612, .y1 = 792 }, "A");
+    defer result.deinit();
+    const spans = try buildLineSpans(std.testing.allocator, &.{glyph}, &result, 0);
+    defer {
+        for (spans) |span| {
+            std.testing.allocator.free(@constCast(span.text));
+            if (span.font.name) |name| std.testing.allocator.free(@constCast(name));
+        }
+        std.testing.allocator.free(spans);
+    }
+    try std.testing.expectEqual(@as(usize, 1), spans.len);
+    try std.testing.expectEqual(@as(f64, 120), spans[0].font.size);
+    try std.testing.expectEqual(@as(f64, 120), spans[0].font_size);
+    try std.testing.expectApproxEqAbs(@as(f64, 12), spans[0].layout_font_size.?, 0.000001);
 }
 
 test "glyph geometry reconstructs missing spaces and line breaks" {

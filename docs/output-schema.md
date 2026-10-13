@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.3` (locally checked continuation).
+Current development schema version: `0.19.4` (locally checked statement assembly).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.19.3` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.19.4` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,16 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.19.4` assembles corroborated section labels and directional wrapped
+labels within native financial field bands. Section labels occupy ordinary
+column-zero cells with blank amount cells. Claimed label fragments extend the
+owning row's geometry and retain exact source membership. Repeated headers,
+ambiguous attachments and narrative barriers preserve separate regions or
+native text. A private measured font scale supports transformed PDF text without
+changing public declared font sizes or raw PDF coordinates. Padded currency
+dashes retain their literal source text. Fields, types and documented meanings
+remain unchanged; this patch does not add merged-cell or continuation semantics.
 
 Schema `0.19.3` isolates accepted table regions and uses exact source membership
 when replacing native text. Separate regions retain separate cell owners even

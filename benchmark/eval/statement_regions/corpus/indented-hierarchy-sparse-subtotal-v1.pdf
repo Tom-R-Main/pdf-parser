@@ -1,0 +1,61 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1191 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 68 708 Tm (Item) Tj ET
+BT /F1 10 Tf 1 0 0 1 402 708 Tm (Open) Tj ET
+BT /F1 10 Tf 1 0 0 1 500 708 Tm (Closed) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 670 Tm (OPERATIONS) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 632 Tm (Storage) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 632 Tm (8) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 632 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 88 594 Tm (Cold area) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 594 Tm (2) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 594 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 88 556 Tm (Dry area) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 556 Tm (6) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 556 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 518 Tm (Subtotal) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 518 Tm (8) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 518 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 480 Tm (OTHER) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 442 Tm (Repairs) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 442 Tm (-) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 404 Tm (Grand total) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 404 Tm (8) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 404 Tm (7) Tj ET
+340 506 m 426 506 l S
+450 506 m 536 506 l S
+340 392 m 426 392 l S
+450 392 m 536 392 l S
+340 394 m 426 394 l S
+450 394 m 536 394 l S
+BT /F1 10 Tf 1 0 0 1 122 764 Tm (Facilities activity statement) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001483 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1551
+%%EOF

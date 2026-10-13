@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "original_freeze_sha256": "3de98af7c2286bf03ca07baf1bcebed40c739b70217469e42af5a9ef63e67b7a",
+  "files_sha256": {
+    "row_geometry.json": "164d025c89857ee92abdd1a53e79f99febe2557f98329d9b1ab66b29a39bdfc8",
+    "freeze_geometry.py": "1b3eb0f7dd577fedd3dd141c3a4f1a5161256be0268b38e5d51da59e28d40adf",
+    "generate.py": "6f9c338e98fea1df967df3319ce7a295788e2e65d986d84f1af4ee85937d7d09"
+  }
+}
