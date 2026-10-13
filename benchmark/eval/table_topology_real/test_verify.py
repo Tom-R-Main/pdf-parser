@@ -260,6 +260,8 @@ class ScoreTests(unittest.TestCase):
             records, case, source = fixture()
             table = next(r for r in records if r["record_type"] == "table")
             table["bbox"] = [table["bbox"][key] for key in ("x0", "y0", "x1", "y1")]
+            if fmt == "stream-jsonl":
+                records = stream(records, case)
             self.assert_failed(records, case, source, "table bounds", fmt)
 
     def test_malformed_blank_placeholder_cannot_hide_under_merged_cell(self):
