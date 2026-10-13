@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.1` (local working-tree continuation).
+Current development schema version: `0.19.2` (local working-tree continuation).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.19.1` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.19.2` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,11 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.19.2` fixes batch debug-asset page identity for a selected page window.
+Assets retain the original zero-based document page indices, matching their
+source content and the streaming format. No fields, types or documented meanings
+change.
 
 Schema `0.19.1` fixes table evidence granularity and shared-rule assignment.
 Reconstructed table spans retain individual nonempty cell text and bounds,

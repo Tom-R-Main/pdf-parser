@@ -140,6 +140,7 @@ jobs:
           python3 -m unittest discover -s benchmark/eval -p 'test_table_compare.py'
           python3 -m unittest discover -s benchmark/eval -p 'test_bounded_zig.py'
           python3 -m unittest discover -s benchmark/eval/table_topology -p 'test_*.py'
+          python3 -m unittest discover -s benchmark/eval/table_topology_real -p 'test_*.py'
           python3 -m unittest discover -s benchmark/eval/reading_order_next -p 'test_*.py'
           python3 benchmark/eval/table_topology/generate.py --check
           python3 benchmark/eval/reading_order_next/generate.py --check

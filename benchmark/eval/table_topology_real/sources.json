@@ -1,0 +1,35 @@
+[
+  {
+    "id": "e013", "filename": "e013.pdf", "page_count": 7, "byte_count": 246631,
+    "title": "Share Insurance Fund Preliminary and Unaudited Financial Highlights, July 31, 2023",
+    "issuer": "National Credit Union Administration", "publication_date": "2023-09-05",
+    "template_family": "ncua-fund-monthly-statements",
+    "source_url": "https://ncua.gov/files/publications/share-insurance-fund-financial-highlights-2023-july.pdf",
+    "sha256": "8c6a1d354fd41a5f6aeb972af9d7a7758932094325024f2869d509bf3502b2b1",
+    "rights_metadata": "public-domain-us-government",
+    "rights_basis_from_source_card": "U.S. government-authored official publication under 17 U.S.C.105; official marks preserved solely for source identification, without endorsement.",
+    "reference_commit": "c7abe276a970605feb9cb8b27513365b6c10726e"
+  },
+  {
+    "id": "e012", "filename": "e012.pdf", "page_count": 4, "byte_count": 83677,
+    "title": "Daily Treasury Statement, March 25, 2025",
+    "issuer": "Bureau of the Fiscal Service", "publication_date": "2025-03-25",
+    "template_family": "daily-treasury-statement",
+    "source_url": "https://fiscaldata.treasury.gov/static-data/published-reports/dts/DailyTreasuryStatement_20250325.pdf",
+    "sha256": "0daea9cbb63f571d1f9513d2bb295943351dabc965301cad83890bb2db185b04",
+    "rights_metadata": "public-domain-us-government",
+    "rights_basis_from_source_card": "U.S. government-authored official publication under 17 U.S.C.105; official marks preserved solely for source identification, without endorsement.",
+    "reference_commit": "c7abe276a970605feb9cb8b27513365b6c10726e"
+  },
+  {
+    "id": "e019", "filename": "e019.pdf", "page_count": 5, "byte_count": 331158,
+    "title": "Monthly Construction Spending, March 2025",
+    "issuer": "U.S. Census Bureau", "publication_date": "2025-05-01",
+    "template_family": "census-construction-news",
+    "source_url": "https://www.census.gov/construction/c30/pdf/pr202503.pdf",
+    "sha256": "465e6711c81fa675175a548f721b6adfc479ec946acc21e6d80ae266e7b81bd5",
+    "rights_metadata": "public-domain-us-government",
+    "rights_basis_from_source_card": "U.S. government-authored official publication under 17 U.S.C.105; official marks preserved solely for source identification, without endorsement.",
+    "reference_commit": "c7abe276a970605feb9cb8b27513365b6c10726e"
+  }
+]

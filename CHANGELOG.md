@@ -4,6 +4,10 @@
 
 ### Added
 
+- A source-bound real-document table pack freezes selected merged headers and
+  continuation controls across separate development and holdout issuers. Local
+  original PDFs stay outside Git; failed qualifications remain evidence.
+
 - Frozen development and holdout suites check table topology, exact cell source
   ownership, and emitted reading order independently of graph diagnostics.
 - A project-local build monitor bounds observed compiler-cache allocation and
@@ -19,6 +23,9 @@
   clipping, transformed Forms, rules, highlights, logos and resource refusal.
 
 ### Fixed
+
+- Schema 0.19.2 keeps batch debug assets bound to original document pages when
+  extraction selects a window starting after page one.
 
 - Schema 0.19.1 keeps reconstructed table evidence at cell granularity, assigns
   shared-rule text once, and retains prose surrounding a promoted table.

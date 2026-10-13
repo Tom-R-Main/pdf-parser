@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-10-12T19:13:32.616875+00:00",
+  "parser_outputs_observed": false,
+  "annotation_method": "Independent Poppler layout text, word geometry and visually reviewed source renders; government originals unchanged. Approximate raw PDF regions; literal selected cell/header facts only.",
+  "files_sha256": {
+    "sources.json": "f037e47aeeddc5def583ccd6678703ed6471668333c126cdba3ce614d1a73fc5",
+    "cases.json": "803d98a043407faaa3fa647de9fc4b435fc8efe730c2de17d6f0054f5f111147"
+  },
+  "controls": {
+    "min_region_coverage": 0.7,
+    "min_table_coverage": 0.7
+  },
+  "blind_evidence_sha256": {
+    "blind-annotation-suggestions.json": "db11fd1700c3f7ca0cea913cc6868b8f28395b91450e7a91e5b959996d2ffd3f",
+    "blind-annotation-supplement-table-iiic.json": "11f2cfe5b33ee4613f54ca14c5461815e2816a2d9ca6f32cec295897fe8ad318",
+    "source-identity-audit.json": "a33bfdc5f61a36235c2a1943a2a127606d5c5930b50e6c5602300662aa33914b",
+    "source-review-evidence-inventory.json": "6fb3745ec30f3ede4f7ccd86e122cfebadbf30ce2aef4798b4a3c59f56d72a72"
+  },
+  "split_policy": "Issuer and template disjoint: NCUA development; Treasury and Census holdout. No parser tuning after holdout assessment.",
+  "limits": [
+    "Partial selected-cell and region truth; no complete-table topology metric.",
+    "One positive-continuation source/template; no cross-template positive generalization.",
+    "No exact cell-edge geometry accuracy claim.",
+    "Default Treasury renders failed due to unembedded Helvetica substitution; source-review includes readable isolated existing-Arial renders and failed originals."
+  ],
+  "stop_rule": "Retain failing baseline; do not modify truth, selectors, thresholds or kernel to fit observed holdouts. Correct objective harness defects with regressions and preserved initial evidence; use separate development data for future parser changes."
+}

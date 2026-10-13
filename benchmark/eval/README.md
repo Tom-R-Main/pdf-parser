@@ -1,5 +1,11 @@
 # Evaluation Harness
 
+The [real-document table pack](table_topology_real/README.md) freezes selected
+merged headers and positive/negative continuation checks from three complete
+government originals. It preserves failed qualifications and uses local,
+hash-verified inputs without CI downloads. Selected-cell checks are not a
+complete-table topology accuracy measure.
+
 New frozen [table topology controls](table_topology/README.md) and
 [reading-order holdouts](reading_order_next/README.md) assess source ownership,
 physical cell spans and emitted order separately. The earlier reading-order
