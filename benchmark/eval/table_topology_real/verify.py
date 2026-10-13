@@ -52,6 +52,10 @@ def bbox(value):
     return coordinates(value) is not None
 
 
+def public_bbox(value):
+    return isinstance(value, dict) and bbox(value)
+
+
 def coverage(region, candidate):
     region, candidate = coordinates(region), coordinates(candidate)
     if region is None or candidate is None:
@@ -227,7 +231,7 @@ def score(records, case, source, output_format="artifact-jsonl", controls=None):
         if valid_id:
             table_ids.add(tid)
         tables.append(table)
-        check(f"{tid} table bounds", bbox(table.get("bbox")))
+        check(f"{tid} table bounds", public_bbox(table.get("bbox")))
         check(f"{tid} numeric column extent", integer(table.get("column_count"), 1))
         check(f"{tid} logical identity and part", isinstance(table.get("logical_table_id"), str) and bool(table["logical_table_id"])
               and integer(table.get("table_part_index")))
@@ -301,6 +305,8 @@ def score(records, case, source, output_format="artifact-jsonl", controls=None):
     for truth in case["tables"]:
         candidates = []
         for table in tables:
+            if not public_bbox(table.get("bbox")):
+                continue
             overlap_region, overlap_table = coverage(truth["bbox"], table.get("bbox"))
             if (table.get("page_index") == truth["page_index"] and overlap_region >= controls["min_region_coverage"]
                     and overlap_table >= controls["min_table_coverage"]):

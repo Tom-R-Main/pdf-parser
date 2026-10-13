@@ -188,11 +188,11 @@ class ScoreTests(unittest.TestCase):
     def test_frozen_candidate_coverage_is_bidirectional_and_ambiguity_fails(self):
         records, case, source = fixture()
         table = next(r for r in records if r["record_type"] == "table")
-        table["bbox"] = [0, 0, 1000, 1000]
+        table["bbox"] = dict(x0=0, y0=0, x1=1000, y1=1000)
         self.assert_failed(records, case, source, "exactly one frozen-region candidate")
-        table["bbox"] = [0, 0, 20, 20]
+        table["bbox"] = dict(x0=0, y0=0, x1=20, y1=20)
         self.assert_failed(records, case, source, "exactly one frozen-region candidate")
-        table["bbox"] = [0, 0, 100, 100]
+        table["bbox"] = dict(x0=0, y0=0, x1=100, y1=100)
         duplicate = copy.deepcopy(table)
         duplicate["table_id"] = "other"
         records.append(duplicate)
@@ -254,6 +254,13 @@ class ScoreTests(unittest.TestCase):
         table["bbox"]["x1"] = 100
         table["bbox"]["x0"] = False
         self.assert_failed(records, case, source, "table bounds")
+
+    def test_array_shaped_public_bbox_fails_in_both_formats(self):
+        for fmt in ("artifact-jsonl", "stream-jsonl"):
+            records, case, source = fixture()
+            table = next(r for r in records if r["record_type"] == "table")
+            table["bbox"] = [table["bbox"][key] for key in ("x0", "y0", "x1", "y1")]
+            self.assert_failed(records, case, source, "table bounds", fmt)
 
     def test_malformed_blank_placeholder_cannot_hide_under_merged_cell(self):
         records, case, source = fixture()
