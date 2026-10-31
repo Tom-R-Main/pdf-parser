@@ -141,6 +141,7 @@ jobs:
           python3 benchmark/eval/parser_improvements.py --output benchmark/eval/outputs/parser-020-ci/geometry-and-decoding
           python3 benchmark/eval/section_hierarchy.py --output benchmark/eval/outputs/parser-020-ci/sections
           python3 benchmark/eval/section_safety.py --output benchmark/eval/outputs/parser-020-ci/section-safety
+          python3 benchmark/eval/lzw_early_change.py --output benchmark/eval/outputs/parser-020-ci/lzw-early-change
 
       - name: Upload adaptive provenance evidence
         if: always()

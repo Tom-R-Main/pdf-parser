@@ -4,6 +4,11 @@ Python bindings for the Zig pdf-parser library. The package is named
 `pdf-parser`, while the import path remains `zpdf` for compatibility with the
 inherited API.
 
+The current development package is `0.4.0.dev0`, the Python packaging spelling
+of the native parser's `0.4.0-dev` build. Adaptive output uses schema `0.20.0`;
+its version is independent of the package version. This is a capable pre-1.0
+parser; a development build is not a tagged release.
+
 ## Install
 
 Published wheels are platform-specific. From a source checkout, build a wheel

@@ -5,7 +5,7 @@ from pathlib import Path
 from ._ffi import ffi, lib
 from .exceptions import ZpdfError, InvalidPdfError, PageNotFoundError, ExtractionError
 
-__version__ = "0.1.0"
+__version__ = "0.4.0.dev0"
 __all__ = ["Document", "PageInfo", "TextSpan", "extract_adaptive", "ZpdfError", "InvalidPdfError", "PageNotFoundError", "ExtractionError"]
 
 

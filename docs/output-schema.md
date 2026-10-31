@@ -731,6 +731,13 @@ allocator overhead, input mappings, or subprocess RSS. Intentional bounded
 Type3 scratch-buffer exhaustion remains best-effort; an explicit stream cap
 refusal propagates.
 
+LZW decoding defaults to `EarlyChange=1` and accepts explicit integer 0 or 1.
+For document streams, indirect decode-parameter dictionaries, aligned array
+entries and `EarlyChange` values resolve before decoding. Reference chains and
+nested object-stream parameter resolution have a 16-level bound; cyclic or
+excessively deep resolution fails. Referenced object streams retain the same
+decoded-byte cap. These controls change decoding behavior, not record fields.
+
 ### `debug_asset`
 
 Reference to visual review and coordinate artifacts. Debug assets are always

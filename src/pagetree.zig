@@ -50,6 +50,8 @@ pub const BuildOptions = struct {
     diagnostic_allocator: ?std.mem.Allocator = null,
     recover: bool = true,
     decompress_options: decompress.Options = .{},
+    /// Propagated through object-stream resolution to bound parameter cycles.
+    decode_param_depth: u8 = 0,
 };
 
 /// Resolve object reference using XRef table
@@ -143,14 +145,81 @@ pub fn resolveRefWithOptions(
             else
                 indirect.obj;
 
-            try resolved_cache.put(ref.num, object);
-            return object;
+            const resolved = try resolveStreamDecodeParameters(allocator, data, xref, object, resolved_cache, options);
+            try resolved_cache.put(ref.num, resolved);
+            return resolved;
         },
         .compressed => {
             // Object is inside an object stream
             return resolveCompressedObject(allocator, data, xref, entry, resolved_cache, options);
         },
     }
+}
+
+fn isLzwFilter(filter: Object) bool {
+    return filter == .name and (std.mem.eql(u8, filter.name, "LZWDecode") or std.mem.eql(u8, filter.name, "LZW"));
+}
+
+fn resolveDecodeParameter(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    xref: *const XRefTable,
+    cache: *std.AutoHashMap(u32, Object),
+    object: Object,
+    options: BuildOptions,
+    depth: *u8,
+) anyerror!Object {
+    var value = object;
+    while (value == .reference) {
+        if (depth.* >= 16) return error.InvalidFilterParams;
+        depth.* += 1;
+        var nested = options;
+        nested.decode_param_depth = depth.*;
+        value = try resolveRefWithOptions(allocator, data, xref, value.reference, cache, nested);
+    }
+    return value;
+}
+
+fn resolveEarlyChange(allocator: std.mem.Allocator, data: []const u8, xref: *const XRefTable, cache: *std.AutoHashMap(u32, Object), params: Object, options: BuildOptions, depth: *u8) anyerror!void {
+    if (params != .dict) return;
+    for (params.dict.entries) |*entry| {
+        if (std.mem.eql(u8, entry.key, "EarlyChange")) {
+            entry.value = try resolveDecodeParameter(allocator, data, xref, cache, entry.value, options, depth);
+            return;
+        }
+    }
+}
+
+// Resolve LZW policy at the document boundary, where xref/security/cache state
+// exists. Parsed metadata belongs to the parse allocator; normalized values
+// retain that lifetime. Never cache a stream before normalization succeeds.
+fn resolveStreamDecodeParameters(allocator: std.mem.Allocator, data: []const u8, xref: *const XRefTable, object: Object, cache: *std.AutoHashMap(u32, Object), options: BuildOptions) anyerror!Object {
+    if (object != .stream) return object;
+    const filter = object.stream.dict.get("Filter") orelse return object;
+    var has_lzw = isLzwFilter(filter);
+    if (filter == .array) {
+        for (filter.array[0..@min(filter.array.len, 16)]) |item| has_lzw = has_lzw or isLzwFilter(item);
+    }
+    if (!has_lzw) return object;
+    for (object.stream.dict.entries) |*entry| {
+        if (!std.mem.eql(u8, entry.key, "DecodeParms")) continue;
+        var depth = options.decode_param_depth;
+        const params = try resolveDecodeParameter(allocator, data, xref, cache, entry.value, options, &depth);
+        if (params == .array and filter == .array) {
+            for (filter.array[0..@min(filter.array.len, 16)], 0..) |item, index| {
+                if (!isLzwFilter(item) or index >= params.array.len) continue;
+                var item_depth = depth;
+                const value = try resolveDecodeParameter(allocator, data, xref, cache, params.array[index], options, &item_depth);
+                try resolveEarlyChange(allocator, data, xref, cache, value, options, &item_depth);
+                params.array[index] = value;
+            }
+        } else {
+            try resolveEarlyChange(allocator, data, xref, cache, params, options, &depth);
+        }
+        entry.value = params;
+        return object;
+    }
+    return object;
 }
 
 fn resolveCompressedObject(
@@ -192,13 +261,14 @@ fn resolveCompressedObject(
         return Object{ .null = {} };
     };
 
-    const objstm_obj = if (options.security) |handler|
+    const decrypted_objstm = if (options.security) |handler|
         handler.decryptObject(allocator, .{ .num = indirect.num, .gen = indirect.gen }, indirect.obj) catch |err| blk: {
             if (err == error.OutOfMemory) return err;
             break :blk Object{ .null = {} };
         }
     else
         indirect.obj;
+    const objstm_obj = try resolveStreamDecodeParameters(allocator, data, xref, decrypted_objstm, resolved_cache, options);
 
     const stream = switch (objstm_obj) {
         .stream => |s| s,
@@ -721,6 +791,79 @@ fn getStreamData(
 // ============================================================================
 // TESTS
 // ============================================================================
+
+test "LZW decode parameters resolve indirect dictionaries arrays and integers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    var params_entries = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = .{ .reference = .{ .num = 7, .gen = 0 } } }};
+    var params_array = [_]Object{ .null, .{ .reference = .{ .num = 6, .gen = 0 } } };
+    try cache.put(6, .{ .dict = .{ .entries = &params_entries } });
+    try cache.put(7, .{ .integer = 0 });
+    try cache.put(8, .{ .array = &params_array });
+    var filters = [_]Object{ .{ .name = "ASCIIHexDecode" }, .{ .name = "LZW" } };
+    var entries = [_]Object.Dict.Entry{
+        .{ .key = "Filter", .value = .{ .array = &filters } },
+        .{ .key = "DecodeParms", .value = .{ .reference = .{ .num = 8, .gen = 0 } } },
+    };
+    const stream: Object = .{ .stream = .{ .dict = .{ .entries = &entries }, .data = "" } };
+    const resolved = try resolveStreamDecodeParameters(arena.allocator(), "", &xref, stream, &cache, .{});
+    const params = resolved.stream.dict.getArray("DecodeParms").?;
+    try std.testing.expect(params[0] == .null);
+    try std.testing.expectEqual(@as(?i64, 0), params[1].dict.getInt("EarlyChange"));
+}
+
+test "LZW decode parameter cycles stop before publishing streams" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    try cache.put(6, .{ .reference = .{ .num = 7, .gen = 0 } });
+    try cache.put(7, .{ .reference = .{ .num = 6, .gen = 0 } });
+    var entries = [_]Object.Dict.Entry{
+        .{ .key = "Filter", .value = .{ .name = "LZWDecode" } },
+        .{ .key = "DecodeParms", .value = .{ .reference = .{ .num = 6, .gen = 0 } } },
+    };
+    const stream: Object = .{ .stream = .{ .dict = .{ .entries = &entries }, .data = "" } };
+    try std.testing.expectError(error.InvalidFilterParams, resolveStreamDecodeParameters(arena.allocator(), "", &xref, stream, &cache, .{}));
+    try std.testing.expect(entries[1].value == .reference);
+
+    // The integer needed to decode ObjStm 2 is stored inside that same stream.
+    // Recursive object-stream resolution must inherit the parameter depth.
+    const data = "2 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Filter /LZWDecode /DecodeParms << /EarlyChange 3 0 R >> /Length 6 >>\nstream\n3 0 0 \nendstream\nendobj\n";
+    try xref.entries.put(2, .{ .offset = 0, .gen_or_index = 0, .entry_type = .in_use });
+    try xref.entries.put(3, .{ .offset = 2, .gen_or_index = 0, .entry_type = .compressed });
+    try std.testing.expectError(error.InvalidFilterParams, resolveRefWithOptions(arena.allocator(), data, &xref, .{ .num = 3, .gen = 0 }, &cache, .{}));
+    try std.testing.expect(!cache.contains(2));
+    try std.testing.expect(!cache.contains(3));
+}
+
+test "LZW decode parameter resolution preserves compressed-object byte limits" {
+    const data = "2 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Length 6 >>\nstream\n3 0 0 \nendstream\nendobj\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    try xref.entries.put(2, .{ .offset = 0, .gen_or_index = 0, .entry_type = .in_use });
+    try xref.entries.put(3, .{ .offset = 2, .gen_or_index = 0, .entry_type = .compressed });
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    var params = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = .{ .reference = .{ .num = 3, .gen = 0 } } }};
+    var entries = [_]Object.Dict.Entry{
+        .{ .key = "Filter", .value = .{ .name = "LZWDecode" } },
+        .{ .key = "DecodeParms", .value = .{ .dict = .{ .entries = &params } } },
+    };
+    const stream: Object = .{ .stream = .{ .dict = .{ .entries = &entries }, .data = "" } };
+    try std.testing.expectError(error.OutputTooLarge, resolveStreamDecodeParameters(arena.allocator(), data, &xref, stream, &cache, .{ .decompress_options = .{ .max_output_bytes = 5 } }));
+    try std.testing.expect(params[0].value == .reference);
+    const resolved = try resolveStreamDecodeParameters(arena.allocator(), data, &xref, stream, &cache, .{ .decompress_options = .{ .max_output_bytes = 6 } });
+    try std.testing.expectEqual(@as(?i64, 0), resolved.stream.dict.getDict("DecodeParms").?.getInt("EarlyChange"));
+}
 
 test "content stream recovery preserves resource refusals and malformed fallback" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
