@@ -40,14 +40,22 @@ def literal_lzw(data, early_change, reset_at=None):
                  for index in range(0, len(bits), 8))
 
 
-def make_pdf(payload, filters, params):
+def make_pdf(payload, filters, params, extra_objects=(), form=False):
+    resources = b"/Font << /F1 4 0 R >>" + (b" /XObject << /Fm1 6 0 R >>" if form else b"")
+    stream = f"<< /Length {len(payload)} /Filter {filters} {params}".encode()
+    if form:
+        stream += b" /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >>"
+    stream += b" >>\nstream\n" + payload + b"\nendstream"
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << " + resources + b" >> /Contents 5 0 R >>",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        f"<< /Length {len(payload)} /Filter {filters} {params} >>\nstream\n".encode() + payload + b"\nendstream",
+        b"<< /Length 8 >>\nstream\n/Fm1 Do\n\nendstream" if form else stream,
     ]
+    if form:
+        objects.append(stream)
+    objects.extend(extra_objects)
     output, offsets = bytearray(b"%PDF-1.7\n"), []
     for index, obj in enumerate(objects, 1):
         offsets.append(len(output))
@@ -72,16 +80,24 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     report = {"cli_sha256": digest(args.cli), "harness_sha256": digest(Path(__file__)),
-              "decoder_sha256": digest(ROOT / "src/decompress.zig"), "runs": [], "oracles": []}
-    for name, early, chain, reset, entry in (
-        ("default", 1, False, None, ""),
-        ("null-default", 1, False, None, "/EarlyChange null"),
-        ("early-one", 1, False, None, "/EarlyChange 1"),
-        ("early-zero", 0, False, None, "/EarlyChange 0"),
-        ("chain-predictor-one", 1, True, None, "/EarlyChange 1"),
-        ("chain-predictor-zero", 0, True, None, "/EarlyChange 0"),
-        ("reset-one", 1, False, 2100, "/EarlyChange 1"),
-        ("reset-zero", 0, False, 2100, "/EarlyChange 0"),
+              "decoder_sha256": digest(ROOT / "src/decompress.zig"),
+              "resolver_sha256": digest(ROOT / "src/pagetree.zig"), "runs": [], "oracles": []}
+    for name, early, chain, reset, entry, style in (
+        ("default", 1, False, None, "", "direct"),
+        ("null-default", 1, False, None, "/EarlyChange null", "direct"),
+        ("early-one", 1, False, None, "/EarlyChange 1", "direct"),
+        ("early-zero", 0, False, None, "/EarlyChange 0", "direct"),
+        ("chain-predictor-one", 1, True, None, "/EarlyChange 1", "direct"),
+        ("chain-predictor-zero", 0, True, None, "/EarlyChange 0", "direct"),
+        ("reset-one", 1, False, 2100, "/EarlyChange 1", "direct"),
+        ("reset-zero", 0, False, 2100, "/EarlyChange 0", "direct"),
+        ("indirect-one", 1, False, None, "/EarlyChange 6 0 R", "entry"),
+        ("indirect-zero", 0, False, None, "/EarlyChange 6 0 R", "entry"),
+        ("indirect-null", 1, False, None, "/EarlyChange 6 0 R", "null-entry"),
+        ("indirect-nested-zero", 0, False, None, "", "nested"),
+        ("indirect-params-zero", 0, False, None, "", "params"),
+        ("indirect-array-zero", 0, True, None, "", "array"),
+        ("indirect-form-zero", 0, False, None, "/EarlyChange 7 0 R", "form"),
     ):
         expected = f"LZW {name} source retained"
         content = b"%" + b"p" * 3200 + f"\nBT /F1 12 Tf 40 700 Td ({expected}) Tj ET\n".encode()
@@ -95,10 +111,24 @@ def main():
             encoded = encoded.hex().encode() + b">"
             filters = "[/ASCIIHexDecode /LZWDecode]"
             params = f"/DecodeParms [null << {entry} /Predictor 2 /Columns {len(content)} >>]"
+        extra = []
+        if style in ("entry", "form"):
+            extra = [str(early).encode()]
+        elif style == "null-entry":
+            extra = [b"null"]
+        elif style == "nested":
+            params = "/DecodeParms 6 0 R"
+            extra = [b"<< /EarlyChange 7 0 R >>", b"0"]
+        elif style == "params":
+            params = "/DecodeParms 6 0 R"
+            extra = [b"<< /EarlyChange 0 >>"]
+        elif style == "array":
+            params = "/DecodeParms 6 0 R"
+            extra = [b"[null 7 0 R]", f"<< /EarlyChange 8 0 R /Predictor 2 /Columns {len(content)} >>".encode(), b"0"]
         path = args.output / f"{name}.pdf"
-        path.write_bytes(make_pdf(encoded, filters, params))
+        path.write_bytes(make_pdf(encoded, filters, params, extra, style == "form"))
         if args.qpdf:
-            command = [args.qpdf, "--show-object=5", "--filtered-stream-data", str(path)]
+            command = [args.qpdf, "--show-object=6" if style == "form" else "--show-object=5", "--filtered-stream-data", str(path)]
             result = subprocess.run(command, capture_output=True, timeout=15)
             (args.output / f"{name}.qpdf.bin").write_bytes(result.stdout)
             (args.output / f"{name}.qpdf.stderr").write_bytes(result.stderr)

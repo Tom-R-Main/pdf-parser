@@ -46,6 +46,9 @@
 - LZW decoding honors `EarlyChange` values 0 and 1, defaults to 1, and rejects
   invalid explicit values. Regression controls cover code-width transitions,
   dictionary reset, predictor/filter composition and decoded-output limits.
+- LZW parameters resolve indirect dictionaries, array entries and `EarlyChange`
+  values at the document boundary, including Form and font streams. Bounded
+  resolution rejects cycles and preserves referenced object-stream byte limits.
 - The compiler-budget test records readiness before crossing its stop boundary,
   avoiding a race between resource refusal and a subsequent diagnostic print.
 - Python distribution and runtime metadata now use `0.4.0.dev0`, matching the

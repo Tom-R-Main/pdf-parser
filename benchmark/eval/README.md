@@ -29,7 +29,9 @@ native text and both public JSONL formats:
 python3 benchmark/eval/lzw_early_change.py --output benchmark/eval/outputs/lzw-run
 ```
 
-The harness runs 24 CLI checks on eight generated inputs. Pass `--qpdf qpdf`
+The harness runs 45 CLI checks on fifteen generated inputs, including indirect
+parameter values, dictionaries and filter-aligned arrays, plus a Form XObject.
+Pass `--qpdf qpdf`
 when that optional tool is installed to compare complete decoded stream bytes
 independently. Zig unit checks also cover exact output caps, invalid parameter
 values and allocation-failure cleanup. These controls do not establish general
