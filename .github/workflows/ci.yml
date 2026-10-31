@@ -135,6 +135,21 @@ jobs:
       - name: Build shared library
         run: zig build shared --summary all
 
+      - name: Verify adaptive provenance and bounded recovery
+        run: |
+          python3 benchmark/eval/table_continuation_parity.py --output benchmark/eval/outputs/parser-020-ci/table-parity
+          python3 benchmark/eval/parser_improvements.py --output benchmark/eval/outputs/parser-020-ci/geometry-and-decoding
+          python3 benchmark/eval/section_hierarchy.py --output benchmark/eval/outputs/parser-020-ci/sections
+          python3 benchmark/eval/section_safety.py --output benchmark/eval/outputs/parser-020-ci/section-safety
+
+      - name: Upload adaptive provenance evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: parser-020-provenance
+          path: benchmark/eval/outputs/parser-020-ci
+          if-no-files-found: warn
+
       - name: Verify frozen topology and emitted-order controls
         run: |
           python3 -m unittest discover -s benchmark/eval -p 'test_table_compare.py'

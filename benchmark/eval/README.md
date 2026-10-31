@@ -1,5 +1,26 @@
 # Evaluation Harness
 
+Schema `0.20` has four deterministic public CLI checks. Build once, then
+choose new output directories to preserve each run's evidence:
+
+```sh
+python3 benchmark/eval/table_continuation_parity.py --output benchmark/eval/outputs/table-parity-run
+python3 benchmark/eval/parser_improvements.py --output benchmark/eval/outputs/parser-improvements-run
+python3 benchmark/eval/section_hierarchy.py --output benchmark/eval/outputs/section-hierarchy-run
+python3 benchmark/eval/section_safety.py --output benchmark/eval/outputs/section-safety-run
+```
+
+They cover table identity across formats, signed writing direction, optional
+glyph geometry and semantic groups, decoder refusal (including CLI flag order),
+and section ancestry with exact text/source-map preservation. The geometry and
+decoder harness runs 40 CLI cases. These small controls do not establish
+real-document hierarchy accuracy, broad table-continuation accuracy or speed.
+The safety harness adds 12 CLI runs for ordinary controls, a long dotted
+heading, child/sibling outline cycles and excessive outline depth; extraction
+must finish within its timeout and retain the page's body text.
+Run `node --test integrations/javascript/*.test.mjs` for strict batch/stream
+consumer validation and actual CLI adapter roundtrips.
+
 The independent [table region development controls](table_regions/README.md)
 check separated regions, persistent columns, exact source ownership, and prose
 retention in both public JSONL formats. Their drawing truth is frozen before

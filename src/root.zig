@@ -156,6 +156,8 @@ pub const ErrorConfig = struct {
     respect_permissions: bool = false,
     /// Allow reading weak legacy encryption such as RC4-40/128.
     allow_weak_crypto: bool = true,
+    /// Maximum output per decoded stream/filter stage, including font streams.
+    decompress_options: decompress.Options = .{},
 
     pub fn default() ErrorConfig {
         return .{};
@@ -402,9 +404,11 @@ pub const Document = struct {
         // Parse XRef (HashMap uses base allocator, parsed objects use arena)
         self.xref_table = xref.parseXRefWithOptions(self.allocator, arena, self.data, .{
             .recover = true,
+            .decompress_options = self.error_config.decompress_options,
             .diagnostics = &self.structural_diagnostics,
             .diagnostic_allocator = self.allocator,
         }) catch |err| {
+            if (decompress.isResourceError(err)) return err;
             if (self.error_config.continue_on_parse_error) {
                 try self.errors.append(self.allocator, .{
                     .kind = .invalid_xref,
@@ -425,7 +429,9 @@ pub const Document = struct {
             .diagnostics = &self.structural_diagnostics,
             .diagnostic_allocator = self.allocator,
             .recover = self.error_config.continue_on_parse_error,
+            .decompress_options = self.error_config.decompress_options,
         }) catch |err| {
+            if (decompress.isResourceError(err)) return err;
             if (self.error_config.continue_on_parse_error) {
                 try self.errors.append(self.allocator, .{
                     .kind = .syntax_error,
@@ -451,7 +457,10 @@ pub const Document = struct {
             else => null,
         };
         const resolved = switch (encrypt_obj) {
-            .reference => |r| pagetree.resolveRef(arena, self.data, &self.xref_table, r, &self.object_cache) catch encrypt_obj,
+            .reference => |r| self.resolve(r) catch |err| blk: {
+                if (decompress.isResourceError(err)) return err;
+                break :blk encrypt_obj;
+            },
             else => encrypt_obj,
         };
         const encrypt_dict = switch (resolved) {
@@ -514,7 +523,7 @@ pub const Document = struct {
     }
 
     /// Lazy-load fonts for a specific page (called on first extraction)
-    fn ensurePageFonts(self: *Document, page_idx: usize) void {
+    fn ensurePageFonts(self: *Document, page_idx: usize) !void {
         const arena = self.parsing_arena.allocator();
         const page = self.pages.items[page_idx];
         if (page.resources == null) return;
@@ -522,7 +531,10 @@ pub const Document = struct {
         const fonts_dict_obj = resources.get("Font") orelse return;
 
         const fonts_dict_resolved = switch (fonts_dict_obj) {
-            .reference => |ref| self.resolve(ref) catch null,
+            .reference => |ref| self.resolve(ref) catch |err| blk: {
+                if (decompress.isResourceError(err)) return err;
+                break :blk null;
+            },
             else => fonts_dict_obj,
         };
 
@@ -548,15 +560,18 @@ pub const Document = struct {
             if (font_obj_id) |obj_id| {
                 if (self.font_obj_cache.get(obj_id)) |cached_enc| {
                     // Reuse existing encoding - just add new key mapping
-                    const owned_key = arena.dupe(u8, key) catch continue;
-                    self.font_cache.put(owned_key, cached_enc) catch {};
+                    const owned_key = try arena.dupe(u8, key);
+                    try self.font_cache.put(owned_key, cached_enc);
                     continue;
                 }
             }
 
             // Resolve font dictionary
             const font_obj = switch (entry.value) {
-                .reference => |ref| self.resolve(ref) catch continue,
+                .reference => |ref| self.resolve(ref) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    continue;
+                },
                 .dict => entry.value,
                 else => continue,
             };
@@ -572,38 +587,55 @@ pub const Document = struct {
                 xref_table: *const xref.XRefTable,
                 object_cache: *std.AutoHashMap(u32, parser.Object),
                 security: ?*const encryption.SecurityHandler,
+                decompress_options: decompress.Options,
+                pending_resource_error: ?anyerror = null,
 
-                fn resolve(self_resolver: @This(), obj: parser.Object) parser.Object {
+                fn resolve(self_resolver: *@This(), obj: parser.Object) parser.Object {
                     return switch (obj) {
-                        .reference => |ref| pagetree.resolveRefWithSecurity(self_resolver.arena, self_resolver.data, self_resolver.xref_table, ref, self_resolver.object_cache, self_resolver.security) catch obj,
+                        .reference => |ref| pagetree.resolveRefWithOptions(self_resolver.arena, self_resolver.data, self_resolver.xref_table, ref, self_resolver.object_cache, .{
+                            .security = self_resolver.security,
+                            .decompress_options = self_resolver.decompress_options,
+                        }) catch |err| blk: {
+                            if (decompress.isResourceError(err)) self_resolver.pending_resource_error = err;
+                            break :blk obj;
+                        },
                         else => obj,
                     };
                 }
             };
-            const resolver = Resolver{
+            var resolver = Resolver{
                 .arena = arena,
                 .data = self.data,
                 .xref_table = &self.xref_table,
                 .object_cache = &self.object_cache,
                 .security = self.securityHandler(),
+                .decompress_options = self.error_config.decompress_options,
             };
 
             // Use the comprehensive parseFontEncoding
-            var enc = encoding.parseFontEncoding(arena, fd, struct {
+            var enc = encoding.parseFontEncodingWithOptions(arena, fd, struct {
                 fn wrapper(ctx: *const anyopaque, obj: parser.Object) parser.Object {
-                    const r: *const Resolver = @ptrCast(@alignCast(ctx));
+                    const r: *Resolver = @ptrCast(@alignCast(@constCast(ctx)));
                     return r.resolve(obj);
                 }
-            }.wrapper, &resolver) catch continue;
+            }.wrapper, &resolver, self.error_config.decompress_options) catch |err| {
+                if (resolver.pending_resource_error) |resource_error| return resource_error;
+                if (decompress.isResourceError(err)) return err;
+                continue;
+            };
+            if (resolver.pending_resource_error) |err| {
+                enc.deinit();
+                return err;
+            }
             enc.font_object_num = font_obj_id;
 
             // Need to dupe key since bufPrint uses stack buffer
-            const owned_key = arena.dupe(u8, key) catch continue;
-            self.font_cache.put(owned_key, enc) catch {};
+            const owned_key = try arena.dupe(u8, key);
+            try self.font_cache.put(owned_key, enc);
 
             // Cache by object ID for reuse across pages
             if (font_obj_id) |obj_id| {
-                self.font_obj_cache.put(obj_id, enc) catch {};
+                try self.font_obj_cache.put(obj_id, enc);
             }
         }
     }
@@ -714,7 +746,8 @@ pub const Document = struct {
             defer scratch_arena.deinit();
             const scratch_allocator = scratch_arena.allocator();
 
-            const content = self.getPageContentForScratch(page_num, scratch_allocator) catch {
+            const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
+                if (decompress.isResourceError(err)) return err;
                 report.content_stream_errors += 1;
                 continue;
             };
@@ -726,15 +759,17 @@ pub const Document = struct {
             }
 
             const page_text_operators_before = report.text_show_operator_count;
-            scanExtractionOperators(scratch_allocator, content, &report) catch {
+            scanExtractionOperators(scratch_allocator, content, &report) catch |err| {
+                if (decompress.isResourceError(err)) return err;
                 report.operator_scan_errors += 1;
             };
 
-            self.ensurePageFonts(page_num);
+            try self.ensurePageFonts(page_num);
             var collector = interpreter.SpanCollector.init(scratch_allocator, @intCast(page_num));
             defer collector.deinit();
             var null_writer: NullWriter = .{};
-            extractContentStream(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &null_writer) catch {
+            extractContentStream(content, .{ .bounds = &collector }, &self.font_cache, page_num, scratch_allocator, &null_writer) catch |err| {
+                if (decompress.isResourceError(err)) return err;
                 report.page_extraction_errors += 1;
                 continue;
             };
@@ -766,7 +801,8 @@ pub const Document = struct {
             }
 
             var selection_metrics: StructuredSelectionMetrics = .{};
-            const output = self.extractTextStructuredWithMetrics(page_num, scratch_allocator, &selection_metrics) catch {
+            const output = self.extractTextStructuredWithMetrics(page_num, scratch_allocator, &selection_metrics) catch |err| {
+                if (decompress.isResourceError(err)) return err;
                 report.page_extraction_errors += 1;
                 continue;
             };
@@ -804,6 +840,7 @@ pub const Document = struct {
             if (span.font.name) |name| {
                 allocator.free(@constCast(name));
             }
+            if (span.glyph_geometry.len > 0) allocator.free(span.glyph_geometry);
         }
         allocator.free(spans);
     }
@@ -820,13 +857,13 @@ pub const Document = struct {
 
     /// Resolve an object reference
     pub fn resolve(self: *Document, ref: ObjRef) !Object {
-        return pagetree.resolveRefWithSecurity(
+        return pagetree.resolveRefWithOptions(
             self.parsing_arena.allocator(),
             self.data,
             &self.xref_table,
             ref,
             &self.object_cache,
-            self.securityHandler(),
+            .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
         );
     }
 
@@ -841,15 +878,16 @@ pub const Document = struct {
         const scratch_allocator = scratch_arena.allocator();
 
         // Get content stream (allocated from arena, no need to free)
-        const content = pagetree.getPageContentsWithSecurity(
+        const content = pagetree.getPageContentsWithOptions(
             parse_allocator,
             scratch_allocator,
             self.data,
             &self.xref_table,
             page,
             &self.object_cache,
-            self.securityHandler(),
+            .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
         ) catch |err| {
+            if (decompress.isResourceError(err)) return err;
             if (self.error_config.continue_on_parse_error) {
                 try self.errors.append(self.allocator, .{
                     .kind = .invalid_stream,
@@ -865,7 +903,7 @@ pub const Document = struct {
         if (content.len == 0) return;
 
         // Lazy-load fonts for this page
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
 
         // Extract text with full Form XObject support
         const ctx = ExtractionContext{
@@ -878,6 +916,7 @@ pub const Document = struct {
             .page_num = page_num,
             .depth = 0,
             .security = self.securityHandler(),
+            .decompress_options = self.error_config.decompress_options,
         };
         try extractTextFromContentFull(content, page.resources, &ctx, writer);
     }
@@ -898,7 +937,10 @@ pub const Document = struct {
         defer scratch_arena.deinit();
         const scratch_allocator = scratch_arena.allocator();
 
-        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch return &.{};
+        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return &.{};
+        };
         return self.extractTextWithBoundsFromContent(page_num, allocator, scratch_allocator, content);
     }
 
@@ -908,14 +950,14 @@ pub const Document = struct {
         if (page_num >= self.pages.items.len) return error.PageNotFound;
 
         const page = self.pages.items[page_num];
-        return pagetree.getPageContentsWithSecurity(
+        return pagetree.getPageContentsWithOptions(
             self.parsing_arena.allocator(),
             scratch_allocator,
             self.data,
             &self.xref_table,
             page,
             &self.object_cache,
-            self.securityHandler(),
+            .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
         );
     }
 
@@ -932,7 +974,7 @@ pub const Document = struct {
         if (content.len == 0) return &.{};
 
         // Lazy-load fonts for this page (needed for proper text decoding)
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
 
         var collector = interpreter.SpanCollector.init(allocator, @intCast(page_num));
         errdefer collector.deinit();
@@ -957,10 +999,13 @@ pub const Document = struct {
         var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch_arena.deinit();
         const scratch_allocator = scratch_arena.allocator();
-        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch return .{
-            .allocator = allocator,
-            .spans = try allocator.alloc(TextSpan, 0),
-            .glyphs = try allocator.alloc(GlyphSpan, 0),
+        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return NativePageGeometry{
+                .allocator = allocator,
+                .spans = try allocator.alloc(TextSpan, 0),
+                .glyphs = try allocator.alloc(GlyphSpan, 0),
+            };
         };
         return self.extractNativePageGeometryFromContent(page_num, allocator, scratch_allocator, content);
     }
@@ -979,7 +1024,7 @@ pub const Document = struct {
             .glyphs = try allocator.alloc(GlyphSpan, 0),
         };
 
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
         var collector = interpreter.SpanCollector.init(allocator, @intCast(page_num));
         errdefer collector.deinit();
         var null_writer: NullWriter = .{};
@@ -1029,6 +1074,7 @@ pub const Document = struct {
             .page_num = page_num,
             .depth = 0,
             .security = self.securityHandler(),
+            .decompress_options = self.error_config.decompress_options,
             .resources = self.pages.items[page_num].resources,
             .traversal = traversal,
             .scope = form_scope.Scope.page(@intCast(page_num)),
@@ -1103,13 +1149,16 @@ pub const Document = struct {
             },
             .spans = spans,
             .images = image_boxes,
-            .has_structure_tree = self.hasStructureTree(),
+            .has_structure_tree = try self.hasStructureTreeChecked(),
         });
     }
 
     /// Check if the document has a structure tree (is tagged)
     pub fn hasStructureTree(self: *Document) bool {
-        const arena = self.parsing_arena.allocator();
+        return self.hasStructureTreeChecked() catch false;
+    }
+
+    pub fn hasStructureTreeChecked(self: *Document) !bool {
 
         // Get Root from trailer
         const root_ref = switch (self.xref_table.trailer.get("Root") orelse return false) {
@@ -1117,7 +1166,10 @@ pub const Document = struct {
             else => return false,
         };
 
-        const catalog = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, root_ref, &self.object_cache, self.securityHandler()) catch return false;
+        const catalog = self.resolve(root_ref) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return false;
+        };
 
         const catalog_dict = switch (catalog) {
             .dict => |d| d,
@@ -1128,29 +1180,40 @@ pub const Document = struct {
     }
 
     /// Ensure reading order is parsed and cached (called once per document)
-    fn ensureReadingOrder(self: *Document) void {
+    fn ensureReadingOrder(self: *Document) !void {
         if (self.reading_order_parsed) return;
-        self.reading_order_parsed = true;
 
         const arena = self.parsing_arena.allocator();
 
         // Parse structure tree once
-        var tree = structtree.parseStructTree(arena, self.data, &self.xref_table, &self.object_cache) catch return;
+        var tree = structtree.parseStructTreeWithOptions(arena, self.data, &self.xref_table, &self.object_cache, .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options }) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            self.reading_order_parsed = true;
+            return;
+        };
         defer tree.deinit();
 
-        if (tree.root == null) return;
+        if (tree.root == null) {
+            self.reading_order_parsed = true;
+            return;
+        }
 
         // Build page index mapping (object number -> page index)
         var page_obj_to_idx = std.AutoHashMap(u32, usize).init(arena);
         for (self.pages.items, 0..) |p, idx| {
-            page_obj_to_idx.put(p.ref.num, idx) catch continue;
+            try page_obj_to_idx.put(p.ref.num, idx);
         }
 
         // Get reading order for all pages
-        var reading_order = tree.getReadingOrder(arena) catch return;
+        var reading_order = try tree.getReadingOrder(arena);
 
         // Build per-page reading order cache
         var cache = std.AutoHashMap(usize, std.ArrayList(structtree.MarkedContentRef)).init(self.allocator);
+        errdefer {
+            var values = cache.valueIterator();
+            while (values.next()) |value| value.deinit(self.allocator);
+            cache.deinit();
+        }
         var has_entries = false;
 
         var it = reading_order.iterator();
@@ -1158,11 +1221,11 @@ pub const Document = struct {
             const obj_num = entry.key_ptr.*;
             if (page_obj_to_idx.get(@intCast(obj_num))) |page_idx| {
                 var page_mcids = cache.getPtr(page_idx) orelse blk: {
-                    cache.put(page_idx, .empty) catch continue;
+                    try cache.put(page_idx, .empty);
                     break :blk cache.getPtr(page_idx).?;
                 };
                 for (entry.value_ptr.items) |mcr| {
-                    page_mcids.append(self.allocator, mcr) catch continue;
+                    try page_mcids.append(self.allocator, mcr);
                     has_entries = true;
                 }
             }
@@ -1174,6 +1237,7 @@ pub const Document = struct {
         } else {
             cache.deinit();
         }
+        self.reading_order_parsed = true;
     }
 
     /// Return the borrowed structure-tree MCID sequence for one page.
@@ -1183,8 +1247,12 @@ pub const Document = struct {
     /// adaptive layout can fall back to geometric evidence without changing
     /// extraction failure semantics.
     pub fn pageMarkedContentOrder(self: *Document, page_num: usize) ?[]const structtree.MarkedContentRef {
+        return self.pageMarkedContentOrderChecked(page_num) catch null;
+    }
+
+    pub fn pageMarkedContentOrderChecked(self: *Document, page_num: usize) !?[]const structtree.MarkedContentRef {
         if (page_num >= self.pages.items.len) return null;
-        self.ensureReadingOrder();
+        try self.ensureReadingOrder();
         if (self.cached_reading_order) |*cache| {
             if (cache.get(page_num)) |mcids| return mcids.items;
         }
@@ -1207,7 +1275,7 @@ pub const Document = struct {
         if (selection_metrics) |metrics| metrics.* = .{};
 
         // Ensure reading order is cached (done once per document)
-        self.ensureReadingOrder();
+        try self.ensureReadingOrder();
 
         const parse_allocator = self.parsing_arena.allocator();
         var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -1216,22 +1284,25 @@ pub const Document = struct {
         const page = self.pages.items[page_num];
 
         // Get content stream
-        const content = pagetree.getPageContentsWithSecurity(
+        const content = pagetree.getPageContentsWithOptions(
             parse_allocator,
             scratch_allocator,
             self.data,
             &self.xref_table,
             page,
             &self.object_cache,
-            self.securityHandler(),
-        ) catch return self.withPageFormFields(page_num, allocator, try allocator.alloc(u8, 0));
+            .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
+        ) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return self.withPageFormFields(page_num, allocator, try allocator.alloc(u8, 0));
+        };
 
         if (content.len == 0) {
             return self.withPageFormFields(page_num, allocator, try allocator.alloc(u8, 0));
         }
 
         // Lazy-load fonts for this page
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
 
         // Build the completeness oracle with page resources and recursive Form
         // XObject handling. Reading-order candidates may reorder this content,
@@ -1243,7 +1314,7 @@ pub const Document = struct {
             content,
             selection_metrics,
         ) catch |err| blk: {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             break :blk null;
         };
         errdefer if (full_context_text) |text| allocator.free(text);
@@ -1265,7 +1336,7 @@ pub const Document = struct {
                     var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
                     const context = self.contentContext(page_num, scratch_allocator, &traversal);
                     extractContentStreamContext(content, .{ .structured = &extractor }, &self.font_cache, page_num, scratch_allocator, &nw, &context) catch |err| {
-                        if (err == error.OutOfMemory) return err;
+                        if (decompress.isResourceError(err)) return err;
                         if (full_context_text) |inventory| {
                             full_context_text = null;
                             if (selection_metrics) |metrics| metrics.selected = .full_context;
@@ -1355,7 +1426,7 @@ pub const Document = struct {
 
         // Legacy fallback for domain errors in full-context extraction.
         const stream_text = self.extractTextStreamOrderFromContent(page_num, allocator, scratch_allocator, content) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             if (selection_metrics) |metrics| metrics.selected = .legacy_fallback;
             return self.extractTextGeometricFromContent(page_num, allocator, scratch_allocator, content);
         };
@@ -1421,7 +1492,7 @@ pub const Document = struct {
         const scratch_allocator = scratch_arena.allocator();
 
         const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return null;
         };
         return self.extractTextTableAwareFromContent(page_num, allocator, scratch_allocator, content);
@@ -1432,17 +1503,17 @@ pub const Document = struct {
         const page_width = page.media_box[2] - page.media_box[0];
 
         const spans = self.extractTextWithBoundsFromContent(page_num, scratch_allocator, scratch_allocator, content) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return null;
         };
         if (spans.len == 0) return null;
 
         const ruling_lines = self.getPageRulingLinesFromContent(page_num, scratch_allocator, scratch_allocator, content) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return null;
         };
         var page_layout = layout.analyzeLayoutWithRulings(scratch_allocator, spans, page_width, ruling_lines) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return null;
         };
         defer page_layout.deinit();
@@ -1463,7 +1534,7 @@ pub const Document = struct {
 
         const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
             // If bounds extraction fails, fall back to stream order
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return self.extractTextStreamOrder(page_num, allocator);
         };
         return self.extractTextGeometricFromContent(page_num, allocator, scratch_allocator, content);
@@ -1471,7 +1542,7 @@ pub const Document = struct {
 
     fn extractTextGeometricFromContent(self: *Document, page_num: usize, allocator: std.mem.Allocator, scratch_allocator: std.mem.Allocator, content: []const u8) ![]u8 {
         const spans = self.extractTextWithBoundsFromContent(page_num, scratch_allocator, scratch_allocator, content) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return self.extractTextStreamOrderFromContent(page_num, allocator, scratch_allocator, content);
         };
         if (spans.len == 0) {
@@ -1493,7 +1564,10 @@ pub const Document = struct {
         var scratch_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch_arena.deinit();
         const scratch_allocator = scratch_arena.allocator();
-        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch return output.toOwnedSlice(allocator);
+        const content = self.getPageContentForScratch(page_num, scratch_allocator) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return output.toOwnedSlice(allocator);
+        };
 
         try self.extractTextStreamOrderFromContentInto(page_num, scratch_allocator, content, runtime.arrayListWriter(&output, allocator));
         return output.toOwnedSlice(allocator);
@@ -1514,7 +1588,7 @@ pub const Document = struct {
     }
 
     fn extractTextStreamOrderFromContentInto(self: *Document, page_num: usize, scratch_allocator: std.mem.Allocator, content: []const u8, writer: anytype) !void {
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
         var traversal = form_scope.Traversal{ .page_index = @intCast(page_num) };
         const context = self.contentContext(page_num, scratch_allocator, &traversal);
         try extractContentStreamContext(content, .{ .stream = .{ .resources = context.resources, .ctx = &context } }, &self.font_cache, page_num, scratch_allocator, writer, &context);
@@ -1560,7 +1634,7 @@ pub const Document = struct {
             inventory,
             &quality,
         ) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (decompress.isResourceError(err)) return err;
             return inventory;
         };
 
@@ -1583,7 +1657,7 @@ pub const Document = struct {
         content: []const u8,
         selection_metrics: ?*StructuredSelectionMetrics,
     ) ![]u8 {
-        self.ensurePageFonts(page_num);
+        try self.ensurePageFonts(page_num);
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(allocator);
         try output.ensureTotalCapacity(allocator, 2048);
@@ -1600,6 +1674,7 @@ pub const Document = struct {
             .depth = 0,
             .security = self.securityHandler(),
             .selection_metrics = selection_metrics,
+            .decompress_options = self.error_config.decompress_options,
         };
         try extractTextFromContentFull(content, page.resources, &ctx, runtime.arrayListWriter(&output, allocator));
         return output.toOwnedSlice(allocator);
@@ -1638,7 +1713,7 @@ pub const Document = struct {
         if (num_pages == 0) return allocator.alloc(u8, 0);
 
         // Parse and cache structure tree once for the full document.
-        self.ensureReadingOrder();
+        try self.ensureReadingOrder();
 
         // Pre-load all fonts for smaller docs to reduce per-page overhead.
         // Untagged pages still flow through per-page structured extraction so
@@ -1646,7 +1721,7 @@ pub const Document = struct {
         // back to stream order.
         if (num_pages <= 100) {
             for (0..num_pages) |i| {
-                self.ensurePageFonts(i);
+                try self.ensurePageFonts(i);
             }
         }
 
@@ -1663,7 +1738,10 @@ pub const Document = struct {
                 defer scratch_arena.deinit();
                 const scratch_allocator = scratch_arena.allocator();
 
-                const page_text = self.extractTextStructured(page_num, scratch_allocator) catch continue;
+                const page_text = self.extractTextStructured(page_num, scratch_allocator) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    continue;
+                };
                 try result.appendSlice(allocator, page_text);
             }
         }
@@ -1678,7 +1756,10 @@ pub const Document = struct {
         try result.ensureTotalCapacity(allocator, self.pages.items.len * 2048);
         for (0..self.pages.items.len) |page_num| {
             if (page_num > 0) try result.append(allocator, '\x0c');
-            const page_text = self.extractTextRawRecall(page_num, allocator) catch continue;
+            const page_text = self.extractTextRawRecall(page_num, allocator) catch |err| {
+                if (decompress.isResourceError(err)) return err;
+                continue;
+            };
             defer allocator.free(page_text);
             try result.appendSlice(allocator, page_text);
         }
@@ -1693,7 +1774,7 @@ pub const Document = struct {
         // Pre-load fonts for smaller docs to reduce per-page overhead.
         if (num_pages <= 100) {
             for (0..num_pages) |i| {
-                self.ensurePageFonts(i);
+                try self.ensurePageFonts(i);
             }
         }
 
@@ -1711,15 +1792,18 @@ pub const Document = struct {
                 const scratch_allocator = scratch_arena.allocator();
 
                 const page = self.pages.items[page_num];
-                const content = pagetree.getPageContentsWithSecurity(
+                const content = pagetree.getPageContentsWithOptions(
                     parse_allocator,
                     scratch_allocator,
                     self.data,
                     &self.xref_table,
                     page,
                     &self.object_cache,
-                    self.securityHandler(),
-                ) catch continue;
+                    .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
+                ) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    continue;
+                };
 
                 if (content.len == 0) continue;
                 try self.extractTextStreamOrderFromContentInto(page_num, scratch_allocator, content, runtime.arrayListWriter(&result, allocator));
@@ -1814,7 +1898,10 @@ pub const Document = struct {
                 try result.appendSlice(allocator, "\n---\n\n");
             }
 
-            const page_md = self.extractMarkdownWithOptions(page_num, allocator, options) catch continue;
+            const page_md = self.extractMarkdownWithOptions(page_num, allocator, options) catch |err| {
+                if (decompress.isResourceError(err)) return err;
+                continue;
+            };
             defer allocator.free(page_md);
 
             try result.appendSlice(allocator, page_md);
@@ -1903,13 +1990,14 @@ pub const Document = struct {
 
     /// Extract the document outline (table of contents / bookmarks)
     pub fn getOutline(self: *Document, allocator: std.mem.Allocator) ![]OutlineItem {
-        return outline.parseOutline(
+        return outline.parseOutlineWithOptions(
             allocator,
             self.parsing_arena.allocator(),
             self.data,
             &self.xref_table,
             &self.object_cache,
             self.pages.items,
+            .{ .security = self.securityHandler(), .decompress_options = self.error_config.decompress_options },
         );
     }
 
@@ -1920,14 +2008,13 @@ pub const Document = struct {
     /// Get the display label for a page (e.g., "i", "ii", "1", "2", "A-1")
     /// Caller must free the returned slice.
     pub fn getPageLabel(self: *Document, allocator: std.mem.Allocator, page_idx: usize) ?[]u8 {
-        const arena = self.parsing_arena.allocator();
 
         // Get catalog
         const root_ref = switch (self.xref_table.trailer.get("Root") orelse return null) {
             .reference => |r| r,
             else => return null,
         };
-        const catalog = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, root_ref, &self.object_cache, self.securityHandler()) catch return null;
+        const catalog = self.resolve(root_ref) catch return null;
         const catalog_dict = switch (catalog) {
             .dict => |d| d,
             else => return null,
@@ -1938,7 +2025,7 @@ pub const Document = struct {
         const pl_dict = switch (pl_obj) {
             .dict => |d| d,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return null;
+                const obj = self.resolve(r) catch return null;
                 break :blk switch (obj) {
                     .dict => |d| d,
                     else => return null,
@@ -1953,7 +2040,7 @@ pub const Document = struct {
             break :blk switch (nums_obj) {
                 .array => |a| a,
                 .reference => |r| inner: {
-                    const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return null;
+                    const obj = self.resolve(r) catch return null;
                     break :inner switch (obj) {
                         .array => |a| a,
                         else => return null,
@@ -1979,7 +2066,7 @@ pub const Document = struct {
             const label_obj = switch (nums_arr[i + 1]) {
                 .dict => |d| d,
                 .reference => |r| inner: {
-                    const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch continue;
+                    const obj = self.resolve(r) catch continue;
                     break :inner switch (obj) {
                         .dict => |d| d,
                         else => continue,
@@ -2210,7 +2297,7 @@ pub const Document = struct {
             }
 
             const structured = self.extractTextStructured(page_idx, allocator) catch |err| blk: {
-                if (err == error.OutOfMemory) return err;
+                if (decompress.isResourceError(err)) return err;
                 try failures.append(allocator, .{
                     .page = page_idx,
                     .stage = .structured_text,
@@ -2242,7 +2329,7 @@ pub const Document = struct {
             defer scratch_arena.deinit();
             const scratch_allocator = scratch_arena.allocator();
             const content = self.getPageContentForScratch(page_idx, scratch_allocator) catch |err| {
-                if (err == error.OutOfMemory) return err;
+                if (decompress.isResourceError(err)) return err;
                 try failures.append(allocator, .{
                     .page = page_idx,
                     .stage = .page_content,
@@ -2264,7 +2351,7 @@ pub const Document = struct {
                 content,
                 null,
             ) catch |err| blk: {
-                if (err == error.OutOfMemory) return err;
+                if (decompress.isResourceError(err)) return err;
                 try failures.append(allocator, .{
                     .page = page_idx,
                     .stage = .full_context_text,
@@ -2298,7 +2385,7 @@ pub const Document = struct {
                 scratch_allocator,
                 content,
             ) catch |err| blk: {
-                if (err == error.OutOfMemory) return err;
+                if (decompress.isResourceError(err)) return err;
                 try failures.append(allocator, .{
                     .page = page_idx,
                     .stage = .native_geometry,
@@ -2322,7 +2409,7 @@ pub const Document = struct {
                     },
                     raw_or_empty,
                 ) catch |err| blk: {
-                    if (err == error.OutOfMemory) return err;
+                    if (decompress.isResourceError(err)) return err;
                     try failures.append(allocator, .{
                         .page = page_idx,
                         .stage = .native_layout,
@@ -2419,7 +2506,10 @@ pub const Document = struct {
         }
 
         for (0..self.pages.items.len) |page_idx| {
-            const page_text = self.extractTextStructured(page_idx, allocator) catch continue;
+            const page_text = self.extractTextStructured(page_idx, allocator) catch |err| {
+                if (decompress.isResourceError(err)) return err;
+                continue;
+            };
             defer allocator.free(page_text);
 
             if (page_text.len == 0) continue;
@@ -2878,7 +2968,6 @@ pub const Document = struct {
     pub fn getPageLinks(self: *Document, page_idx: usize, allocator: std.mem.Allocator) ![]Link {
         if (page_idx >= self.pages.items.len) return error.PageNotFound;
 
-        const arena = self.parsing_arena.allocator();
         const page = self.pages.items[page_idx];
 
         const annots_obj = page.dict.get("Annots") orelse return allocator.alloc(Link, 0);
@@ -2886,8 +2975,10 @@ pub const Document = struct {
         const annots_arr = switch (annots_obj) {
             .array => |a| a,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
                     return allocator.alloc(Link, 0);
+                };
                 break :blk switch (obj) {
                     .array => |a| a,
                     else => return allocator.alloc(Link, 0),
@@ -2908,7 +2999,10 @@ pub const Document = struct {
             const annot_dict = switch (annot_obj) {
                 .dict => |d| d,
                 .reference => |r| blk: {
-                    const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch continue;
+                    const obj = self.resolve(r) catch |err| {
+                        if (decompress.isResourceError(err)) return err;
+                        continue;
+                    };
                     break :blk switch (obj) {
                         .dict => |d| d,
                         else => continue,
@@ -2932,7 +3026,10 @@ pub const Document = struct {
                 const action = switch (action_obj) {
                     .dict => |d| d,
                     .reference => |r| blk: {
-                        const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch null;
+                        const obj = self.resolve(r) catch |err| inner: {
+                            if (decompress.isResourceError(err)) return err;
+                            break :inner null;
+                        };
                         break :blk if (obj) |o| switch (o) {
                             .dict => |d| d,
                             else => null,
@@ -2951,7 +3048,7 @@ pub const Document = struct {
                         } else if (std.mem.eql(u8, s, "GoTo")) {
                             // Internal link
                             if (act.get("D")) |d_obj| {
-                                dest_page = self.resolveDestToPage(d_obj);
+                                dest_page = try self.resolveDestToPage(d_obj);
                             }
                         }
                     }
@@ -2961,7 +3058,7 @@ pub const Document = struct {
             // Try /Dest if no /A
             if (uri == null and dest_page == null) {
                 if (annot_dict.get("Dest")) |dest_obj| {
-                    dest_page = self.resolveDestToPage(dest_obj);
+                    dest_page = try self.resolveDestToPage(dest_obj);
                 }
             }
 
@@ -3001,13 +3098,15 @@ pub const Document = struct {
         };
     }
 
-    fn resolveDestToPage(self: *Document, dest_obj: Object) ?usize {
-        const arena = self.parsing_arena.allocator();
+    fn resolveDestToPage(self: *Document, dest_obj: Object) !?usize {
         // Destination can be an array [page_ref /Fit ...] or a name (named dest)
         const arr = switch (dest_obj) {
             .array => |a| a,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return null;
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    return null;
+                };
                 break :blk switch (obj) {
                     .array => |a| a,
                     else => return null,
@@ -3428,7 +3527,10 @@ pub const Document = struct {
         defer scratch_arena.deinit();
         const scratch_allocator = scratch_arena.allocator();
 
-        const content = self.getPageContentForScratch(page_idx, scratch_allocator) catch return allocator.alloc(ImageInfo, 0);
+        const content = self.getPageContentForScratch(page_idx, scratch_allocator) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return allocator.alloc(ImageInfo, 0);
+        };
         return self.getPageImagesFromContent(page_idx, allocator, scratch_allocator, content);
     }
 
@@ -3465,7 +3567,7 @@ pub const Document = struct {
         while (!builder.stopped) {
             const token_start = lexer.pos;
             const token = (lexer.next() catch |err| {
-                if (err == error.OutOfMemory) return err;
+                if (decompress.isResourceError(err)) return err;
                 builder.unknown();
                 break;
             }) orelse break;
@@ -3487,7 +3589,7 @@ pub const Document = struct {
                 if (count != 1 or operands[0] != .name) {
                     builder.unknown();
                 } else self.collectVectorForm(operands[0].name, context, builder, collector.graphics) catch |err| {
-                    if (err == error.OutOfMemory) return err;
+                    if (decompress.isResourceError(err)) return err;
                     if (err == error.FormDepthLimitExceeded or err == error.FormInvocationLimitExceeded) builder.limited(true) else builder.unknown();
                 };
             } else try collector.consume(op, operands[0..count]);
@@ -3526,7 +3628,7 @@ pub const Document = struct {
         var arena = std.heap.ArenaAllocator.init(context.scratch_allocator);
         defer arena.deinit();
         const scratch = arena.allocator();
-        const content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
+        const content = try decompress.decompressStreamWithOptions(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"), context.decompress_options);
         var child = context.*;
         child.scratch_allocator = scratch;
         child.scope = scope;
@@ -3589,7 +3691,7 @@ pub const Document = struct {
                     ctm = paint_mod.concat(ctm, new);
                 } else if (std.mem.eql(u8, op, "Do") and operand_count >= 1 and operands[0] == .name) {
                     // Check if this XObject is an Image
-                    if (self.resolveXObjectImage(page, operands[0].name)) |img_info| {
+                    if (try self.resolveXObjectImage(page, operands[0].name)) |img_info| {
                         // Images paint a unit square; affine transforms can
                         // rotate, reflect or shear every corner independently.
                         const points = [_][2]f64{
@@ -3627,7 +3729,7 @@ pub const Document = struct {
                         var arena = std.heap.ArenaAllocator.init(scratch_allocator);
                         defer arena.deinit();
                         const scratch = arena.allocator();
-                        const form_content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
+                        const form_content = try decompress.decompressStreamWithOptions(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"), context.decompress_options);
                         var child = context.*;
                         child.scratch_allocator = scratch;
                         child.scope = scope;
@@ -3657,15 +3759,17 @@ pub const Document = struct {
 
     const XObjectImageInfo = struct { width: u32, height: u32 };
 
-    fn resolveXObjectImage(self: *Document, page: Page, name: []const u8) ?XObjectImageInfo {
-        const arena = self.parsing_arena.allocator();
+    fn resolveXObjectImage(self: *Document, page: Page, name: []const u8) !?XObjectImageInfo {
         const resources = page.resources orelse return null;
 
         const xobjects_obj = resources.get("XObject") orelse return null;
         const xobjects = switch (xobjects_obj) {
             .dict => |d| d,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return null;
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    return null;
+                };
                 break :blk switch (obj) {
                     .dict => |d| d,
                     else => return null,
@@ -3678,7 +3782,10 @@ pub const Document = struct {
         const xobj_stream = switch (xobj_obj) {
             .stream => |s| s,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return null;
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    return null;
+                };
                 break :blk switch (obj) {
                     .stream => |s| s,
                     else => return null,
@@ -3709,7 +3816,10 @@ pub const Document = struct {
         defer scratch_arena.deinit();
         const scratch_allocator = scratch_arena.allocator();
 
-        const content = self.getPageContentForScratch(page_idx, scratch_allocator) catch return allocator.alloc(specialists.RulingLine, 0);
+        const content = self.getPageContentForScratch(page_idx, scratch_allocator) catch |err| {
+            if (decompress.isResourceError(err)) return err;
+            return allocator.alloc(specialists.RulingLine, 0);
+        };
         return self.getPageRulingLinesFromContent(page_idx, allocator, scratch_allocator, content);
     }
 
@@ -3901,8 +4011,10 @@ pub const Document = struct {
             .reference => |r| r,
             else => return allocator.alloc(FormField, 0),
         };
-        const catalog = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, root_ref, &self.object_cache, self.securityHandler()) catch
+        const catalog = self.resolve(root_ref) catch |err| {
+            if (decompress.isResourceError(err)) return err;
             return allocator.alloc(FormField, 0);
+        };
         const catalog_dict = switch (catalog) {
             .dict => |d| d,
             else => return allocator.alloc(FormField, 0),
@@ -3913,8 +4025,10 @@ pub const Document = struct {
         const acroform = switch (acroform_obj) {
             .dict => |d| d,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
                     return allocator.alloc(FormField, 0);
+                };
                 break :blk switch (obj) {
                     .dict => |d| d,
                     else => return allocator.alloc(FormField, 0),
@@ -3928,8 +4042,10 @@ pub const Document = struct {
         const fields_arr = switch (fields_obj) {
             .array => |a| a,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
                     return allocator.alloc(FormField, 0);
+                };
                 break :blk switch (obj) {
                     .array => |a| a,
                     else => return allocator.alloc(FormField, 0),
@@ -3968,7 +4084,10 @@ pub const Document = struct {
         const field_dict = switch (field_obj) {
             .dict => |d| d,
             .reference => |r| blk: {
-                const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch return;
+                const obj = self.resolve(r) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
+                    return;
+                };
                 break :blk switch (obj) {
                     .dict => |d| d,
                     else => return,
@@ -3989,6 +4108,7 @@ pub const Document = struct {
             try allocator.dupe(u8, partial_name)
         else
             try allocator.dupe(u8, parent_name);
+        errdefer allocator.free(full_name);
 
         const effective_type = fieldTypeFromDict(field_dict) orelse inherited_type;
         const effective_value = fieldValueFromDict(field_dict) orelse inherited_value;
@@ -3998,7 +4118,8 @@ pub const Document = struct {
             const kids_arr = switch (kids_obj) {
                 .array => |a| a,
                 .reference => |r| blk: {
-                    const obj = pagetree.resolveRefWithSecurity(arena, self.data, &self.xref_table, r, &self.object_cache, self.securityHandler()) catch {
+                    const obj = self.resolve(r) catch |err| {
+                        if (decompress.isResourceError(err)) return err;
                         allocator.free(full_name);
                         return;
                     };
@@ -4038,6 +4159,7 @@ pub const Document = struct {
             try allocator.dupe(u8, v)
         else
             null;
+        errdefer if (value) |bytes| allocator.free(bytes);
 
         const rect = parseRect(field_dict);
 
@@ -4173,6 +4295,7 @@ const ExtractionContext = struct {
     page_num: usize,
     depth: u8, // Recursion depth for nested Form XObjects
     security: ?*const encryption.SecurityHandler,
+    decompress_options: decompress.Options = .{},
     selection_metrics: ?*StructuredSelectionMetrics = null,
     resources: ?Object.Dict = null,
     traversal: ?*form_scope.Traversal = null,
@@ -5306,7 +5429,7 @@ fn decodeActualTextOperand(allocator: std.mem.Allocator, operand: interpreter.Op
 
 fn resolveContextObject(ctx: *const ExtractionContext, object: Object) !Object {
     return switch (object) {
-        .reference => |reference| try pagetree.resolveRefWithSecurity(ctx.parse_allocator, ctx.data, ctx.xref_table, reference, @constCast(ctx.object_cache), ctx.security),
+        .reference => |reference| try pagetree.resolveRefWithOptions(ctx.parse_allocator, ctx.data, ctx.xref_table, reference, @constCast(ctx.object_cache), .{ .security = ctx.security, .decompress_options = ctx.decompress_options }),
         else => object,
     };
 }
@@ -5386,13 +5509,16 @@ fn loadFormFonts(allocator: std.mem.Allocator, ctx: *const ExtractionContext, re
             fn resolve(raw_ctx: *const anyopaque, object: Object) Object {
                 const resolver: *@This() = @ptrCast(@alignCast(@constCast(raw_ctx)));
                 return resolveContextObject(resolver.context, object) catch |err| {
-                    resolver.failure = err;
+                    if (resolver.failure == null or decompress.isResourceError(err)) resolver.failure = err;
                     return .{ .null = {} };
                 };
             }
         };
         var resolver = Resolver{ .context = ctx };
-        var font = try encoding.parseFontEncoding(allocator, dict, Resolver.resolve, &resolver);
+        var font = encoding.parseFontEncodingWithOptions(allocator, dict, Resolver.resolve, &resolver, ctx.decompress_options) catch |err| {
+            if (resolver.failure) |failure| if (decompress.isResourceError(failure)) return failure;
+            return err;
+        };
         if (resolver.failure) |err| {
             font.deinit();
             return err;
@@ -5424,7 +5550,7 @@ fn handleFormOperator(name: []const u8, maybe_ctx: ?*const ExtractionContext, mo
     var arena = std.heap.ArenaAllocator.init(ctx.scratch_allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    const content = try decompress.decompressStream(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"));
+    const content = try decompress.decompressStreamWithOptions(scratch, form.stream.data, form.stream.dict.get("Filter"), form.stream.dict.get("DecodeParms"), ctx.decompress_options);
     if (ctx.selection_metrics) |metrics| metrics.form_xobjects_decoded += 1;
     var child = ctx.*;
     child.scratch_allocator = scratch;
@@ -6171,7 +6297,7 @@ test "Form traversal invocation cap cannot publish extra placements" {
     defer doc.close();
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
-    doc.ensurePageFonts(0);
+    try doc.ensurePageFonts(0);
     const content = try doc.getPageContentForScratch(0, scratch.allocator());
     var traversal = form_scope.Traversal{ .page_index = 0, .max_invocations = 2 };
     const context = doc.contentContext(0, scratch.allocator(), &traversal);
@@ -6405,6 +6531,69 @@ test "image placement stack ownership is safe across every allocation failure" {
     const doc = try Document.openFromMemory(allocator, data, ErrorConfig.default());
     defer doc.close();
     try std.testing.checkAllAllocationFailures(allocator, imagePlacementAllocationProbe, .{doc});
+}
+
+test "public metadata and structure paths honor configured object stream caps" {
+    const allocator = std.testing.allocator;
+    const base = try @import("testpdf.zig").generateMinimalPdf(allocator, "cap control");
+    defer allocator.free(base);
+    const payload = "91 0 << /Type /StructTreeRoot /K [] /Fields [] /First null /X 92 0 R >>";
+    const object_stream = try std.fmt.allocPrint(allocator, "90 0 obj\n<< /Type /ObjStm /N 1 /First 5 /Length {d} >>\nstream\n{s}\nendstream\nendobj", .{ payload.len, payload });
+    defer allocator.free(object_stream);
+    for ([_]usize{ payload.len - 1, payload.len, payload.len + 1 }) |cap| {
+        var config = ErrorConfig.default();
+        config.decompress_options.max_output_bytes = cap;
+        const doc = try Document.openFromMemory(allocator, base, config);
+        defer doc.close();
+        // Keep a real parsed document/page, then isolate lazy metadata
+        // resolution in one independently bounded object stream.
+        doc.data = object_stream;
+        try doc.xref_table.entries.put(90, .{ .offset = 0, .gen_or_index = 0, .entry_type = .in_use });
+        try doc.xref_table.entries.put(91, .{ .offset = 90, .gen_or_index = 0, .entry_type = .compressed });
+        var image_entries = [_]Object.Dict.Entry{
+            .{ .key = "Subtype", .value = .{ .name = "Image" } },
+            .{ .key = "Width", .value = .{ .integer = 1 } },
+            .{ .key = "Height", .value = .{ .integer = 1 } },
+        };
+        try doc.object_cache.put(92, .{ .stream = .{ .dict = .{ .entries = &image_entries }, .data = "" } });
+        var catalog = [_]Object.Dict.Entry{
+            .{ .key = "AcroForm", .value = .{ .reference = .{ .num = 91, .gen = 0 } } },
+            .{ .key = "Outlines", .value = .{ .reference = .{ .num = 91, .gen = 0 } } },
+            .{ .key = "StructTreeRoot", .value = .{ .reference = .{ .num = 91, .gen = 0 } } },
+        };
+        try doc.object_cache.put(1, .{ .dict = .{ .entries = &catalog } });
+        var resources = [_]Object.Dict.Entry{.{ .key = "XObject", .value = .{ .reference = .{ .num = 91, .gen = 0 } } }};
+        doc.pages.items[0].resources = .{ .entries = &resources };
+        if (cap < payload.len) {
+            try std.testing.expectError(error.OutputTooLarge, doc.getFormFields(allocator));
+            try std.testing.expectError(error.OutputTooLarge, doc.getOutline(allocator));
+            try std.testing.expectError(error.OutputTooLarge, doc.pageMarkedContentOrderChecked(0));
+            try std.testing.expectError(error.OutputTooLarge, doc.getPageImagesFromContent(0, allocator, allocator, "/X Do"));
+            try std.testing.expect(!doc.object_cache.contains(91));
+            try std.testing.expect(!doc.reading_order_parsed);
+            // A refusal after allocating the parent's name must also unwind
+            // field-walk ownership, rather than leaking the partial prefix.
+            var parent_entries = [_]Object.Dict.Entry{
+                .{ .key = "T", .value = .{ .string = "parent" } },
+                .{ .key = "Kids", .value = .{ .reference = .{ .num = 91, .gen = 0 } } },
+            };
+            var field_items = [_]Object{.{ .dict = .{ .entries = &parent_entries } }};
+            var acroform = [_]Object.Dict.Entry{.{ .key = "Fields", .value = .{ .array = &field_items } }};
+            catalog[0].value = .{ .dict = .{ .entries = &acroform } };
+            try std.testing.expectError(error.OutputTooLarge, doc.getFormFields(allocator));
+        } else {
+            const fields = try doc.getFormFields(allocator);
+            defer Document.freeFormFields(allocator, fields);
+            try std.testing.expectEqual(@as(usize, 0), fields.len);
+            const items = try doc.getOutline(allocator);
+            defer outline.freeOutline(allocator, items);
+            try std.testing.expectEqual(@as(usize, 0), items.len);
+            try std.testing.expect(try doc.pageMarkedContentOrderChecked(0) == null);
+            const images = try doc.getPageImagesFromContent(0, allocator, allocator, "/X Do");
+            defer Document.freeImages(allocator, images);
+            try std.testing.expectEqual(@as(usize, 1), images.len);
+        }
+    }
 }
 
 test "page marked content order exposes borrowed structure sequence" {

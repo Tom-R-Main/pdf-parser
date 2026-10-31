@@ -10,6 +10,7 @@ const parser = @import("parser.zig");
 const xref_mod = @import("xref.zig");
 const encryption = @import("encryption.zig");
 const structural = @import("structural.zig");
+const decompress = @import("decompress.zig");
 
 const Object = parser.Object;
 const ObjRef = parser.ObjRef;
@@ -40,6 +41,7 @@ pub const PageTreeError = error{
     InvalidPageObject,
     CircularReference,
     OutOfMemory,
+    OutputTooLarge,
 };
 
 pub const BuildOptions = struct {
@@ -47,6 +49,7 @@ pub const BuildOptions = struct {
     diagnostics: ?*std.ArrayList(structural.Diagnostic) = null,
     diagnostic_allocator: ?std.mem.Allocator = null,
     recover: bool = true,
+    decompress_options: decompress.Options = .{},
 };
 
 /// Resolve object reference using XRef table
@@ -119,7 +122,8 @@ pub fn resolveRefWithOptions(
                 .diagnostics = options.diagnostics,
                 .diagnostic_allocator = options.diagnostic_allocator,
             });
-            const indirect = p.parseIndirectObject() catch {
+            const indirect = p.parseIndirectObject() catch |err| {
+                if (err == error.OutOfMemory) return err;
                 emit(allocator, options, .{
                     .code = .missing_object,
                     .severity = .warning,
@@ -132,7 +136,10 @@ pub fn resolveRefWithOptions(
                 return Object{ .null = {} };
             };
             const object = if (options.security) |handler|
-                handler.decryptObject(allocator, .{ .num = indirect.num, .gen = indirect.gen }, indirect.obj) catch return Object{ .null = {} }
+                handler.decryptObject(allocator, .{ .num = indirect.num, .gen = indirect.gen }, indirect.obj) catch |err| blk: {
+                    if (err == error.OutOfMemory) return err;
+                    break :blk Object{ .null = {} };
+                }
             else
                 indirect.obj;
 
@@ -179,13 +186,17 @@ fn resolveCompressedObject(
         .diagnostics = options.diagnostics,
         .diagnostic_allocator = options.diagnostic_allocator,
     });
-    const indirect = p.parseIndirectObject() catch {
+    const indirect = p.parseIndirectObject() catch |err| {
+        if (err == error.OutOfMemory) return err;
         emit(allocator, options, objectStreamDiagnostic(objstm_num, objstm_entry.offset, "Failed to parse object stream object"));
         return Object{ .null = {} };
     };
 
     const objstm_obj = if (options.security) |handler|
-        handler.decryptObject(allocator, .{ .num = indirect.num, .gen = indirect.gen }, indirect.obj) catch return Object{ .null = {} }
+        handler.decryptObject(allocator, .{ .num = indirect.num, .gen = indirect.gen }, indirect.obj) catch |err| blk: {
+            if (err == error.OutOfMemory) return err;
+            break :blk Object{ .null = {} };
+        }
     else
         indirect.obj;
 
@@ -198,13 +209,14 @@ fn resolveCompressedObject(
     };
 
     // Decompress stream (arena-allocated, no need to free)
-    const decompress = @import("decompress.zig");
-    const decoded = decompress.decompressStream(
+    const decoded = decompress.decompressStreamWithOptions(
         allocator,
         stream.data,
         stream.dict.get("Filter"),
         stream.dict.get("DecodeParms"),
-    ) catch {
+        options.decompress_options,
+    ) catch |err| {
+        if (decompress.isResourceError(err)) return err;
         emit(allocator, options, objectStreamDiagnostic(objstm_num, objstm_entry.offset, "Failed to decompress object stream"));
         return Object{ .null = {} };
     };
@@ -231,7 +243,8 @@ fn resolveCompressedObject(
 
     var i: i64 = 0;
     while (i < n) : (i += 1) {
-        const obj = header_parser.parseObject() catch {
+        const obj = header_parser.parseObject() catch |err| {
+            if (err == error.OutOfMemory) return err;
             emit(allocator, options, objectStreamDiagnostic(objstm_num, objstm_entry.offset, "Object stream header ended early"));
             break;
         };
@@ -243,7 +256,8 @@ fn resolveCompressedObject(
             else => break,
         };
 
-        const offset_obj = header_parser.parseObject() catch {
+        const offset_obj = header_parser.parseObject() catch |err| {
+            if (err == error.OutOfMemory) return err;
             emit(allocator, options, objectStreamDiagnostic(objstm_num, objstm_entry.offset, "Object stream header offset ended early"));
             break;
         };
@@ -277,7 +291,8 @@ fn resolveCompressedObject(
     }
 
     var obj_parser = parser.Parser.initAt(allocator, decoded, obj_offset + rel_offset_usize);
-    const result = obj_parser.parseObject() catch {
+    const result = obj_parser.parseObject() catch |err| {
+        if (err == error.OutOfMemory) return err;
         emit(allocator, options, objectStreamDiagnostic(objstm_num, objstm_entry.offset, "Failed to parse compressed object"));
         return Object{ .null = {} };
     };
@@ -320,8 +335,11 @@ pub fn buildPageTreeWithOptions(
     };
 
     // Resolve catalog
-    const catalog = resolveRefWithOptions(allocator, data, xref, root_ref, &resolved_cache, options) catch
+    const catalog = resolveRefWithOptions(allocator, data, xref, root_ref, &resolved_cache, options) catch |err| {
+        if (err == error.OutputTooLarge) return error.OutputTooLarge;
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         return PageTreeError.CatalogNotFound;
+    };
 
     const catalog_dict = switch (catalog) {
         .dict => |d| d,
@@ -397,8 +415,11 @@ fn walkPageTree(
     defer _ = visited.remove(node_ref.num);
 
     // Resolve node
-    const node = resolveRefWithOptions(allocator, data, xref, node_ref, cache, options) catch
+    const node = resolveRefWithOptions(allocator, data, xref, node_ref, cache, options) catch |err| {
+        if (err == error.OutputTooLarge) return error.OutputTooLarge;
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         return PageTreeError.InvalidPageTree;
+    };
 
     const dict = switch (node) {
         .dict => |d| d,
@@ -439,7 +460,11 @@ fn walkPageTree(
     var resources = inherited_resources;
     if (dict.get("Resources")) |res_obj| {
         const resolved = switch (res_obj) {
-            .reference => |r| resolveRefWithOptions(allocator, data, xref, r, cache, options) catch res_obj,
+            .reference => |r| resolveRefWithOptions(allocator, data, xref, r, cache, options) catch |err| blk: {
+                if (err == error.OutputTooLarge) return error.OutputTooLarge;
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                break :blk res_obj;
+            },
             else => res_obj,
         };
         if (resolved == .dict) {
@@ -452,7 +477,11 @@ fn walkPageTree(
         const kids = blk: {
             const kids_obj = dict.get("Kids") orelse break :blk null;
             const resolved = switch (kids_obj) {
-                .reference => |ref| resolveRefWithOptions(allocator, data, xref, ref, cache, options) catch break :blk null,
+                .reference => |ref| resolveRefWithOptions(allocator, data, xref, ref, cache, options) catch |err| {
+                    if (err == error.OutputTooLarge) return error.OutputTooLarge;
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    break :blk null;
+                },
                 else => kids_obj,
             };
             break :blk switch (resolved) {
@@ -515,6 +544,7 @@ fn walkPageTree(
                 rotation,
                 resources,
             ) catch |err| {
+                if (decompress.isResourceError(err)) return err;
                 emit(allocator, options, .{
                     .code = .page_tree_recovered_child,
                     .severity = if (options.recover) .warning else .error_,
@@ -557,7 +587,10 @@ fn leafUserUnit(
     while (value == .reference) {
         if (remaining == 0) return std.math.nan(f64);
         remaining -= 1;
-        value = resolveRefWithOptions(allocator, data, xref, value.reference, cache, options) catch return error.OutOfMemory;
+        value = resolveRefWithOptions(allocator, data, xref, value.reference, cache, options) catch |err| {
+            if (err == error.OutputTooLarge) return error.OutputTooLarge;
+            return error.OutOfMemory;
+        };
     }
     const number: f64 = switch (value) {
         .integer => |integer| @floatFromInt(integer),
@@ -624,9 +657,21 @@ pub fn getPageContentsWithSecurity(
     cache: *std.AutoHashMap(u32, Object),
     security: ?*const encryption.SecurityHandler,
 ) ![]const u8 {
+    return getPageContentsWithOptions(parse_allocator, scratch_allocator, data, xref, page, cache, .{ .security = security });
+}
+
+pub fn getPageContentsWithOptions(
+    parse_allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
+    data: []const u8,
+    xref: *const XRefTable,
+    page: Page,
+    cache: *std.AutoHashMap(u32, Object),
+    options: BuildOptions,
+) ![]const u8 {
     const contents = page.dict.get("Contents") orelse return &[_]u8{};
 
-    return getStreamData(parse_allocator, scratch_allocator, data, xref, contents, cache, security);
+    return getStreamData(parse_allocator, scratch_allocator, data, xref, contents, cache, options);
 }
 
 fn getStreamData(
@@ -636,21 +681,24 @@ fn getStreamData(
     xref: *const XRefTable,
     obj: Object,
     cache: *std.AutoHashMap(u32, Object),
-    security: ?*const encryption.SecurityHandler,
+    options: BuildOptions,
 ) ![]const u8 {
     switch (obj) {
         .reference => |ref| {
-            const resolved = try resolveRefWithSecurity(parse_allocator, data, xref, ref, cache, security);
-            return getStreamData(parse_allocator, scratch_allocator, data, xref, resolved, cache, security);
+            const resolved = try resolveRefWithOptions(parse_allocator, data, xref, ref, cache, options);
+            return getStreamData(parse_allocator, scratch_allocator, data, xref, resolved, cache, options);
         },
         .stream => |s| {
-            const decompress = @import("decompress.zig");
-            return decompress.decompressStream(
+            return decompress.decompressStreamWithOptions(
                 scratch_allocator,
                 s.data,
                 s.dict.get("Filter"),
                 s.dict.get("DecodeParms"),
-            ) catch return s.data;
+                options.decompress_options,
+            ) catch |err| {
+                if (decompress.isResourceError(err)) return err;
+                return s.data;
+            };
         },
         .array => |arr| {
             // Concatenate multiple content streams
@@ -658,7 +706,7 @@ fn getStreamData(
             errdefer result.deinit(scratch_allocator);
 
             for (arr) |item| {
-                const stream_data = try getStreamData(parse_allocator, scratch_allocator, data, xref, item, cache, security);
+                const stream_data = try getStreamData(parse_allocator, scratch_allocator, data, xref, item, cache, options);
                 // stream_data is arena-allocated, no need to free
                 try result.appendSlice(scratch_allocator, stream_data);
                 try result.append(scratch_allocator, '\n'); // Separate streams
@@ -673,6 +721,52 @@ fn getStreamData(
 // ============================================================================
 // TESTS
 // ============================================================================
+
+test "content stream recovery preserves resource refusals and malformed fallback" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    var entries = [_]Object.Dict.Entry{.{ .key = "Filter", .value = .{ .name = "RunLengthDecode" } }};
+    const object: Object = .{ .stream = .{ .dict = .{ .entries = &entries }, .data = &.{ 129, 'X', 128 } } };
+    for ([_]bool{ true, false }) |recover| {
+        try std.testing.expectError(error.OutputTooLarge, getStreamData(arena.allocator(), arena.allocator(), "", &xref, object, &cache, .{
+            .recover = recover,
+            .decompress_options = .{ .max_output_bytes = 127 },
+        }));
+    }
+    const exact = try getStreamData(arena.allocator(), arena.allocator(), "", &xref, object, &cache, .{ .decompress_options = .{ .max_output_bytes = 128 } });
+    try std.testing.expectEqual(@as(usize, 128), exact.len);
+    entries[0].value = .{ .name = "UnsupportedMalformedFilter" };
+    const recovered = try getStreamData(arena.allocator(), arena.allocator(), "", &xref, object, &cache, .{});
+    try std.testing.expectEqualSlices(u8, object.stream.data, recovered);
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    entries[0].value = .{ .name = "RunLengthDecode" };
+    try std.testing.expectError(error.OutOfMemory, getStreamData(arena.allocator(), failing.allocator(), "", &xref, object, &cache, .{}));
+}
+
+test "object stream cap survives null and page tree recovery" {
+    const data = "2 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Length 6 >>\nstream\n3 0 42\nendstream\nendobj\n";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var xref = XRefTable.init(std.testing.allocator);
+    defer xref.deinit();
+    try xref.entries.put(2, .{ .offset = 0, .gen_or_index = 0, .entry_type = .in_use });
+    try xref.entries.put(3, .{ .offset = 2, .gen_or_index = 0, .entry_type = .compressed });
+    var trailer = [_]Object.Dict.Entry{.{ .key = "Root", .value = .{ .reference = .{ .num = 3, .gen = 0 } } }};
+    xref.trailer = .{ .entries = &trailer };
+    var cache = std.AutoHashMap(u32, Object).init(std.testing.allocator);
+    defer cache.deinit();
+    const options: BuildOptions = .{ .decompress_options = .{ .max_output_bytes = 5 } };
+    try std.testing.expectError(error.OutputTooLarge, resolveRefWithOptions(arena.allocator(), data, &xref, .{ .num = 3, .gen = 0 }, &cache, options));
+    try std.testing.expect(!cache.contains(3));
+    try std.testing.expectError(error.OutputTooLarge, buildPageTreeWithOptions(arena.allocator(), data, &xref, options));
+    const resolved = try resolveRefWithOptions(arena.allocator(), data, &xref, .{ .num = 3, .gen = 0 }, &cache, .{ .decompress_options = .{ .max_output_bytes = 6 } });
+    try std.testing.expectEqual(@as(i64, 42), resolved.integer);
+}
 
 test "page tree traversal has a fixed recursion limit" {
     try std.testing.expect(pageTreeDepthAllowed(MAX_PAGE_TREE_DEPTH - 1));

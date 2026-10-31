@@ -142,6 +142,7 @@ pub const GlyphWidths = struct {
 
 /// Font encoding for character code to Unicode mapping
 pub const FontEncoding = struct {
+    decompress_options: decompress.Options = .{},
     /// Independent mapping stages. Do not infer Unicode from a CID or GID.
     simple_encoding: font_mapping.SimpleEncoding,
     code_cmap: CodeToCidMap,
@@ -484,7 +485,18 @@ pub fn parseFontEncoding(
     resolve_fn: *const fn (ctx: *const anyopaque, Object) Object,
     resolve_ctx: *const anyopaque,
 ) !FontEncoding {
+    return parseFontEncodingWithOptions(allocator, font_dict, resolve_fn, resolve_ctx, .{});
+}
+
+pub fn parseFontEncodingWithOptions(
+    allocator: std.mem.Allocator,
+    font_dict: Object.Dict,
+    resolve_fn: *const fn (ctx: *const anyopaque, Object) Object,
+    resolve_ctx: *const anyopaque,
+    decompress_options: decompress.Options,
+) !FontEncoding {
     var encoding = FontEncoding.init(allocator);
+    encoding.decompress_options = decompress_options;
     errdefer encoding.deinit();
     var parsed_tounicode = false;
 
@@ -659,12 +671,16 @@ fn parseFontDescriptor(font_dict: Object.Dict, resolve_fn: *const fn (ctx: *cons
         const resolved_font_file = resolve_fn(resolve_ctx, font_file_obj);
         if (resolved_font_file == .stream) {
             const stream = resolved_font_file.stream;
-            const data = decompress.decompressStream(
+            const data = decompress.decompressStreamWithOptions(
                 encoding.allocator,
                 stream.data,
                 stream.dict.get("Filter"),
                 stream.dict.get("DecodeParms"),
-            ) catch null;
+                encoding.decompress_options,
+            ) catch |err| blk: {
+                if (decompress.isResourceError(err)) return err;
+                break :blk null;
+            };
             if (data) |font_data| {
                 defer encoding.allocator.free(font_data);
                 if (encoding.embedded_font == null) encoding.embedded_font = EmbeddedFontMap.init(encoding.allocator);
@@ -681,12 +697,16 @@ fn parseFontDescriptor(font_dict: Object.Dict, resolve_fn: *const fn (ctx: *cons
             const subtype = stream.dict.getName("Subtype");
             if (subtype) |st| {
                 if (std.mem.eql(u8, st, "Type1C") or std.mem.eql(u8, st, "CIDFontType0C")) {
-                    const data = decompress.decompressStream(
+                    const data = decompress.decompressStreamWithOptions(
                         encoding.allocator,
                         stream.data,
                         stream.dict.get("Filter"),
                         stream.dict.get("DecodeParms"),
-                    ) catch null;
+                        encoding.decompress_options,
+                    ) catch |err| blk: {
+                        if (decompress.isResourceError(err)) return err;
+                        break :blk null;
+                    };
 
                     if (data) |d| {
                         if (encoding.embedded_font == null) encoding.embedded_font = EmbeddedFontMap.init(encoding.allocator);
@@ -694,12 +714,16 @@ fn parseFontDescriptor(font_dict: Object.Dict, resolve_fn: *const fn (ctx: *cons
                         encoding.embedded_font.?.loadCff(d, kind);
                     }
                 } else if (std.mem.eql(u8, st, "OpenType")) {
-                    const data = decompress.decompressStream(
+                    const data = decompress.decompressStreamWithOptions(
                         encoding.allocator,
                         stream.data,
                         stream.dict.get("Filter"),
                         stream.dict.get("DecodeParms"),
-                    ) catch null;
+                        encoding.decompress_options,
+                    ) catch |err| blk: {
+                        if (decompress.isResourceError(err)) return err;
+                        break :blk null;
+                    };
                     if (data) |font_data| {
                         defer encoding.allocator.free(font_data);
                         if (encoding.embedded_font == null) encoding.embedded_font = EmbeddedFontMap.init(encoding.allocator);
@@ -826,12 +850,16 @@ fn parseType3CharProcMetrics(
             if (resolved != .stream) continue;
 
             var fixed = std.heap.FixedBufferAllocator.init(scratch);
-            const data = decompress.decompressStream(
+            const data = decompress.decompressStreamWithOptions(
                 fixed.allocator(),
                 resolved.stream.data,
                 resolved.stream.dict.get("Filter"),
                 resolved.stream.dict.get("DecodeParms"),
-            ) catch {
+                encoding.decompress_options,
+            ) catch |err| {
+                // This local fixed-buffer allocator intentionally bounds
+                // best-effort metric discovery; it is not a parent OOM.
+                if (err == error.OutputTooLarge) return err;
                 decode_failures += 1;
                 if (decode_failures >= max_type3_charproc_decode_failures) break;
                 continue;
@@ -1299,12 +1327,16 @@ fn parseCIDToGIDMap(allocator: std.mem.Allocator, cid_font: Object.Dict, resolve
         },
         .stream => |stream| {
             // Parse the stream - each entry is a 2-byte big-endian GID
-            const data = decompress.decompressStream(
+            const data = decompress.decompressStreamWithOptions(
                 allocator,
                 stream.data,
                 stream.dict.get("Filter"),
                 stream.dict.get("DecodeParms"),
-            ) catch return;
+                encoding.decompress_options,
+            ) catch |err| {
+                if (decompress.isResourceError(err)) return err;
+                return;
+            };
 
             // Convert to u16 array
             const num_entries = data.len / 2;
@@ -1467,12 +1499,16 @@ pub fn applyDifferences(encoding: *FontEncoding, diffs: []Object) !void {
 /// Parse ToUnicode CMap stream
 pub fn parseToUnicodeCMap(allocator: std.mem.Allocator, stream: Object.Stream, encoding: *FontEncoding) !void {
     // Decompress stream
-    const data = decompress.decompressStream(
+    const data = decompress.decompressStreamWithOptions(
         allocator,
         stream.data,
         stream.dict.get("Filter"),
         stream.dict.get("DecodeParms"),
-    ) catch return;
+        encoding.decompress_options,
+    ) catch |err| {
+        if (decompress.isResourceError(err)) return err;
+        return;
+    };
     defer allocator.free(data);
 
     encoding.to_unicode.explicit = true;
@@ -1550,12 +1586,16 @@ pub fn parseToUnicodeCMap(allocator: std.mem.Allocator, stream: Object.Stream, e
 /// Parse a Type0 /Encoding CMap. This grammar is deliberately independent
 /// from ToUnicode: its destinations are CIDs, never Unicode scalar values.
 pub fn parseEncodingCMap(allocator: std.mem.Allocator, stream: Object.Stream, encoding: *FontEncoding) !void {
-    const data = decompress.decompressStream(
+    const data = decompress.decompressStreamWithOptions(
         allocator,
         stream.data,
         stream.dict.get("Filter"),
         stream.dict.get("DecodeParms"),
-    ) catch return;
+        encoding.decompress_options,
+    ) catch |err| {
+        if (decompress.isResourceError(err)) return err;
+        return;
+    };
     defer allocator.free(data);
 
     if (findCMapName(data)) |name| try encoding.code_cmap.setName(name);
@@ -2998,6 +3038,51 @@ test "Type3 CharProc d1 metrics override declared width and preserve bbox" {
     for ([4]f64{ 10, -20, 500, 700 }, metric.bbox.?) |expected, actual| {
         try std.testing.expectApproxEqAbs(expected, actual, 0.0001);
     }
+}
+
+test "font streams preserve decoder limits while malformed CMaps retain fallback" {
+    const allocator = std.testing.allocator;
+    var encoding = FontEncoding.init(allocator);
+    defer encoding.deinit();
+    encoding.decompress_options = .{ .max_output_bytes = 1 };
+    const stream: Object.Stream = .{ .dict = .{ .entries = &.{} }, .data = "AB" };
+    try std.testing.expectError(error.OutputTooLarge, parseToUnicodeCMap(allocator, stream, &encoding));
+    try std.testing.expectError(error.OutputTooLarge, parseEncodingCMap(allocator, stream, &encoding));
+    var malformed_entries = [_]Object.Dict.Entry{.{ .key = "Filter", .value = .{ .name = "UnsupportedFilter" } }};
+    const malformed: Object.Stream = .{ .dict = .{ .entries = &malformed_entries }, .data = "AB" };
+    try parseToUnicodeCMap(allocator, malformed, &encoding);
+    try std.testing.expect(!encoding.to_unicode.explicit);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    encoding.decompress_options = .{};
+    try std.testing.expectError(error.OutOfMemory, parseToUnicodeCMap(failing.allocator(), stream, &encoding));
+
+    var descriptor = [_]Object.Dict.Entry{.{ .key = "FontFile2", .value = .{ .stream = stream } }};
+    var font_entries = [_]Object.Dict.Entry{.{ .key = "FontDescriptor", .value = .{ .dict = .{ .entries = &descriptor } } }};
+    try std.testing.expectError(error.OutputTooLarge, parseFontEncodingWithOptions(allocator, .{ .entries = &font_entries }, resolveEncodingTestObject, undefined, .{ .max_output_bytes = 1 }));
+}
+
+test "Type3 explicit decoded cap differs from best effort scratch exhaustion" {
+    const allocator = std.testing.allocator;
+    var charprocs = [_]Object.Dict.Entry{.{ .key = "A", .value = .{ .stream = .{
+        .dict = .{ .entries = &.{} },
+        .data = "600 0 d0",
+    } } }};
+    var entries = [_]Object.Dict.Entry{
+        .{ .key = "Subtype", .value = .{ .name = "Type3" } },
+        .{ .key = "CharProcs", .value = .{ .dict = .{ .entries = &charprocs } } },
+    };
+    try std.testing.expectError(error.OutputTooLarge, parseFontEncodingWithOptions(allocator, .{ .entries = &entries }, resolveEncodingTestObject, undefined, .{ .max_output_bytes = 3 }));
+    var exact = try parseFontEncodingWithOptions(allocator, .{ .entries = &entries }, resolveEncodingTestObject, undefined, .{ .max_output_bytes = 8 });
+    defer exact.deinit();
+    try std.testing.expectEqual(@as(f64, 600), exact.widths.getWidth('A'));
+
+    const oversized = try allocator.alloc(u8, max_type3_charproc_scratch_bytes + 1);
+    defer allocator.free(oversized);
+    @memset(oversized, ' ');
+    charprocs[0].value.stream.data = oversized;
+    var best_effort = try parseFontEncodingWithOptions(allocator, .{ .entries = &entries }, resolveEncodingTestObject, undefined, .{ .max_output_bytes = oversized.len });
+    defer best_effort.deinit();
+    try std.testing.expectEqual(@as(usize, 0), best_effort.type3_charproc_metrics.count());
 }
 
 test "Type3 Differences names prevent Unicode alias metric overwrite" {

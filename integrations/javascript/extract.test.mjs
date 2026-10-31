@@ -102,6 +102,88 @@ function coordinateFixture() {
   return records;
 }
 
+function hierarchyFixture() {
+  const records = coordinateFixture();
+  for (const record of records) record.schema_version = '0.20.0';
+  for (const span of records.filter(record => record.record_type === 'span')) span.glyph_geometry = [];
+  records[1].glyph_geometry = [
+    { text_start_byte: 0, text_end_byte: 1, precision: 'glyph', bbox: { ...bbox }, quad: [[10, 20], [60, 20], [60, 30], [10, 30]] },
+    { text_start_byte: 2, text_end_byte: 6, precision: 'replacement_group', bbox: { ...bbox }, quad: null },
+  ];
+  records[3].section = { heading_level: 1, signal: 'bookmark', section_id: 'block-0', parent_section_id: null, ancestry: ['block-0'] };
+  records[4].section = { heading_level: 2, signal: 'numbering', section_id: 'block-1', parent_section_id: 'block-0', ancestry: ['block-0', 'block-1'] };
+  records[5].section_ids = ['block-0', 'block-1'];
+  records[7].vector_evidence = null;
+  return records;
+}
+
+test('0.20 retains exact Unicode source text with glyph groups and multiple chunk sections', () => {
+  const document = parse(hierarchyFixture());
+  assert.equal(document.sourceText, parse(coordinateFixture()).sourceText);
+  assert.deepEqual(document.spans[0].glyph_geometry[1], {
+    text_start_byte: 2, text_end_byte: 6, precision: 'replacement_group', bbox, quad: null,
+  });
+  assert.deepEqual(document.blocks[1].section.ancestry, ['block-0', 'block-1']);
+  assert.deepEqual(document.chunks[0].section_ids, ['block-0', 'block-1']);
+});
+
+test('0.20 accepts explicit unknown sections and disabled optional geometry as empty arrays', () => {
+  const records = hierarchyFixture();
+  for (const span of records.filter(record => record.record_type === 'span')) span.glyph_geometry = [];
+  for (const block of records.filter(record => record.record_type === 'block')) block.section = {
+    heading_level: null, signal: null, section_id: null, parent_section_id: null, ancestry: [],
+  };
+  records[5].section_ids = [];
+  assert.equal(parse(records).blocks[1].section.section_id, null);
+});
+
+test('0.20 resolves previous-page section owners after indexing the full document', () => {
+  const records = hierarchyFixture();
+  records[0].page_count = 2;
+  records[2].page_index = records[2].content_scope.page_index = records[4].page_index = 1;
+  records[5].page_end = 1;
+  records[4].section = { heading_level: null, signal: null, section_id: 'block-0', parent_section_id: null, ancestry: ['block-0'] };
+  records[5].section_ids = ['block-0'];
+  assert.equal(parse(records).blocks[1].section.section_id, 'block-0');
+});
+
+for (const [name, change] of [
+  ['missing glyph array', r => { delete r[1].glyph_geometry; }],
+  ['nonboundary glyph start', r => { r[1].glyph_geometry[1].text_start_byte = 3; }],
+  ['nonboundary glyph end', r => { r[1].glyph_geometry[1].text_end_byte = 5; }],
+  ['out of range glyph end', r => { r[1].glyph_geometry[1].text_end_byte = 100; }],
+  ['empty glyph range', r => { r[1].glyph_geometry[1].text_end_byte = 2; }],
+  ['overlapping glyph ranges', r => { r[1].glyph_geometry[1].text_start_byte = 0; }],
+  ['unordered glyph ranges', r => { r[1].glyph_geometry.reverse(); }],
+  ['unknown glyph precision', r => { r[1].glyph_geometry[0].precision = 'model_guess'; }],
+  ['nonfinite glyph bbox', r => { r[1].glyph_geometry[0].bbox.x0 = Infinity; }],
+  ['inverted glyph bbox', r => { r[1].glyph_geometry[0].bbox.x0 = 100; }],
+  ['malformed glyph quad', r => { r[1].glyph_geometry[0].quad.pop(); }],
+  ['nonfinite glyph quad', r => { r[1].glyph_geometry[0].quad[0][0] = NaN; }],
+  ['invented replacement quad', r => { r[1].glyph_geometry[1].quad = structuredClone(r[1].glyph_geometry[0].quad); }],
+  ['missing section annotation', r => { delete r[3].section; }],
+  ['invalid heading level', r => { r[3].section.heading_level = 13; }],
+  ['signal without heading', r => { r[3].section.heading_level = null; }],
+  ['unresolved section ref', r => { r[4].section.ancestry[0] = r[4].section.parent_section_id = 'block-999'; }],
+  ['nonheading section owner', r => { Object.assign(r[3].section, { heading_level: null, signal: null, section_id: null, ancestry: [] }); }],
+  ['duplicate ancestry', r => { r[4].section.ancestry = ['block-0', 'block-0', 'block-1']; }],
+  ['cyclic ancestry', r => { r[3].section.parent_section_id = 'block-1'; r[3].section.ancestry = ['block-1', 'block-0']; }],
+  ['inconsistent section parent', r => { r[4].section.parent_section_id = null; }],
+  ['inconsistent ancestry prefix', r => { r[4].section.ancestry = ['block-1']; r[4].section.parent_section_id = null; r[3].section.heading_level = 3; r[3].section.ancestry = ['block-1', 'block-0']; r[3].section.parent_section_id = 'block-1'; }],
+  ['nonincreasing section levels', r => { r[4].section.heading_level = 1; }],
+  ['missing chunk sections', r => { delete r[5].section_ids; }],
+  ['duplicate chunk section', r => { r[5].section_ids.push('block-0'); }],
+  ['unresolved chunk section', r => { r[5].section_ids.push('block-999'); }],
+  ['omitted chunk section owner', r => { r[5].section_ids.pop(); }],
+  ['missing inherited paint validation', r => { delete r[1].paint; }],
+  ['missing inherited coordinate validation', r => { delete r[7].page_geometry; }],
+  ['missing inherited vector validation', r => { delete r[7].vector_evidence; }],
+]) test(`0.20 rejects ${name}`, () => {
+  const records = hierarchyFixture();
+  change(records);
+  assert.throws(() => parse(records), { code: 'protocol' });
+});
+
 test('0.18 coordinate evidence preserves source text paint and content scope', () => {
   const records = coordinateFixture();
   const document = parse(records);
@@ -537,6 +619,20 @@ test('validates the source identity selected by the caller and adapter', async (
   const nullable = fixture();
   for (const record of nullable) { record.source_id = null; record.provenance.source_id = null; }
   assert.equal(parseArtifactJsonl(serialize(nullable), { inputSha256, expectedSourceId: null }).manifest.source_id, null);
+});
+
+test('batch forwards optional glyph geometry and decoded-stream bounds before launching', async t => {
+  const { dir, binaryPath } = await fakeParser(t, `import {writeFileSync} from 'node:fs';
+    writeFileSync(new URL('./args.json', import.meta.url), JSON.stringify(process.argv));
+    process.stdout.write(${JSON.stringify(serialize(fixture()))});`);
+  await extractPdfDocument(bytes, { binaryPath, includeGlyphGeometry: true, maxDecodedStreamBytes: 4096 });
+  const args = JSON.parse(await readFile(join(dir, 'args.json'), 'utf8'));
+  assert.ok(args.includes('--include-glyph-geometry'));
+  assert.equal(args[args.indexOf('--max-decoded-stream-bytes') + 1], '4096');
+  for (const value of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1, '4096']) {
+    await assert.rejects(extractPdfDocument(bytes, { binaryPath, maxDecodedStreamBytes: value }), RangeError);
+  }
+  await assert.rejects(extractPdfDocument(bytes, { binaryPath, includeGlyphGeometry: 'true' }), TypeError);
 });
 
 for (const reason of ['timeout', 'aborted']) test(`bounds ${reason} and cleans scratch when a wrapper leaves inherited descendant pipes`, {

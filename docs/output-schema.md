@@ -6,10 +6,10 @@ should depend on the records documented here.
 
 ## Version
 
-Current development schema version: `0.19.4` (locally checked statement assembly).
+Current development schema version: `0.20.0` (section ancestry and optional glyph geometry).
 
 Current parser build identity: `0.4.0-dev`. The `v0.3.0` release emitted schema
-`0.11.0`; the development suffix keeps post-release schema `0.19.4` artifacts
+`0.11.0`; the development suffix keeps post-release schema `0.20.0` artifacts
 distinguishable until the next release is tagged.
 
 The project is still pre-`1.0.0`, so incompatible schema changes may happen.
@@ -33,6 +33,14 @@ JSON output is a `document_manifest` object with arrays of typed records.
 `document_manifest` record. `stream-jsonl` also emits one typed record per line,
 but records are produced page by page so host applications can persist partial
 artifacts and enqueue embeddings before the document finishes.
+
+Schema `0.20.0` adds `block.section`, `rag_chunk.section_ids`, and
+`span.glyph_geometry`. Existing text views, source maps, compatibility bbox
+coordinates and record ordering remain. Section annotation does not change
+block text, chunk contents or reading order. Both table output lanes now use
+one bounded first-header continuation policy; partial headers and page gaps
+remain separate. Decoder limits apply before output growth and resource
+refusals propagate instead of entering malformed-stream recovery.
 
 Schema `0.19.4` assembles corroborated section labels and directional wrapped
 labels within native financial field bands. Section labels occupy ordinary
@@ -508,6 +516,66 @@ ranges are retained during block construction, including repeated spans; no
 text search is used to infer them. A span bbox covers the whole span, not the
 individual character subset selected by a mapped range.
 
+In `0.20`, `span.glyph_geometry` is an array, empty by default. Pass
+`extract-adaptive --include-glyph-geometry` or set
+`AdaptiveOptions.include_glyph_geometry` to retain available native glyph
+evidence. Each entry has half-open `text_start_byte`/`text_end_byte` ranges in
+that span's exact text, `bbox`, `precision` and nullable `quad`. A quad is four
+`[x,y]` corners in raw PDF user space, following the transformed local glyph
+rectangle around its perimeter. Bounds derive from PDF placement and font
+metrics; they are not measured painted-pixel outlines.
+
+`precision:"glyph"` can cover more than one character, such as a ToUnicode
+ligature mapping. Keep that source glyph indivisible. `replacement_group`
+covers an ActualText semantic replacement and always has `quad:null`; its bbox
+describes the source group. Do not subdivide these boxes proportionally to
+claim exact character locations. Synthetic inferred spaces have no geometry
+entry. OCR, table reconstruction, fallback and other spans may have no fine
+geometry; their compatibility bbox remains available. Entries are ordered,
+nonoverlapping, Unicode-boundary-aligned ranges; gaps are allowed. A wrapped
+quote can resolve to several spans/quads through the existing text maps.
+
+The manifest geometry retains `highlight_precision:"span_bbox"` as the
+compatibility fallback and adds `optional_glyph_geometry:true`. Consumers
+must inspect actual entries rather than assume every span has glyph precision.
+
+### Section ancestry
+
+Every `0.20` block includes a `section` annotation:
+
+```json
+{"heading_level":2,"signal":"numbering","section_id":"block-4","parent_section_id":"block-1","ancestry":["block-1","block-4"]}
+```
+
+Section IDs name existing heading block IDs, including headings corroborated
+by bookmarks without changing their original block kind. An ancestry includes
+the owning section and its known ancestors from outermost to innermost.
+Body blocks have null `heading_level`/`signal` but may retain an owner/path;
+unknown owners and parents are null, with an empty path when none is known.
+IDs are document-global in both batch and streaming, and can reference a
+heading on an earlier page. A selected page window does not infer preceding
+sections outside that window.
+
+Unique title-and-page bookmark matches take precedence over numbering, then
+style. Numbering is restricted to already detected headings with explicit
+dotted/terminated numbering or PART/CHAPTER enumerators. Style supplies level
+one for other detected headings; it does not speculate about nested font-size
+levels. Dates, times and ordinary numbered body lists do not become headings.
+Same-page ambiguous bookmark titles clear active ownership and abstain.
+Depth is bounded at 12 and outline matching at 2,000,000 charged operations;
+exhausted heading inference clears the active section instead of fabricating a
+boundary. These are conservative local annotations, not guaranteed semantic truth.
+Numeric marker depth saturates before arithmetic, including the PART offset.
+Outline intake separately keeps at most 10,000 items and 64 nesting levels,
+skips already visited indirect outline objects, and preserves later siblings
+when a cyclic or excessively deep child branch is skipped. Deeper outline
+branches do not establish ancestry beyond the retained evidence.
+
+`rag_chunk.section_ids` lists unique owners in source-block order. A chunk can
+span multiple sections; its content and source maps are retained unchanged.
+Streaming callbacks remain provisional: the JavaScript reader validates full
+cross-page ancestry before accepting the final document completion.
+
 Chunks use the same run fields with `source_block_id` instead of
 `source_span_id`; their `\n\n` block separators are synthetic null runs.
 `source_span_ids` and `provenance.span_ids` enumerate the spans belonging to
@@ -651,6 +719,17 @@ Budget failures return nonzero (`OutputLimitExceeded` or
 The entire `document_finished` record is reserved before writing, so an output
 cap cannot leave a truncated success record. Accept a complete stream only
 after valid lifecycle/count checks and successful process exit.
+
+`extract-adaptive --max-decoded-stream-bytes N` independently sets a positive
+per-stage decoded-output cap (default 256 MiB) for both batch and streaming.
+It bounds growth across supported filters and predictors, including unfiltered
+streams and embedded font decoding. Intermediate filter output is also charged.
+Exceeding it returns `OutputTooLarge` even in permissive mode; the order of
+`--permissive` and the limit flag does not change the limit. It is separate from
+aggregate page/output budgets and does not bound document-wide retained memory,
+allocator overhead, input mappings, or subprocess RSS. Intentional bounded
+Type3 scratch-buffer exhaustion remains best-effort; an explicit stream cap
+refusal propagates.
 
 ### `debug_asset`
 

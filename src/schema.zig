@@ -774,6 +774,16 @@ fn hashSpans(hasher: anytype, result: anytype) void {
             hashPrint(hasher, "scope:{},{},{}|", .{ scope.page_index, scope.stream_generation, scope.invocation_index });
             if (scope.stream_object_num) |number| hashPrint(hasher, "stream:{}|", .{number}) else hashText(hasher, "page-stream|");
         } else hashText(hasher, "unknown-scope|");
+        for (span.span.glyph_geometry) |geometry| {
+            hashPrint(hasher, "glyph:{},{}|{s}|{d:.6},{d:.6},{d:.6},{d:.6}|", .{
+                geometry.text_start_byte, geometry.text_end_byte, @tagName(geometry.precision),
+                geometry.bbox.x0,         geometry.bbox.y0,       geometry.bbox.x1,
+                geometry.bbox.y1,
+            });
+            if (geometry.quad) |quad| {
+                for (quad) |point| hashPrint(hasher, "{d:.6},{d:.6}|", .{ point[0], point[1] });
+            } else hashText(hasher, "no-quad|");
+        }
         hashPrint(hasher, "{s}|{s}|{d:.3};", .{ sourceKindName(span.span.source), sourceKindName(span.chosen_source), span.confidence });
     }
 }
@@ -786,6 +796,9 @@ fn hashBlocks(hasher: anytype, result: anytype) void {
             blockKindName(block.kind),
         });
         hashText(hasher, block.text);
+        if (block.section.heading_level) |level| hashPrint(hasher, "heading:{}|", .{level});
+        if (block.section.heading_signal) |signal| hashText(hasher, @tagName(signal));
+        for (block.section.ancestry[0..block.section.ancestry_len]) |id| hashPrint(hasher, "section:{}|", .{id});
         hashPrint(hasher, "{d:.3}|{d}|{d};", .{
             block.confidence,
             block.span_start,
@@ -797,6 +810,10 @@ fn hashBlocks(hasher: anytype, result: anytype) void {
 fn hashTables(hasher: anytype, result: anytype) void {
     for (result.tables) |table| {
         hashPrint(hasher, "{d}|{d}|{d}|{d:.3};", .{ table.page_index, table.block_index, table.rows.len, table.confidence });
+        if (table.logical_table_index) |id| hashPrint(hasher, "logical:{}|", .{id});
+        hashPrint(hasher, "part:{}|", .{table.table_part_index});
+        if (table.continued_from_table_index) |id| hashPrint(hasher, "from:{}|", .{id});
+        if (table.continued_to_table_index) |id| hashPrint(hasher, "to:{}|", .{id});
         for (table.rows) |row| {
             hashPrint(hasher, "r{d}|", .{row.row_index});
             for (row.cells) |cell| {
@@ -1198,6 +1215,7 @@ fn writeSpanRecord(writer: anytype, result: anytype, document_id: []const u8, so
     try writePaint(writer, span.span.paint);
     try specialist_protocol.writeContentScope(writer, span.span.content_scope);
     try writeTextView(writer, "span", span_index, "reconciled_span", span.span.text);
+    try writeGlyphGeometry(writer, span.span.glyph_geometry);
     try writeProvenancePrefix(writer, .{
         .document_id = document_id,
         .source_id = source_id,
@@ -1256,6 +1274,7 @@ fn writeBlockRecord(writer: anytype, result: anytype, document_id: []const u8, s
     try writeCandidateKind(writer, block.kind);
     try writeTextView(writer, "block", block_base + block.id, "reconciled_block", block.text);
     try writeBlockSourceMap(writer, result, block, offsets);
+    try writeSection(writer, block.section);
     try writeProvenancePrefix(writer, .{
         .document_id = document_id,
         .source_id = source_id,
@@ -1698,6 +1717,7 @@ fn writeRagChunkRecord(writer: anytype, result: anytype, document_id: []const u8
     try writeDocumentId(writer, document_id);
     try writer.print(",\"chunk_id\":\"chunk-{d}\",\"chunk_index\":{}", .{ chunk_base + chunk.chunk_index, chunk_base + chunk.chunk_index });
     try writeSourceId(writer, source_id);
+    try writeChunkSections(writer, result, chunk);
     try writer.writeAll(",\"content\":\"");
     try writeJsonEscaped(writer, chunk.content);
     try writer.print("\",\"block_start\":{},\"block_count\":{},\"page_start\":{},\"page_end\":{}", .{
@@ -1748,7 +1768,69 @@ fn writeTextView(writer: anytype, prefix: []const u8, index: u32, kind: []const 
 }
 
 fn writeTextContract(writer: anytype) !void {
-    try writer.writeAll(",\"text_contract\":{\"offset_unit\":\"utf8_byte\",\"range_convention\":\"half_open\",\"page_index_base\":0,\"geometry\":{\"coordinate_space\":\"pdf_user_space\",\"unit\":\"point\",\"highlight_precision\":\"span_bbox\",\"display_transform\":null}}");
+    try writer.writeAll(",\"text_contract\":{\"offset_unit\":\"utf8_byte\",\"range_convention\":\"half_open\",\"page_index_base\":0,\"geometry\":{\"coordinate_space\":\"pdf_user_space\",\"unit\":\"point\",\"highlight_precision\":\"span_bbox\",\"optional_glyph_geometry\":true,\"display_transform\":null}}");
+}
+
+fn writeGlyphGeometry(writer: anytype, geometry: []const layout.GlyphGeometry) !void {
+    try writer.writeAll(",\"glyph_geometry\":[");
+    for (geometry, 0..) |item, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.print("{{\"text_start_byte\":{},\"text_end_byte\":{},\"precision\":\"{s}\",\"bbox\":", .{ item.text_start_byte, item.text_end_byte, @tagName(item.precision) });
+        try writeBBoxJson(writer, item.bbox);
+        try writer.writeAll(",\"quad\":");
+        if (item.quad) |quad| {
+            try writer.writeByte('[');
+            for (quad, 0..) |point, point_index| {
+                if (point_index > 0) try writer.writeByte(',');
+                try writer.print("[{d:.6},{d:.6}]", .{ point[0], point[1] });
+            }
+            try writer.writeByte(']');
+        } else try writer.writeAll("null");
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
+fn writeSection(writer: anytype, section: anytype) !void {
+    try writer.writeAll(",\"section\":{\"heading_level\":");
+    if (section.heading_level) |level| try writer.print("{}", .{level}) else try writer.writeAll("null");
+    try writer.writeAll(",\"signal\":");
+    if (section.heading_signal) |signal| try writer.print("\"{s}\"", .{@tagName(signal)}) else try writer.writeAll("null");
+    try writer.writeAll(",\"section_id\":");
+    try writeOptionalBlockId(writer, section.section_id);
+    try writer.writeAll(",\"parent_section_id\":");
+    try writeOptionalBlockId(writer, section.parent_section_id);
+    try writer.writeAll(",\"ancestry\":[");
+    for (section.ancestry[0..section.ancestry_len], 0..) |id, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.print("\"block-{d}\"", .{id});
+    }
+    try writer.writeAll("]}");
+}
+
+fn writeOptionalBlockId(writer: anytype, id: ?u32) !void {
+    if (id) |value| try writer.print("\"block-{d}\"", .{value}) else try writer.writeAll("null");
+}
+
+fn writeChunkSections(writer: anytype, result: anytype, chunk: anytype) !void {
+    try writer.writeAll(",\"section_ids\":[");
+    var count: usize = 0;
+    const blocks = result.reconciled.blocks[chunk.block_start .. chunk.block_start + chunk.block_count];
+    for (blocks, 0..) |block, index| {
+        const id = block.section.section_id orelse continue;
+        var seen = false;
+        for (blocks[0..index]) |previous| {
+            if (previous.section.section_id == id) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+        if (count > 0) try writer.writeByte(',');
+        try writer.print("\"block-{d}\"", .{id});
+        count += 1;
+    }
+    try writer.writeByte(']');
 }
 
 fn writeSourceMapRun(writer: anytype, start: usize, end: usize, source_kind: []const u8, source_index: ?u32, source_length: usize) !void {

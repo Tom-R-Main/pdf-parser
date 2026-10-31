@@ -30,6 +30,7 @@ const FontEncoding = encoding_mod.FontEncoding;
 pub const GlyphSpan = struct {
     page_index: u32 = 0,
     bbox: layout.BBox = .{},
+    quad: ?[4][2]f64 = null,
     text_matrix: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
     font_name: ?[]const u8 = null,
     font_size: f64 = 0,
@@ -675,6 +676,7 @@ pub const SpanCollector = struct {
             .page_index = self.page_index,
             .bbox = bbox,
             .text_matrix = self.userTextMatrix(),
+            .quad = self.currentGlyphQuad(advance, decoded),
             .font_name = font_name,
             .font_size = self.current_font_size,
             .source_code = decoded.source_code,
@@ -869,6 +871,7 @@ pub const SpanCollector = struct {
         result.unicode_map_error = false;
         result.actual_text = true;
         result.semantic_replacement = true;
+        result.quad = null;
         result.raw_glyph_count = @intCast(raw.len);
         result.source_code = 0;
         result.source_byte_count = 0;
@@ -977,22 +980,34 @@ pub const SpanCollector = struct {
     }
 
     fn currentGlyphBBox(self: *const SpanCollector, advance: f64, decoded: encoding_mod.FontEncoding.DecodedGlyph) layout.BBox {
+        const points = self.currentGlyphQuad(advance, decoded);
+        return boundsOfPoints(points);
+    }
+
+    fn currentGlyphQuad(self: *const SpanCollector, advance: f64, decoded: encoding_mod.FontEncoding.DecodedGlyph) [4][2]f64 {
         const ascender = decoded.ascender / 1000.0 * self.current_font_size;
         const descender = decoded.descender / 1000.0 * self.current_font_size;
         const local = if (decoded.writing_mode == 1)
             layout.BBox{ .x0 = descender, .y0 = -advance, .x1 = ascender, .y1 = 0 }
         else
             layout.BBox{ .x0 = 0, .y0 = self.current_text_rise + descender, .x1 = advance, .y1 = self.current_text_rise + ascender };
-        return transformedBounds(self.userTextMatrix(), local);
+        return transformedPoints(self.userTextMatrix(), local);
     }
 
     fn transformedBounds(matrix: [6]f64, box: layout.BBox) layout.BBox {
-        const points = [_][2]f64{
+        return boundsOfPoints(transformedPoints(matrix, box));
+    }
+
+    fn transformedPoints(matrix: [6]f64, box: layout.BBox) [4][2]f64 {
+        return .{
             transformPoint(matrix, box.x0, box.y0),
             transformPoint(matrix, box.x1, box.y0),
             transformPoint(matrix, box.x1, box.y1),
             transformPoint(matrix, box.x0, box.y1),
         };
+    }
+
+    fn boundsOfPoints(points: [4][2]f64) layout.BBox {
         var x0 = points[0][0];
         var y0 = points[0][1];
         var x1 = x0;

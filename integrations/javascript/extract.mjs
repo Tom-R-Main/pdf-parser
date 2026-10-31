@@ -85,8 +85,81 @@ function checkIdentitySet(ids, expected, label) {
   if (!Array.isArray(ids) || ids.length !== expected.size || new Set(ids).size !== ids.length || ids.some((id) => !expected.has(id))) fail(`Inconsistent ${label}`);
 }
 
+function checkGlyphGeometry(span, boundaries) {
+  if (!Array.isArray(span.glyph_geometry)) fail('Missing glyph_geometry');
+  let previousEnd = 0;
+  for (const item of span.glyph_geometry) {
+    if (!object(item) || !['glyph', 'replacement_group'].includes(item.precision) ||
+        !integer(item.text_start_byte) || item.text_start_byte < previousEnd ||
+        !integer(item.text_end_byte) || item.text_end_byte <= item.text_start_byte ||
+        !boundaries.has(item.text_start_byte) || !boundaries.has(item.text_end_byte)) fail('Invalid glyph UTF-8 range or ordering');
+    const box = item.bbox;
+    if (!object(box) || !['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(box[key])) ||
+        box.x0 > box.x1 || box.y0 > box.y1) fail('Invalid glyph geometry bbox');
+    if (!(item.quad === null || (Array.isArray(item.quad) && item.quad.length === 4 &&
+        item.quad.every(point => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)))) ||
+        (item.precision === 'replacement_group' && item.quad !== null)) fail('Invalid glyph geometry quad');
+    previousEnd = item.text_end_byte;
+  }
+}
+
+function checkSectionShapes(blocks) {
+  const validId = value => typeof value === 'string' && /^block-\d+$/u.test(value);
+  for (const block of blocks) {
+    const section = block.section;
+    if (!object(section) || !(section.heading_level === null || (integer(section.heading_level) && section.heading_level >= 1 && section.heading_level <= 12)) ||
+        !(section.signal === null || ['bookmark', 'numbering', 'style'].includes(section.signal)) ||
+        (section.heading_level === null) !== (section.signal === null) ||
+        !(section.section_id === null || validId(section.section_id)) ||
+        !(section.parent_section_id === null || validId(section.parent_section_id)) ||
+        !Array.isArray(section.ancestry) || section.ancestry.length > 12 ||
+        section.ancestry.some(id => !validId(id)) || new Set(section.ancestry).size !== section.ancestry.length ||
+        section.section_id !== (section.ancestry.at(-1) ?? null) ||
+        section.parent_section_id !== (section.ancestry.at(-2) ?? null) ||
+        (section.heading_level !== null && section.section_id !== block.block_id)) fail('Invalid section annotation');
+  }
+}
+
+/** Internal stream closeout check for compact, privately retained block metadata. */
+export function validateSectionReferences(blocks) {
+  checkSectionShapes(blocks);
+  const blockIndex = new Map(blocks.map(block => [block.block_id, { record: block }]));
+  // References may cross page lifecycle boundaries; resolve only after all
+  // records are indexed rather than rejecting a legitimate previous-page owner.
+  const positions = new Map(blocks.map((block, position) => [block.block_id, position]));
+  for (const block of blocks) {
+    let previousLevel = 0;
+    for (const [index, id] of block.section.ancestry.entries()) {
+      const owner = blockIndex.get(id)?.record;
+      if (!owner || owner.section.heading_level === null || owner.section.heading_level <= previousLevel ||
+          positions.get(id) > positions.get(block.block_id) || owner.page_index > block.page_index ||
+          owner.section.ancestry.length !== index + 1 ||
+          owner.section.ancestry.some((ancestor, offset) => ancestor !== block.section.ancestry[offset])) fail('Unresolved or inconsistent section ancestry');
+      previousLevel = owner.section.heading_level;
+    }
+  }
+}
+
+function checkSections(blocks, chunks, blockIndex, deferReferences) {
+  checkSectionShapes(blocks);
+  if (!deferReferences) validateSectionReferences(blocks);
+  for (const chunk of chunks) {
+    const expected = new Set(chunk.source_block_ids.map(id => blockIndex.get(id).record.section.section_id).filter(id => id !== null));
+    checkIdentitySet(chunk.section_ids, expected, 'chunk section_ids');
+  }
+}
+
 /** Validates batch JSONL before projecting any host-facing source positions. */
-export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } = {}) {
+export function parseArtifactJsonl(rawJsonl, options = {}) {
+  return parseArtifactJsonlInternal(rawJsonl, options, false);
+}
+
+/** Internal provisional page projection; stream closeout must resolve sections. */
+export function parseProvisionalPageJsonl(rawJsonl, options = {}) {
+  return parseArtifactJsonlInternal(rawJsonl, options, true);
+}
+
+function parseArtifactJsonlInternal(rawJsonl, { inputSha256, expectedSourceId } = {}, deferSectionReferences) {
   if (typeof rawJsonl !== 'string' || !/^[a-f0-9]{64}$/.test(inputSha256 ?? '')) fail('An input SHA-256 is required');
   const lines = rawJsonl.split('\n');
   if (lines.at(-1) === '') lines.pop();
@@ -95,7 +168,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   });
   const manifest = records[0];
   if (!object(manifest) || manifest.record_type !== 'document_manifest') fail('Expected manifest first');
-  if (!/^0\.(14|15|16|17|18|19)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
+  if (!/^0\.(14|15|16|17|18|19|20)\.\d+$/.test(manifest.schema_version ?? '') || manifest.schema_name !== 'document_manifest' ||
       typeof manifest.document_id !== 'string' || !manifest.document_id || !integer(manifest.page_count) ||
       manifest.input_sha256 !== inputSha256) fail('Unsupported schema or manifest input identity');
   if (!(manifest.source_id === null || (typeof manifest.source_id === 'string' && manifest.source_id.length > 0)) ||
@@ -146,6 +219,9 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   const spanIndex = index(spans, 'reconciled_span', 'span');
   const blockIndex = index(blocks, 'reconciled_block', 'block');
   const chunkIndex = index(chunks, 'rag_chunk', 'chunk');
+  if (manifest.schema_version.startsWith('0.20.')) {
+    for (const span of spans) checkGlyphGeometry(span, spanIndex.get(span.span_id).boundaries);
+  }
   const unresolvedProvenanceLinks = [];
   for (const [field, items] of [['spans', spans], ['blocks', blocks], ['rag_chunks', chunks]]) {
     if (manifest.artifact_counts?.[field] !== items.length) fail(`Manifest ${field} count mismatch`);
@@ -185,6 +261,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
     checkIdentitySet(chunk.provenance.span_ids, spanIds, 'chunk span provenance');
     checkIdentitySet(chunk.provenance.chunk_ids, new Set([chunk.chunk_id]), 'chunk identity provenance');
   }
+  if (manifest.schema_version.startsWith('0.20.')) checkSections(blocks, chunks, blockIndex, deferSectionReferences);
   const tables = records.filter(record => record.record_type === 'table');
   if (!manifest.schema_version.startsWith('0.14.')) {
     const owners = new Map();
@@ -222,7 +299,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
   }
   const pageOutcomes = records.filter(record => record.record_type === 'route_trace' && record.trace_kind === 'page_route')
     .map(record => ({ pageIndex: record.page_index, ...record.coverage }));
-  if (/^0\.(18|19)\./u.test(manifest.schema_version)) {
+  if (/^0\.(18|19|20)\./u.test(manifest.schema_version)) {
     const pageGeometry = new Map();
     const boxClose = (actual, expected, marginX = 0, marginY = 0) => object(expected) &&
       ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(expected[key]) &&
@@ -270,7 +347,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
       }
     }
   }
-  if (/^0\.(16|17|18|19)\./u.test(manifest.schema_version)) {
+  if (/^0\.(16|17|18|19|20)\./u.test(manifest.schema_version)) {
     const validBox = box => object(box) && ['x0', 'y0', 'x1', 'y1'].every(key => Number.isFinite(box[key])) && box.x0 <= box.x1 && box.y0 <= box.y1;
     for (const span of spans) {
       const paint = span.paint;
@@ -281,7 +358,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
           (['inside', 'outside', 'partial'].includes(paint.clip_state) && paint.clip_bbox === null) ||
           (paint.paint_state === 'painting' && (paint.rendering_mode === null || [3, 7].includes(paint.rendering_mode))) ||
           (paint.paint_state === 'non_painting' && ![3, 7].includes(paint.rendering_mode))) fail('Invalid paint evidence');
-      if (/^0\.(17|18|19)\./u.test(manifest.schema_version)) {
+      if (/^0\.(17|18|19|20)\./u.test(manifest.schema_version)) {
         const scope = span.content_scope;
         if (!(scope === null || (object(scope) && scope.page_index === span.page_index &&
             integer(scope.stream_generation) && scope.stream_generation <= 65535 && integer(scope.invocation_index) && scope.invocation_index <= 0xffffffff &&
@@ -308,7 +385,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
           if (items === 'spans' && (!object(item.paint) || ['rendering_mode', 'paint_state', 'clip_state'].some(key => item.paint[key] !== original.paint[key]) ||
               (original.paint.clip_bbox === null ? item.paint.clip_bbox !== null : !validBox(item.paint.clip_bbox) ||
                 ['x0', 'y0', 'x1', 'y1'].some(key => item.paint.clip_bbox[key] !== original.paint.clip_bbox[key])))) fail('Inconsistent specialist paint evidence');
-          if (items === 'spans' && /^0\.(17|18|19)\./u.test(manifest.schema_version) &&
+          if (items === 'spans' && /^0\.(17|18|19|20)\./u.test(manifest.schema_version) &&
               (original.content_scope === null ? item.content_scope !== null : !object(item.content_scope) ||
                 ['page_index', 'stream_object_num', 'stream_generation', 'invocation_index'].some(key => item.content_scope[key] !== original.content_scope[key]))) fail('Inconsistent specialist content scope');
           seen.add(item[idField]);
@@ -355,7 +432,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
     const pageRoutes = new Set();
     for (const record of records.filter(record => record.record_type === 'route_trace' && ['page_route', 'region_route'].includes(record.trace_kind))) {
       const assessment = record.coverage;
-      if (/^0\.(16|17|18|19)\./u.test(manifest.schema_version) && (!object(assessment) || !['non_painting_span_count', 'clipped_out_span_count', 'uncertain_paint_span_count'].every(key => integer(assessment[key])))) fail('Invalid paint coverage counts');
+      if (/^0\.(16|17|18|19|20)\./u.test(manifest.schema_version) && (!object(assessment) || !['non_painting_span_count', 'clipped_out_span_count', 'uncertain_paint_span_count'].every(key => integer(assessment[key])))) fail('Invalid paint coverage counts');
       if (!integer(record.page_index) || record.page_index >= manifest.page_count ||
           !object(assessment) || !statuses.has(assessment.status) || assessment.completeness !== 'unverified' ||
           !recoveryStates.has(assessment.recovery_state) || typeof assessment.requested_recovery !== 'boolean' ||
@@ -372,7 +449,7 @@ export function parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId } =
           (assessment.status === 'recovered' && (assessment.recovery_state !== 'completed' || assessment.recognized_span_count === 0 || assessment.unresolved_region_count !== 0))) fail('Inconsistent recovery assessment');
     }
   }
-  if (manifest.schema_version.startsWith('0.19.')) {
+  if (/^0\.(19|20)\./u.test(manifest.schema_version)) {
     const classified = ['ignored_rule_count', 'clipped_out_count', 'native_accounted_count', 'simple_graphic_count', 'ambiguous_shape_count'];
     const limits = { max_shapes: 512, max_segments_per_path: 512, max_operators: 100000, max_candidate_regions: 64,
       max_content_bytes: 8388608, max_graphics_depth: 32, max_form_invocations: 256 };
@@ -535,6 +612,8 @@ export async function extractPdfDocument(buffer, options) {
   const maxOutputBytes = options.maxOutputBytes ?? 25 * 1024 * 1024;
   const ocrArgs = ocrArguments(options.ocrLimits);
   if (options.allowPartial !== undefined && typeof options.allowPartial !== 'boolean') throw new TypeError('allowPartial must be a boolean');
+  if (options.includeGlyphGeometry !== undefined && typeof options.includeGlyphGeometry !== 'boolean') throw new TypeError('includeGlyphGeometry must be a boolean');
+  if (options.maxDecodedStreamBytes !== undefined && (!integer(options.maxDecodedStreamBytes) || options.maxDecodedStreamBytes < 1)) throw new RangeError('Invalid decoded stream limit');
   if (!integer(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647 || !integer(maxOutputBytes) || maxOutputBytes < 1) throw new RangeError('Invalid extraction limits');
   if (options.signal?.aborted) throw new PdfExtractionError('aborted', 'Extraction was aborted');
   // Own a snapshot before awaiting I/O: a caller can reuse or mutate its buffer.
@@ -549,6 +628,8 @@ export async function extractPdfDocument(buffer, options) {
     const args = ['extract-adaptive', '--input', inputPath, '--source-id', inputSha256, '--format', 'artifact-jsonl', ...ocrArgs];
     if (!options.enableOcr) args.push('--no-ocr');
     if (options.allowPartial) args.push('--allow-partial');
+    if (options.includeGlyphGeometry) args.push('--include-glyph-geometry');
+    if (options.maxDecodedStreamBytes !== undefined) args.push('--max-decoded-stream-bytes', String(options.maxDecodedStreamBytes));
     const rawJsonl = await runParser(options.binaryPath, args, { timeoutMs, maxOutputBytes, signal: options.signal });
     return parseArtifactJsonl(rawJsonl, { inputSha256, expectedSourceId: inputSha256 });
   } catch (error) {

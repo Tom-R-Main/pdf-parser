@@ -7,6 +7,10 @@ export interface RichPdfPage extends RichPdfDocument {
   streamComplete: false;
 }
 export interface StreamExtractionOptions {
+  /** Opt in to exact-span glyph/replacement-group geometry. */
+  includeGlyphGeometry?: boolean;
+  /** Maximum decoded bytes in each native PDF stream. */
+  maxDecodedStreamBytes?: number;
   binaryPath: string;
   onPage: (page: RichPdfPage) => void | Promise<void>;
   timeoutMs?: number;
@@ -31,6 +35,7 @@ export interface StreamExtractionReceipt {
   outputBytes: number;
   artifactCounts: Record<string, number>;
 }
-/** Retains one page and a bounded identity set; caller-retained pages and parser
- * process RSS are outside these byte budgets. No receipt on partial failure. */
+/** Retains one page, a bounded identity set and compact section annotations;
+ * caller-retained pages and process RSS are outside these byte budgets.
+ * No receipt on partial failure. */
 export function extractPdfPages(buffer: Uint8Array, options: StreamExtractionOptions): Promise<StreamExtractionReceipt>;

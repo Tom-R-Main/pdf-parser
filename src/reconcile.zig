@@ -7,6 +7,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 const runtime = @import("runtime.zig");
+const section_hierarchy = @import("section_hierarchy.zig");
 
 pub const BBox = layout.BBox;
 pub const TextSpan = layout.TextSpan;
@@ -52,6 +53,7 @@ pub const ReconciledBlock = struct {
     span_count: u32,
     source_mask: SourceMask,
     confidence: f32,
+    section: section_hierarchy.Annotation = .{},
 };
 
 pub const RagChunk = struct {
@@ -277,6 +279,11 @@ pub fn renderMarkdown(allocator: std.mem.Allocator, doc: *const ReconciledDocume
             try writer.writeAll("\n\n");
         }
 
+        if (block.section.heading_level) |level| {
+            for (0..@min(level, 6)) |_| try writer.writeByte('#');
+            try writer.print(" {s}\n", .{block.text});
+            continue;
+        }
         switch (block.kind) {
             .heading => try writer.print("## {s}\n", .{block.text}),
             .list_item => try writer.print("- {s}\n", .{stripListPrefix(block.text)}),
@@ -701,6 +708,8 @@ fn copySpan(
     copied.source = source;
     copied.text = try allocator.dupe(u8, span.text);
     errdefer allocator.free(@constCast(copied.text));
+    copied.glyph_geometry = try allocator.dupe(layout.GlyphGeometry, span.glyph_geometry);
+    errdefer allocator.free(copied.glyph_geometry);
 
     copied.font.name = null;
     copied.font.encoding = null;
@@ -726,6 +735,7 @@ fn freeOwnedSpan(allocator: std.mem.Allocator, span: TextSpan) void {
     allocator.free(@constCast(span.text));
     if (span.font.name) |name| allocator.free(@constCast(name));
     if (span.font.encoding) |encoding| allocator.free(@constCast(encoding));
+    if (span.glyph_geometry.len > 0) allocator.free(span.glyph_geometry);
 }
 
 const DuplicateIndex = struct {

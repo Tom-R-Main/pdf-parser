@@ -130,7 +130,7 @@ pub fn analyze(
     defer line_glyphs.deinit(allocator);
     var pending_lines: std.ArrayList(PendingLine) = .empty;
     defer pending_lines.deinit(allocator);
-    const gutter = detectCentralGutter(allocator, glyphs, page_bbox) catch null;
+    const gutter = try detectCentralGutter(allocator, glyphs, page_bbox);
 
     for (sorted_indices) |glyph_index| {
         const glyph = glyphs[glyph_index];
@@ -273,11 +273,22 @@ pub fn buildLineSpans(
     result: *const Result,
     page_index: u32,
 ) ![]layout.TextSpan {
+    return buildLineSpansWithGeometry(allocator, glyphs, result, page_index, false);
+}
+
+pub fn buildLineSpansWithGeometry(
+    allocator: std.mem.Allocator,
+    glyphs: []const GlyphSpan,
+    result: *const Result,
+    page_index: u32,
+    include_geometry: bool,
+) ![]layout.TextSpan {
     var spans: std.ArrayList(layout.TextSpan) = .empty;
     errdefer {
         for (spans.items) |span| {
             allocator.free(@constCast(span.text));
             if (span.font.name) |name| allocator.free(@constCast(name));
+            if (span.glyph_geometry.len > 0) allocator.free(span.glyph_geometry);
         }
         spans.deinit(allocator);
     }
@@ -298,6 +309,8 @@ pub fn buildLineSpans(
 
             var text: std.ArrayList(u8) = .empty;
             errdefer text.deinit(allocator);
+            var geometry: std.ArrayList(layout.GlyphGeometry) = .empty;
+            defer geometry.deinit(allocator);
             var segment_bbox = representative.bbox;
             var layout_font_size: f64 = 0;
             for (segment_start..segment_end) |local_index| {
@@ -310,9 +323,21 @@ pub fn buildLineSpans(
                 if (local_index > segment_start and boundary.kind == .space and !endsInWhitespace(text.items) and !(glyph.actual_text and startsInWhitespace(glyph.text))) {
                     try text.append(allocator, ' ');
                 }
+                const text_start = text.items.len;
                 try appendNormalizedGlyph(allocator, &text, glyph.text, glyph.actual_text);
+                if (include_geometry and !glyph.generated and text.items.len > text_start) {
+                    try geometry.append(allocator, .{
+                        .text_start_byte = text_start,
+                        .text_end_byte = text.items.len,
+                        .bbox = glyph.bbox,
+                        .quad = if (glyph.semantic_replacement or glyph.actual_text) null else glyph.quad,
+                        .precision = if (glyph.semantic_replacement or glyph.actual_text) .replacement_group else .glyph,
+                    });
+                }
             }
             if (!representative.actual_text) trimTrailingWhitespace(&text);
+            while (geometry.items.len > 0 and geometry.items[geometry.items.len - 1].text_start_byte >= text.items.len) geometry.items.len -= 1;
+            if (geometry.items.len > 0) geometry.items[geometry.items.len - 1].text_end_byte = @min(geometry.items[geometry.items.len - 1].text_end_byte, text.items.len);
             if (text.items.len == 0) {
                 text.deinit(allocator);
                 segment_start = segment_end;
@@ -325,6 +350,8 @@ pub fn buildLineSpans(
                 if (font_name) |name| allocator.free(name);
             };
             try spans.ensureUnusedCapacity(allocator, 1);
+            const owned_geometry = try geometry.toOwnedSlice(allocator);
+            errdefer allocator.free(owned_geometry);
             const owned_text = try text.toOwnedSlice(allocator);
             const paint = representative.paint.forBBox(segment_bbox);
             spans.appendAssumeCapacity(layout.TextSpan.init(.{
@@ -343,6 +370,7 @@ pub fn buildLineSpans(
                 .leading_boundary = segmentLeadingBoundary(glyphs, result, start + segment_start),
                 .content_scope = representative.content_scope,
                 .paint = paint,
+                .glyph_geometry = owned_geometry,
             }));
             font_name_transferred = true;
             segment_start = segment_end;
@@ -443,14 +471,14 @@ fn baselineFontSize(glyph: GlyphSpan) f64 {
 
 fn sameOrientation(a: GlyphSpan, b: GlyphSpan) bool {
     if (a.writing_mode != b.writing_mode) return false;
-    const aa = a.text_matrix[0];
-    const ab = a.text_matrix[1];
-    const ba = b.text_matrix[0];
-    const bb = b.text_matrix[1];
+    const aa = if (a.writing_mode == 1) -a.text_matrix[2] else a.text_matrix[0];
+    const ab = if (a.writing_mode == 1) -a.text_matrix[3] else a.text_matrix[1];
+    const ba = if (b.writing_mode == 1) -b.text_matrix[2] else b.text_matrix[0];
+    const bb = if (b.writing_mode == 1) -b.text_matrix[3] else b.text_matrix[1];
     const a_len = @sqrt(aa * aa + ab * ab);
     const b_len = @sqrt(ba * ba + bb * bb);
-    if (a_len <= 0.0001 or b_len <= 0.0001) return true;
-    return @abs((aa * ba + ab * bb) / (a_len * b_len)) >= 0.94;
+    if (!std.math.isFinite(a_len) or !std.math.isFinite(b_len) or a_len <= 0.0001 or b_len <= 0.0001) return false;
+    return (aa * ba + ab * bb) / (a_len * b_len) >= 0.94;
 }
 
 fn detectCentralGutter(
@@ -1234,6 +1262,67 @@ fn rotatedTestGlyph(text: []const u8, distance: f64, vertical: bool) GlyphSpan {
     return glyph;
 }
 
+test "opposite writing axes remain separate lines on a coincident baseline" {
+    const first = testGlyph("A", 0, 0, 6);
+    var opposite = testGlyph("B", 10, 0, 6);
+    opposite.text_matrix[0] = -1;
+    opposite.text_matrix[3] = -1;
+    const glyphs = [_]GlyphSpan{ first, opposite };
+    var result = try analyze(std.testing.allocator, &glyphs, .{ .x0 = -100, .y0 = -100, .x1 = 100, .y1 = 100 }, "AB");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.lines.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, result.text, 'A') != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, result.text, 'B') != null);
+    try std.testing.expect(sameOrientation(first, first));
+    try std.testing.expect(!sameOrientation(first, opposite));
+    var quarter_turn = first;
+    quarter_turn.text_matrix = .{ 0, 1, -1, 0, 0, 0 };
+    try std.testing.expect(!sameOrientation(first, quarter_turn));
+    var invalid = first;
+    invalid.text_matrix = @splat(0);
+    try std.testing.expect(!sameOrientation(first, invalid));
+    var vertical = first;
+    vertical.writing_mode = 1;
+    var vertical_opposite = vertical;
+    vertical_opposite.text_matrix[3] = -1;
+    try std.testing.expect(!sameOrientation(vertical, vertical_opposite));
+}
+
+fn glyphGeometryAllocationProbe(allocator: std.mem.Allocator) !void {
+    var first = testGlyph("fi", 10, 10, 6);
+    first.quad = .{ .{ 10, 8 }, .{ 16, 8 }, .{ 16, 20 }, .{ 10, 20 } };
+    var replacement = testGlyph("semantic", 25, 10, 12);
+    replacement.actual_text = true;
+    replacement.semantic_replacement = true;
+    const glyphs = [_]GlyphSpan{ first, replacement };
+    var result = try analyze(allocator, &glyphs, .{ .x0 = 0, .y0 = 0, .x1 = 200, .y1 = 200 }, "fisemantic");
+    defer result.deinit();
+    const spans = try buildLineSpansWithGeometry(allocator, &glyphs, &result, 0, true);
+    defer {
+        for (spans) |span| {
+            allocator.free(span.text);
+            if (span.font.name) |name| allocator.free(name);
+            allocator.free(span.glyph_geometry);
+        }
+        allocator.free(spans);
+    }
+    try std.testing.expectEqual(@as(usize, 2), spans.len);
+    try std.testing.expectEqualStrings("fi", spans[0].text);
+    try std.testing.expectEqual(@as(usize, 1), spans[0].glyph_geometry.len);
+    const ligature = spans[0].glyph_geometry[0];
+    try std.testing.expectEqual(@as(usize, 2), ligature.text_end_byte);
+    try std.testing.expect(ligature.quad != null);
+    const semantic = spans[1].glyph_geometry[0];
+    try std.testing.expect(semantic.precision == .replacement_group);
+    try std.testing.expect(semantic.quad == null);
+    try std.testing.expectEqualStrings("semantic", spans[1].text[semantic.text_start_byte..semantic.text_end_byte]);
+}
+
+test "source glyph geometry retains ligatures and coarse ActualText through allocation failure" {
+    try glyphGeometryAllocationProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, glyphGeometryAllocationProbe, .{});
+}
+
 test "projected rotated advances preserve within-word joins and real word gaps" {
     const glyphs = [_]GlyphSpan{
         rotatedTestGlyph("A", 0, false),  rotatedTestGlyph("B", 6, false),
@@ -1649,8 +1738,11 @@ fn lineSpanAllocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "native line span ownership is safe across every allocation failure" {
+    // Shrinking an ArrayList can remap in place depending on heap placement.
+    // Force the allocating path so every injected failure index is repeatable.
+    var no_remap = std.testing.FailingAllocator.init(std.testing.allocator, .{ .resize_fail_index = 0 });
     try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
+        no_remap.allocator(),
         lineSpanAllocationProbe,
         .{},
     );

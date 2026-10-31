@@ -95,6 +95,16 @@ pub const RulingLine = struct {
     stroke_width: f64 = 1,
 };
 
+/// Geometry belongs to a source glyph or semantic replacement group, never
+/// an invented character subdivision. Ranges refer to exact span UTF-8 bytes.
+pub const GlyphGeometry = struct {
+    text_start_byte: usize,
+    text_end_byte: usize,
+    bbox: BBox,
+    quad: ?[4][2]f64 = null,
+    precision: enum { glyph, replacement_group } = .glyph,
+};
+
 pub const TextSpan = struct {
     page_index: u32 = 0,
     bbox: BBox = .{},
@@ -128,6 +138,7 @@ pub const TextSpan = struct {
     // Controlled aggregate projections have identity without pretending to
     // be one native leaf. Untracked cross-layer evidence may still deduplicate.
     preserve_source_identity: bool = false,
+    glyph_geometry: []const GlyphGeometry = &.{},
 
     pub fn init(args: struct {
         page_index: u32 = 0,
@@ -147,6 +158,7 @@ pub const TextSpan = struct {
         content_scope: ?form_scope.Scope = null,
         leading_boundary: ?TextBoundary = null,
         preserve_source_identity: bool = false,
+        glyph_geometry: []const GlyphGeometry = &.{},
     }) TextSpan {
         var font = args.font;
         const font_size = if (font.size != 0) font.size else args.bbox.y1 - args.bbox.y0;
@@ -175,6 +187,7 @@ pub const TextSpan = struct {
             .content_scope = args.content_scope,
             .leading_boundary = args.leading_boundary,
             .preserve_source_identity = args.preserve_source_identity,
+            .glyph_geometry = args.glyph_geometry,
         };
     }
 };
