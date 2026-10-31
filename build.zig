@@ -460,6 +460,13 @@ pub fn build(b: *std.Build) void {
     benchmark_eval_step.dependOn(&benchmark_adaptive_font_quality_cmd.step);
 
     const test_step = b.step("test", "Run unit tests");
+    const table_region_tests = b.step("test-table-regions", "Run table-region ownership, projection and integration tests");
+    table_region_tests.dependOn(&run_layout_unit_tests.step);
+    table_region_tests.dependOn(&run_native_layout_unit_tests.step);
+    table_region_tests.dependOn(&run_adaptive_unit_tests.step);
+    table_region_tests.dependOn(&run_schema_unit_tests.step);
+    table_region_tests.dependOn(&run_reconcile_unit_tests.step);
+    table_region_tests.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_simd_unit_tests.step);
     test_step.dependOn(&run_decompress_unit_tests.step);

@@ -1,0 +1,46 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 671 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 68 688 Tm (Item) Tj ET
+BT /F1 10 Tf 1 0 0 1 390 688 Tm (Issued) Tj ET
+BT /F1 10 Tf 1 0 0 1 488 688 Tm (Returned) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 622 Tm (Portable sample) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 606 Tm (carriers) Tj ET
+BT /F1 10 Tf 1 0 0 1 414 646 Tm (23) Tj ET
+BT /F1 10 Tf 1 0 0 1 524 646 Tm (21) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 566 Tm (Glass trays) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 566 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 566 Tm (3) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 524 Tm (Total) Tj ET
+BT /F1 10 Tf 1 0 0 1 414 524 Tm (23) Tj ET
+BT /F1 10 Tf 1 0 0 1 524 524 Tm (24) Tj ET
+BT /F1 10 Tf 1 0 0 1 122 750 Tm (Laboratory checkout statement) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000962 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1030
+%%EOF

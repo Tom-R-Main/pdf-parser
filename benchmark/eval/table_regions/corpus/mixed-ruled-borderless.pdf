@@ -1,0 +1,57 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 966 >>
+stream
+0.5 w
+54 604 m 54 724 l S
+300 604 m 300 724 l S
+530 604 m 530 724 l S
+54 724 m 530 724 l S
+54 684 m 530 684 l S
+54 644 m 530 644 l S
+54 604 m 530 604 l S
+BT /F1 10 Tf 1 0 0 1 62 702 Tm (Port) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 702 Tm (Active) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 662 Tm (Elm) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 662 Tm (8) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 622 Tm (Pine) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 622 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 464 Tm (Shift) Tj ET
+BT /F1 10 Tf 1 0 0 1 388 464 Tm (Opened) Tj ET
+BT /F1 10 Tf 1 0 0 1 488 464 Tm (Closed) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 428 Tm (Early) Tj ET
+BT /F1 10 Tf 1 0 0 1 412 428 Tm (25) Tj ET
+BT /F1 10 Tf 1 0 0 1 512 428 Tm (24) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 392 Tm (Late) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 392 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 356 Tm (Total) Tj ET
+BT /F1 10 Tf 1 0 0 1 412 356 Tm (25) Tj ET
+BT /F1 10 Tf 1 0 0 1 512 356 Tm (24) Tj ET
+BT /F1 10 Tf 1 0 0 1 70 550 Tm (New report begins below) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001257 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1325
+%%EOF

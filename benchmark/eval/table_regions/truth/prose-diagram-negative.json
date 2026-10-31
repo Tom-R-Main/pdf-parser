@@ -1,0 +1,42 @@
+{
+  "tables": [],
+  "retained_prose": [
+    {
+      "text": "1. Review intake",
+      "region": {
+        "x0": 52,
+        "y0": 695,
+        "x1": 152,
+        "y1": 710
+      }
+    },
+    {
+      "text": "2. Verify the signed note",
+      "region": {
+        "x0": 68,
+        "y0": 649,
+        "x1": 222,
+        "y1": 664
+      }
+    },
+    {
+      "text": "3. Archive the receipt",
+      "region": {
+        "x0": 58,
+        "y0": 598,
+        "x1": 194,
+        "y1": 613
+      }
+    },
+    {
+      "text": "Trend sketch only",
+      "region": {
+        "x0": 93,
+        "y0": 495,
+        "x1": 199,
+        "y1": 510
+      }
+    }
+  ],
+  "explanation": "Graphic axes and numbered prose do not establish a table."
+}

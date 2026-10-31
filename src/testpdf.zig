@@ -652,6 +652,38 @@ fn repeatedWidths(allocator: std.mem.Allocator, count: usize, width_value: []con
     return widths.toOwnedSlice(allocator);
 }
 
+/// Equivalent raw-font and matrix encodings for statement integration tests.
+pub const StatementFontTransform = enum { scaled_text, inverse_text, scaled_graphics };
+
+/// A complete sectioned statement with both prefix and suffix label chains.
+/// All three encodings paint the same twelve-point text at the same positions.
+pub fn generateTransformedStatementPdf(allocator: std.mem.Allocator, transform: StatementFontTransform) ![]u8 {
+    const declared_size: f64 = if (transform == .inverse_text) 120 else 1;
+    const text_scale: f64 = switch (transform) {
+        .scaled_text => 12,
+        .inverse_text => 0.1,
+        .scaled_graphics => 1,
+    };
+    const graphics_scale: f64 = if (transform == .scaled_graphics) 12 else 1;
+    const positions = [_]struct { text: []const u8, x: f64, y: f64 }{
+        .{ .text = "Item", .x = 68, .y = 698 },    .{ .text = "Now", .x = 404.4, .y = 698 },   .{ .text = "Prior", .x = 500, .y = 698 },
+        .{ .text = "CAPITAL", .x = 68, .y = 662 }, .{ .text = "Long", .x = 68, .y = 626 },     .{ .text = "label", .x = 88, .y = 610 },
+        .{ .text = "12", .x = 411.6, .y = 592 },   .{ .text = "10", .x = 521.6, .y = 592 },    .{ .text = "4", .x = 418.8, .y = 552 },
+        .{ .text = "3", .x = 528.8, .y = 552 },    .{ .text = "Portable", .x = 68, .y = 528 }, .{ .text = "carrier", .x = 88, .y = 512 },
+        .{ .text = "Tail", .x = 68, .y = 472 },    .{ .text = "16", .x = 411.6, .y = 472 },    .{ .text = "13", .x = 521.6, .y = 472 },
+    };
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(allocator);
+    const writer = runtime.arrayListWriter(&content, allocator);
+    if (transform == .scaled_graphics) try writer.writeAll("q 12 0 0 12 0 0 cm\n");
+    for (positions) |item| try writer.print("BT /F1 {d} Tf {d} 0 0 {d} {d} {d} Tm ({s}) Tj ET\n", .{
+        declared_size, text_scale, text_scale, item.x / graphics_scale, item.y / graphics_scale, item.text,
+    });
+    if (transform == .scaled_graphics) try writer.writeAll("Q\n");
+    const font = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>\nendobj\n";
+    return generateSinglePageFontFixturePdf(allocator, "/F1 5 0 R", content.items, &.{font});
+}
+
 /// One marked-content group with two independently positioned text spans.
 pub fn generateSharedMcidLinesPdf(allocator: std.mem.Allocator) ![]u8 {
     const content =

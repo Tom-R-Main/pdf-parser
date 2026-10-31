@@ -132,6 +132,16 @@ pub fn parseStructTree(
     xref: *const XRefTable,
     cache: *std.AutoHashMap(u32, Object),
 ) !StructTree {
+    return parseStructTreeWithOptions(allocator, data, xref, cache, .{});
+}
+
+pub fn parseStructTreeWithOptions(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    xref: *const XRefTable,
+    cache: *std.AutoHashMap(u32, Object),
+    options: pagetree.BuildOptions,
+) !StructTree {
     // Get Root from trailer
     const root_ref = switch (xref.trailer.get("Root") orelse return emptyTree(allocator)) {
         .reference => |r| r,
@@ -139,8 +149,10 @@ pub fn parseStructTree(
     };
 
     // Resolve catalog
-    const catalog = pagetree.resolveRef(allocator, data, xref, root_ref, cache) catch
+    const catalog = pagetree.resolveRefWithOptions(allocator, data, xref, root_ref, cache, options) catch |err| {
+        if (@import("decompress.zig").isResourceError(err)) return err;
         return emptyTree(allocator);
+    };
 
     const catalog_dict = switch (catalog) {
         .dict => |d| d,
@@ -153,8 +165,10 @@ pub fn parseStructTree(
         else => return emptyTree(allocator),
     };
 
-    const struct_tree_obj = pagetree.resolveRef(allocator, data, xref, struct_tree_ref, cache) catch
+    const struct_tree_obj = pagetree.resolveRefWithOptions(allocator, data, xref, struct_tree_ref, cache, options) catch |err| {
+        if (@import("decompress.zig").isResourceError(err)) return err;
         return emptyTree(allocator);
+    };
 
     const struct_tree_dict = switch (struct_tree_obj) {
         .dict => |d| d,
@@ -174,7 +188,7 @@ pub fn parseStructTree(
     }
 
     const root_kids = struct_tree_dict.get("K") orelse return emptyTree(allocator);
-    const root_elem = try parseStructElement(allocator, data, xref, cache, root_kids, &elements);
+    const root_elem = try parseStructElement(allocator, data, xref, cache, root_kids, &elements, options);
 
     const elements_slice = try elements.toOwnedSlice(allocator);
 
@@ -200,10 +214,14 @@ fn parseStructElement(
     cache: *std.AutoHashMap(u32, Object),
     obj: Object,
     elements: *std.ArrayList(*StructElement),
+    options: pagetree.BuildOptions,
 ) !?*const StructElement {
     // Resolve if reference
     const resolved = switch (obj) {
-        .reference => |r| pagetree.resolveRef(allocator, data, xref, r, cache) catch return null,
+        .reference => |r| pagetree.resolveRefWithOptions(allocator, data, xref, r, cache, options) catch |err| {
+            if (@import("decompress.zig").isResourceError(err)) return err;
+            return null;
+        },
         else => obj,
     };
 
@@ -231,7 +249,7 @@ fn parseStructElement(
             errdefer children.deinit(allocator);
 
             if (dict.get("K")) |kids| {
-                try parseKids(allocator, data, xref, cache, kids, &children, elements, page_ref);
+                try parseKids(allocator, data, xref, cache, kids, &children, elements, page_ref, options);
             }
 
             const children_slice = try children.toOwnedSlice(allocator);
@@ -270,11 +288,12 @@ fn parseKids(
     children: *std.ArrayList(StructChild),
     elements: *std.ArrayList(*StructElement),
     parent_page: ?ObjRef,
+    options: pagetree.BuildOptions,
 ) !void {
     switch (kids_obj) {
         .array => |arr| {
             for (arr) |item| {
-                try parseKids(allocator, data, xref, cache, item, children, elements, parent_page);
+                try parseKids(allocator, data, xref, cache, item, children, elements, parent_page, options);
             }
         },
         .integer => |mcid| {
@@ -289,8 +308,11 @@ fn parseKids(
         },
         .reference => |ref| {
             // Could be another StructElem or MCR
-            const resolved = pagetree.resolveRef(allocator, data, xref, ref, cache) catch return;
-            try parseKids(allocator, data, xref, cache, resolved, children, elements, parent_page);
+            const resolved = pagetree.resolveRefWithOptions(allocator, data, xref, ref, cache, options) catch |err| {
+                if (@import("decompress.zig").isResourceError(err)) return err;
+                return;
+            };
+            try parseKids(allocator, data, xref, cache, resolved, children, elements, parent_page, options);
         },
         .dict => |dict| {
             // Check if it's an MCR (Marked Content Reference)
@@ -327,7 +349,7 @@ fn parseKids(
                 errdefer sub_children.deinit(allocator);
 
                 if (dict.get("K")) |sub_kids| {
-                    try parseKids(allocator, data, xref, cache, sub_kids, &sub_children, elements, page_ref);
+                    try parseKids(allocator, data, xref, cache, sub_kids, &sub_children, elements, page_ref, options);
                 }
 
                 const sub_children_slice = try sub_children.toOwnedSlice(allocator);

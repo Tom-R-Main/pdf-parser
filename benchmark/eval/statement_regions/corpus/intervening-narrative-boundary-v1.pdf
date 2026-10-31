@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 827 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 68 702 Tm (Lot) Tj ET
+BT /F1 10 Tf 1 0 0 1 408 702 Tm (Due) Tj ET
+BT /F1 10 Tf 1 0 0 1 512 702 Tm (Sent) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 662 Tm (Aster) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 662 Tm (5) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 662 Tm (4) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 622 Tm (Cedar) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 622 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 622 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 470 Tm (Lot) Tj ET
+BT /F1 10 Tf 1 0 0 1 408 470 Tm (Due) Tj ET
+BT /F1 10 Tf 1 0 0 1 512 470 Tm (Sent) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 430 Tm (Juniper) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 430 Tm (9) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 430 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 390 Tm (Maple) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 390 Tm (3) Tj ET
+BT /F1 10 Tf 1 0 0 1 60 548 Tm (Inspection narrative separates the queues) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001118 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1186
+%%EOF

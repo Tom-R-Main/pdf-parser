@@ -135,15 +135,41 @@ jobs:
       - name: Build shared library
         run: zig build shared --summary all
 
+      - name: Verify adaptive provenance and bounded recovery
+        run: |
+          python3 benchmark/eval/table_continuation_parity.py --output benchmark/eval/outputs/parser-020-ci/table-parity
+          python3 benchmark/eval/parser_improvements.py --output benchmark/eval/outputs/parser-020-ci/geometry-and-decoding
+          python3 benchmark/eval/section_hierarchy.py --output benchmark/eval/outputs/parser-020-ci/sections
+          python3 benchmark/eval/section_safety.py --output benchmark/eval/outputs/parser-020-ci/section-safety
+
+      - name: Upload adaptive provenance evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: parser-020-provenance
+          path: benchmark/eval/outputs/parser-020-ci
+          if-no-files-found: warn
+
       - name: Verify frozen topology and emitted-order controls
         run: |
           python3 -m unittest discover -s benchmark/eval -p 'test_table_compare.py'
           python3 -m unittest discover -s benchmark/eval -p 'test_bounded_zig.py'
           python3 -m unittest discover -s benchmark/eval/table_topology -p 'test_*.py'
           python3 -m unittest discover -s benchmark/eval/table_topology_real -p 'test_*.py'
+          python3 -m unittest discover -s benchmark/eval/table_regions -p 'test_*.py'
+          python3 -m unittest discover -s benchmark/eval/statement_regions -p 'test_*.py'
           python3 -m unittest discover -s benchmark/eval/reading_order_next -p 'test_*.py'
           python3 benchmark/eval/table_topology/generate.py --check
           python3 benchmark/eval/reading_order_next/generate.py --check
+          python3 benchmark/eval/table_regions/generate.py --check
+          python3 benchmark/eval/statement_regions/generate.py --check
+          python3 benchmark/eval/statement_regions/freeze_geometry.py --check
+          python3 benchmark/eval/table_regions/verify.py \
+            --cli zig-out/bin/pdf-parser \
+            --output benchmark/eval/outputs/table-regions-ci
+          python3 benchmark/eval/statement_regions/verify.py \
+            --cli zig-out/bin/pdf-parser \
+            --output benchmark/eval/outputs/statement-regions-ci
           for split in dev holdout; do
             python3 benchmark/eval/table_topology/verify.py \
               --cli zig-out/bin/pdf-parser --split "$split" \
@@ -161,6 +187,8 @@ jobs:
           path: |
             benchmark/eval/outputs/topology-ci
             benchmark/eval/outputs/reading-order-ci
+            benchmark/eval/outputs/table-regions-ci
+            benchmark/eval/outputs/statement-regions-ci
           if-no-files-found: warn
 
       - uses: actions/setup-node@v6
@@ -251,7 +279,7 @@ jobs:
     env:
       OCR_TESSERACT_PACKAGE_VERSION: 5.3.4-1build5
       OCR_TESSDATA_ENG_PACKAGE_VERSION: 1:4.1.0-2
-      OCR_POPPLER_PACKAGE_VERSION: 24.02.0-1ubuntu9.10
+      OCR_POPPLER_PACKAGE_VERSION: 24.02.0-1ubuntu9.11
       OCR_TESSERACT_VERSION: tesseract 5.3.4
       OCR_POPPLER_VERSION: pdftoppm version 24.02.0
     steps:

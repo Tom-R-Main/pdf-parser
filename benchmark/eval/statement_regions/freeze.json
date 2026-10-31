@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "files_sha256": {
+    "corpus/statement-section-labels-v1.pdf": "559674d1796126877bdd4978414f73cc4b9358279e03391b83c404df4fe29295",
+    "truth/statement-section-labels-v1.json": "9c777407622513e4f747af4916e935a116c2f209d380414ceaf49dc9a655a67f",
+    "corpus/wrapped-label-before-values-v1.pdf": "0e93b04639c5c654de1dfb19668008b1a727f4b907e3f094334879bb9861350c",
+    "truth/wrapped-label-before-values-v1.json": "2933a26f7492afc5b1275296dbce0782a7dc5758ce2331bb68ef2ffa9315e61d",
+    "corpus/wrapped-label-after-values-v1.pdf": "966ac8315b4c0a487e75043bc9fd172784b42e9770a0d94bc91560c50bfa2f5a",
+    "truth/wrapped-label-after-values-v1.json": "52e7a95511acd1dd8a6da2c5c53ab9ecff7d1dcad0105f624c6ef3fa22a771bc",
+    "corpus/indented-hierarchy-sparse-subtotal-v1.pdf": "ab3af00b5a256327583623f5302da137f34af7162947ad57e447a2575b69d0bb",
+    "truth/indented-hierarchy-sparse-subtotal-v1.json": "037a7aeeb17bc8f3f4ccff4c1141f65f0a3bbc325c0c2cb570d595756cbc8533",
+    "corpus/intervening-narrative-boundary-v1.pdf": "3c7e7e010c565491f85b53e4cd324846e1297c6e98e6cd41b058f73723cfc9f3",
+    "truth/intervening-narrative-boundary-v1.json": "d4c9d36b1da6826bb44d115d6b54a78b3bff31a461db0a9c062a717ce776637e",
+    "corpus/repeated-header-separate-statements-v1.pdf": "476b604e061deb496c9bca41ca45ad293ad9e7aebf2763b151f1e0f40afdc92c",
+    "truth/repeated-header-separate-statements-v1.json": "e2e972fefa591865e29be0813ce14c8f0fb96e120271e3252671d261aa474e49",
+    "corpus/detached-label-fragment-boundary-v1.pdf": "04460115870786773ef95b21891baa9395cf3b23aacfac2574d016186bb3150b",
+    "truth/detached-label-fragment-boundary-v1.json": "36be7557f25b46ae0c46a4116106ee1e50f53b7fb2d59c639fb64795aa00243e",
+    "corpus/section-heading-page-prose-negative-v1.pdf": "7616dceb3431cf2634a4687e6e103059954b21348fcdc6ed3ff74d7633bc0234",
+    "truth/section-heading-page-prose-negative-v1.json": "c4e3f4a4650cbcdf3053bc0ad94f5abd3cee43260d9246e52c2e7042d0d73e91",
+    "cases.json": "32fdb8c5b6063fa29a9bebeb6fda69b7c3e4bd0b24aec7548f1590591209dd62",
+    "generate.py": "6f9c338e98fea1df967df3319ce7a295788e2e65d986d84f1af4ee85937d7d09"
+  },
+  "dependencies_sha256": {
+    "table_regions/generate.py": "b2605979cdde0f283156332c259f516cef2526a1b20f2bc214bf467f37482323"
+  },
+  "controls": {
+    "region_tolerance_points": 6,
+    "geometry_tolerance_points": 2
+  },
+  "scope": "Independent section-label/wrapped-row development drawings; no merged-cell, continuation or real holdout qualification.",
+  "acceptance": [
+    "exact complete regular matrices including section labels and blank numeric cells",
+    "both label fragments and numeric baseline belong to their own physical row",
+    "same strict ownership, token inventory, region, source identity and lifecycle gates as table_regions",
+    "prose, new headers and detached text preserve boundaries and source coverage"
+  ]
+}

@@ -1,0 +1,198 @@
+{
+  "tables": [
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Area",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Booked",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Used",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Bench",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "6",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "5",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Shelf",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 60,
+        "y0": 600,
+        "x1": 550,
+        "y1": 720
+      }
+    },
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Area",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Booked",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Used",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Rack",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "14",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "13",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Cart",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "2",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 60,
+        "y0": 428,
+        "x1": 550,
+        "y1": 548
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "Two independent allocation reports",
+      "region": {
+        "x0": 98,
+        "y0": 755,
+        "x1": 306,
+        "y1": 770
+      }
+    }
+  ],
+  "explanation": "A new repeated header after a blank report gap starts a separate same-alignment table."
+}

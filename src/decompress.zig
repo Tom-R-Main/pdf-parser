@@ -24,6 +24,16 @@ pub const DecompressError = error{
 /// Maximum decompressed size (prevent DoS)
 const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256 MB
 
+/// Per-stage decoded byte limit. This does not bound aggregate live memory.
+pub const Options = struct {
+    max_output_bytes: usize = MAX_DECOMPRESSED_SIZE,
+};
+
+/// Resource refusals must never become successful raw-byte recovery.
+pub fn isResourceError(err: anyerror) bool {
+    return err == error.OutputTooLarge or err == error.OutOfMemory;
+}
+
 /// Decompress a PDF stream based on its /Filter entry
 pub fn decompressStream(
     allocator: std.mem.Allocator,
@@ -31,7 +41,17 @@ pub fn decompressStream(
     filter: ?Object,
     params: ?Object,
 ) ![]u8 {
-    const filters = switch (filter orelse return try allocator.dupe(u8, data)) {
+    return decompressStreamWithOptions(allocator, data, filter, params, .{});
+}
+
+pub fn decompressStreamWithOptions(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    filter: ?Object,
+    params: ?Object,
+    options: Options,
+) ![]u8 {
+    const filters = switch (filter orelse return boundedDupe(allocator, data, options.max_output_bytes)) {
         .name => |n| &[_][]const u8{n},
         .array => |arr| blk: {
             var names: [16][]const u8 = undefined;
@@ -44,7 +64,7 @@ pub fn decompressStream(
             }
             break :blk names[0..count];
         },
-        else => return try allocator.dupe(u8, data),
+        else => return boundedDupe(allocator, data, options.max_output_bytes),
     };
 
     var current = data;
@@ -58,14 +78,14 @@ pub fn decompressStream(
             else => null,
         } else null;
 
-        const result = try applyFilter(allocator, current, f, param);
+        const result = try applyFilter(allocator, current, f, param, options.max_output_bytes);
 
         if (owned) |o| allocator.free(o);
         owned = result;
         current = result;
     }
 
-    const final = owned orelse try allocator.dupe(u8, data);
+    const final = owned orelse try boundedDupe(allocator, data, options.max_output_bytes);
     owned = null; // Prevent double-free
     return final;
 }
@@ -75,35 +95,45 @@ fn applyFilter(
     data: []const u8,
     filter_name: []const u8,
     params: ?Object,
+    max_size: usize,
 ) ![]u8 {
     if (std.mem.eql(u8, filter_name, "FlateDecode") or
         std.mem.eql(u8, filter_name, "Fl"))
     {
-        return decodeFlateDecode(allocator, data, params);
+        return decodeFlateDecodeWithLimit(allocator, data, params, max_size);
     }
 
     if (std.mem.eql(u8, filter_name, "ASCII85Decode") or
         std.mem.eql(u8, filter_name, "A85"))
     {
-        return decodeASCII85(allocator, data);
+        return decodeASCII85WithLimit(allocator, data, max_size);
     }
 
     if (std.mem.eql(u8, filter_name, "ASCIIHexDecode") or
         std.mem.eql(u8, filter_name, "AHx"))
     {
-        return decodeASCIIHex(allocator, data);
+        return decodeASCIIHexWithLimit(allocator, data, max_size);
     }
 
     if (std.mem.eql(u8, filter_name, "LZWDecode") or
         std.mem.eql(u8, filter_name, "LZW"))
     {
-        return decodeLZW(allocator, data, params);
+        const decoded = try decodeLZWWithLimit(allocator, data, params, max_size);
+        errdefer allocator.free(decoded);
+        if (params) |p| {
+            if (p == .dict and (p.dict.getInt("Predictor") orelse 1) != 1) {
+                const predicted = try applyDecodePredictor(allocator, decoded, params, max_size);
+                allocator.free(decoded);
+                return predicted;
+            }
+        }
+        return decoded;
     }
 
     if (std.mem.eql(u8, filter_name, "RunLengthDecode") or
         std.mem.eql(u8, filter_name, "RL"))
     {
-        return decodeRunLength(allocator, data);
+        return decodeRunLengthWithLimit(allocator, data, max_size);
     }
 
     // DCTDecode (JPEG) and CCITTFaxDecode are for images - pass through for now
@@ -115,23 +145,26 @@ fn applyFilter(
         std.mem.eql(u8, filter_name, "JPXDecode"))
     {
         // These are image formats - return as-is for image extraction
-        return try allocator.dupe(u8, data);
+        return boundedDupe(allocator, data, max_size);
     }
 
     return DecompressError.UnsupportedFilter;
 }
 
+fn boundedDupe(allocator: std.mem.Allocator, data: []const u8, max_size: usize) ![]u8 {
+    if (data.len > max_size) return DecompressError.OutputTooLarge;
+    return allocator.dupe(u8, data);
+}
+
+fn appendBounded(output: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8, max_size: usize) !void {
+    if (output.items.len > max_size or bytes.len > max_size - output.items.len) return DecompressError.OutputTooLarge;
+    try ensureBoundedCapacity(output, allocator, output.items.len + bytes.len, max_size);
+    output.appendSliceAssumeCapacity(bytes);
+}
+
 // ============================================================================
 // FLATEDECODE - THE HOT PATH
 // ============================================================================
-
-fn decodeFlateDecode(
-    allocator: std.mem.Allocator,
-    data: []const u8,
-    params: ?Object,
-) ![]u8 {
-    return decodeFlateDecodeWithLimit(allocator, data, params, MAX_DECOMPRESSED_SIZE);
-}
 
 fn decodeFlateDecodeWithLimit(
     allocator: std.mem.Allocator,
@@ -173,13 +206,14 @@ fn decodeFlateDecodeWithLimit(
                 const colors = try positivePredictorParam(p.dict, "Colors", 1);
                 const bits = try positivePredictorParam(p.dict, "BitsPerComponent", 8);
 
-                const unpredicted = try applyPredictor(
+                const unpredicted = try applyPredictorWithLimit(
                     allocator,
                     output.items,
                     predictor,
                     columns,
                     colors,
                     bits,
+                    max_size,
                 );
                 return unpredicted;
             }
@@ -208,28 +242,38 @@ fn ensureBoundedCapacity(
     try output.ensureTotalCapacityPrecise(allocator, target);
 }
 
-/// Apply PNG predictor to decoded data
-fn applyPredictor(
+fn applyDecodePredictor(allocator: std.mem.Allocator, data: []const u8, params: ?Object, max_size: usize) ![]u8 {
+    const dict = if (params) |p| switch (p) {
+        .dict => p.dict,
+        else => return boundedDupe(allocator, data, max_size),
+    } else return boundedDupe(allocator, data, max_size);
+    const predictor = std.math.cast(i32, dict.getInt("Predictor") orelse 1) orelse return DecompressError.InvalidFilterParams;
+    return applyPredictorWithLimit(allocator, data, predictor, try positivePredictorParam(dict, "Columns", 1), try positivePredictorParam(dict, "Colors", 1), try positivePredictorParam(dict, "BitsPerComponent", 8), max_size);
+}
+
+fn applyPredictorWithLimit(
     allocator: std.mem.Allocator,
     data: []const u8,
     predictor: i32,
     columns: u32,
     colors: u32,
     bits: u32,
+    max_size: usize,
 ) ![]u8 {
     if (predictor == 1) {
         // No prediction
-        return try allocator.dupe(u8, data);
+        return boundedDupe(allocator, data, max_size);
     }
 
     if (predictor == 2) {
         // TIFF Predictor 2
+        if (data.len > max_size) return DecompressError.OutputTooLarge;
         return applyTiffPredictor(allocator, data, columns, colors, bits);
     }
 
     if (predictor >= 10 and predictor <= 15) {
         // PNG predictors
-        return applyPngPredictor(allocator, data, columns, colors, bits);
+        return applyPngPredictorWithLimit(allocator, data, columns, colors, bits, max_size);
     }
 
     return DecompressError.InvalidPredictor;
@@ -281,6 +325,17 @@ fn applyPngPredictor(
     colors: u32,
     bits: u32,
 ) ![]u8 {
+    return applyPngPredictorWithLimit(allocator, data, columns, colors, bits, MAX_DECOMPRESSED_SIZE);
+}
+
+fn applyPngPredictorWithLimit(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    columns: u32,
+    colors: u32,
+    bits: u32,
+    max_size: usize,
+) ![]u8 {
     if (columns == 0 or colors == 0 or !validPredictorBits(bits)) {
         return DecompressError.InvalidFilterParams;
     }
@@ -306,6 +361,8 @@ fn applyPngPredictor(
     const num_rows = data.len / src_row_bytes;
     const out_len = std.math.mul(usize, num_rows, row_bytes) catch
         return DecompressError.InvalidFilterParams;
+
+    if (out_len > max_size) return DecompressError.OutputTooLarge;
 
     var output = try allocator.alloc(u8, out_len);
     errdefer allocator.free(output);
@@ -403,6 +460,10 @@ fn paeth(a: i16, b: i16, c: i16) u8 {
 // ============================================================================
 
 fn decodeASCII85(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    return decodeASCII85WithLimit(allocator, data, MAX_DECOMPRESSED_SIZE);
+}
+
+fn decodeASCII85WithLimit(allocator: std.mem.Allocator, data: []const u8, max_size: usize) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -425,7 +486,7 @@ fn decodeASCII85(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
         // 'z' represents 4 zero bytes
         if (c == 'z') {
             if (count != 0) return DecompressError.DecompressFailed;
-            try output.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 });
+            try appendBounded(&output, allocator, &[_]u8{ 0, 0, 0, 0 }, max_size);
             continue;
         }
 
@@ -436,10 +497,7 @@ fn decodeASCII85(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
         count += 1;
 
         if (count == 5) {
-            try output.append(allocator, @truncate(tuple >> 24));
-            try output.append(allocator, @truncate(tuple >> 16));
-            try output.append(allocator, @truncate(tuple >> 8));
-            try output.append(allocator, @truncate(tuple));
+            try appendBounded(&output, allocator, &.{ @truncate(tuple >> 24), @truncate(tuple >> 16), @truncate(tuple >> 8), @truncate(tuple) }, max_size);
             tuple = 0;
             count = 0;
         }
@@ -452,9 +510,8 @@ fn decodeASCII85(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
             tuple = tuple * 85 + 84;
         }
 
-        if (count >= 2) try output.append(allocator, @truncate(tuple >> 24));
-        if (count >= 3) try output.append(allocator, @truncate(tuple >> 16));
-        if (count >= 4) try output.append(allocator, @truncate(tuple >> 8));
+        const tail = [_]u8{ @truncate(tuple >> 24), @truncate(tuple >> 16), @truncate(tuple >> 8) };
+        if (count >= 2) try appendBounded(&output, allocator, tail[0 .. count - 1], max_size);
     }
 
     return output.toOwnedSlice(allocator);
@@ -465,6 +522,10 @@ fn decodeASCII85(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 // ============================================================================
 
 fn decodeASCIIHex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    return decodeASCIIHexWithLimit(allocator, data, MAX_DECOMPRESSED_SIZE);
+}
+
+fn decodeASCIIHexWithLimit(allocator: std.mem.Allocator, data: []const u8, max_size: usize) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -488,7 +549,7 @@ fn decodeASCIIHex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 
         if (nibble) |n| {
             if (high) |h| {
-                try output.append(allocator, (@as(u8, h) << 4) | n);
+                try appendBounded(&output, allocator, &.{(@as(u8, h) << 4) | n}, max_size);
                 high = null;
             } else {
                 high = n;
@@ -498,7 +559,7 @@ fn decodeASCIIHex(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
 
     // Trailing nibble is padded with 0
     if (high) |h| {
-        try output.append(allocator, @as(u8, h) << 4);
+        try appendBounded(&output, allocator, &.{@as(u8, h) << 4}, max_size);
     }
 
     return output.toOwnedSlice(allocator);
@@ -518,6 +579,15 @@ fn decodeLZW(
     allocator: std.mem.Allocator,
     data: []const u8,
     params: ?Object,
+) ![]u8 {
+    return decodeLZWWithLimit(allocator, data, params, MAX_DECOMPRESSED_SIZE);
+}
+
+fn decodeLZWWithLimit(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    params: ?Object,
+    max_size: usize,
 ) ![]u8 {
     _ = params; // TODO: EarlyChange parameter
 
@@ -590,10 +660,7 @@ fn decodeLZW(
 
         // Output string for code
         if (table.get(code)) |entry| {
-            if (output.items.len > MAX_DECOMPRESSED_SIZE or entry.len > MAX_DECOMPRESSED_SIZE - output.items.len) {
-                return DecompressError.OutputTooLarge;
-            }
-            try output.appendSlice(allocator, entry);
+            try appendBounded(&output, allocator, entry, max_size);
 
             if (prev_code) |pc| {
                 if (table.get(pc)) |prev_entry| {
@@ -610,14 +677,11 @@ fn decodeLZW(
             if (code != table.size) return DecompressError.DecompressFailed;
             const pc = prev_code orelse return DecompressError.DecompressFailed;
             const prev_entry = table.get(pc) orelse return DecompressError.DecompressFailed;
+            if (output.items.len > max_size or prev_entry.len >= max_size - output.items.len) return DecompressError.OutputTooLarge;
             var new_entry = try allocator.alloc(u8, prev_entry.len + 1);
             @memcpy(new_entry[0..prev_entry.len], prev_entry);
             new_entry[prev_entry.len] = prev_entry[0];
-            if (output.items.len > MAX_DECOMPRESSED_SIZE or new_entry.len > MAX_DECOMPRESSED_SIZE - output.items.len) {
-                allocator.free(new_entry);
-                return DecompressError.OutputTooLarge;
-            }
-            output.appendSlice(allocator, new_entry) catch |err| {
+            appendBounded(&output, allocator, new_entry, max_size) catch |err| {
                 allocator.free(new_entry);
                 return err;
             };
@@ -655,6 +719,10 @@ fn readBits(data: []const u8, bit_pos: usize, count: u4) ?u16 {
 // ============================================================================
 
 fn decodeRunLength(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    return decodeRunLengthWithLimit(allocator, data, MAX_DECOMPRESSED_SIZE);
+}
+
+fn decodeRunLengthWithLimit(allocator: std.mem.Allocator, data: []const u8, max_size: usize) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
 
@@ -670,7 +738,7 @@ fn decodeRunLength(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
             // Copy next length+1 bytes literally
             const copy_len = @as(usize, length) + 1;
             if (i + copy_len > data.len) break;
-            try output.appendSlice(allocator, data[i..][0..copy_len]);
+            try appendBounded(&output, allocator, data[i..][0..copy_len], max_size);
             i += copy_len;
         } else {
             // Repeat next byte (257-length) times
@@ -678,7 +746,9 @@ fn decodeRunLength(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
             if (i >= data.len) break;
             const byte = data[i];
             i += 1;
-            try output.appendNTimes(allocator, byte, repeat_count);
+            if (output.items.len > max_size or repeat_count > max_size - output.items.len) return DecompressError.OutputTooLarge;
+            try ensureBoundedCapacity(&output, allocator, output.items.len + repeat_count, max_size);
+            output.appendNTimesAssumeCapacity(byte, repeat_count);
         }
     }
 
@@ -731,6 +801,89 @@ test "decodeRunLength" {
     defer allocator.free(result);
 
     try std.testing.expectEqualStrings("ABCXXX", result);
+}
+
+test "public decoder caps every filter and pass-through at exact boundaries" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { filter: ?[]const u8, encoded: []const u8, expected: []const u8 }{
+        .{ .filter = null, .encoded = "AB", .expected = "AB" },
+        .{ .filter = "DCTDecode", .encoded = "AB", .expected = "AB" },
+        .{ .filter = "CCITTFaxDecode", .encoded = "AB", .expected = "AB" },
+        .{ .filter = "JBIG2Decode", .encoded = "AB", .expected = "AB" },
+        .{ .filter = "JPXDecode", .encoded = "AB", .expected = "AB" },
+        .{ .filter = "ASCIIHexDecode", .encoded = "4142>", .expected = "AB" },
+        .{ .filter = "ASCIIHexDecode", .encoded = "414>", .expected = "A@" },
+        .{ .filter = "ASCII85Decode", .encoded = "z~>", .expected = &.{ 0, 0, 0, 0 } },
+        .{ .filter = "ASCII85Decode", .encoded = "87cURD]j7BEbo7~>", .expected = "Hello world" },
+        .{ .filter = "RunLengthDecode", .encoded = &.{ 255, 'X', 128 }, .expected = "XX" },
+        .{ .filter = "RunLengthDecode", .encoded = &.{ 1, 'A', 'B', 128 }, .expected = "AB" },
+        .{ .filter = "LZWDecode", .encoded = &.{ 128, 16, 72, 80, 16 }, .expected = "AB" },
+        .{ .filter = "LZWDecode", .encoded = &.{ 128, 16, 96, 80, 16 }, .expected = "AAA" },
+    };
+    for (cases) |case| {
+        const filter: ?Object = if (case.filter) |name| .{ .name = name } else null;
+        for ([_]usize{ case.expected.len, case.expected.len + 1 }) |limit| {
+            const decoded = try decompressStreamWithOptions(allocator, case.encoded, filter, null, .{ .max_output_bytes = limit });
+            defer allocator.free(decoded);
+            try std.testing.expectEqualSlices(u8, case.expected, decoded);
+        }
+        try std.testing.expectError(error.OutputTooLarge, decompressStreamWithOptions(allocator, case.encoded, filter, null, .{ .max_output_bytes = case.expected.len - 1 }));
+    }
+    const empty = try decompressStreamWithOptions(allocator, "", null, null, .{ .max_output_bytes = 0 });
+    defer allocator.free(empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectError(error.OutputTooLarge, decompressStreamWithOptions(allocator, "A", null, null, .{ .max_output_bytes = 0 }));
+}
+
+test "public decoder caps intermediate filter and predictor stages" {
+    const allocator = std.testing.allocator;
+    var filters = [_]Object{ .{ .name = "ASCIIHexDecode" }, .{ .name = "RunLengthDecode" } };
+    const filter: Object = .{ .array = &filters };
+    const output = try decompressStreamWithOptions(allocator, "FF4180>", filter, null, .{ .max_output_bytes = 3 });
+    defer allocator.free(output);
+    try std.testing.expectEqualStrings("AA", output);
+    // Final output fits two bytes; the first decoded stage still needs three.
+    try std.testing.expectError(error.OutputTooLarge, decompressStreamWithOptions(allocator, "FF4180>", filter, null, .{ .max_output_bytes = 2 }));
+
+    var entries = [_]Object.Dict.Entry{
+        .{ .key = "Predictor", .value = .{ .integer = 12 } },
+        .{ .key = "Columns", .value = .{ .integer = 3 } },
+    };
+    const params: Object = .{ .dict = .{ .entries = &entries } };
+    const compressed = try compressZlibForTest(allocator, &.{ 0, 10, 11, 13 });
+    defer allocator.free(compressed);
+    const predicted = try decompressStreamWithOptions(allocator, compressed, .{ .name = "FlateDecode" }, params, .{ .max_output_bytes = 4 });
+    defer allocator.free(predicted);
+    try std.testing.expectEqualSlices(u8, &.{ 10, 11, 13 }, predicted);
+    try std.testing.expectError(error.OutputTooLarge, decompressStreamWithOptions(allocator, compressed, .{ .name = "FlateDecode" }, params, .{ .max_output_bytes = 3 }));
+    const exact = try applyPredictorWithLimit(allocator, &.{ 0, 10, 11, 13 }, 12, 3, 1, 8, 3);
+    defer allocator.free(exact);
+    try std.testing.expectError(error.OutputTooLarge, applyPredictorWithLimit(allocator, &.{ 0, 10, 11, 13 }, 12, 3, 1, 8, 2));
+    try std.testing.expectError(error.OutputTooLarge, applyPredictorWithLimit(allocator, &.{ 10, 1, 2 }, 2, 3, 1, 8, 2));
+
+    entries[0].value = .{ .integer = 2 };
+    entries[1].value = .{ .integer = 2 };
+    const lzw_predicted = try decompressStreamWithOptions(allocator, &.{ 128, 16, 72, 80, 16 }, .{ .name = "LZWDecode" }, params, .{ .max_output_bytes = 2 });
+    defer allocator.free(lzw_predicted);
+    try std.testing.expectEqualSlices(u8, &.{ 65, 131 }, lzw_predicted);
+}
+
+fn filterChainAllocationProbe(allocator: std.mem.Allocator, compressed: []const u8) !void {
+    var filters = [_]Object{ .{ .name = "ASCIIHexDecode" }, .{ .name = "RunLengthDecode" } };
+    const decoded = try decompressStreamWithOptions(allocator, "FF4180>", .{ .array = &filters }, null, .{ .max_output_bytes = 3 });
+    defer allocator.free(decoded);
+    const flate = try decompressStreamWithOptions(allocator, compressed, .{ .name = "FlateDecode" }, null, .{ .max_output_bytes = 4 });
+    defer allocator.free(flate);
+    const predicted = try applyPredictorWithLimit(allocator, &.{ 0, 10, 11, 13 }, 12, 3, 1, 8, 3);
+    defer allocator.free(predicted);
+    const lzw = try decompressStreamWithOptions(allocator, &.{ 128, 16, 72, 80, 16 }, .{ .name = "LZWDecode" }, null, .{ .max_output_bytes = 2 });
+    defer allocator.free(lzw);
+}
+
+test "configured filter chain and predictor clean up every allocation failure" {
+    const compressed = try compressZlibForTest(std.testing.allocator, "ABCD");
+    defer std.testing.allocator.free(compressed);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, filterChainAllocationProbe, .{compressed});
 }
 
 fn compressZlibForTest(allocator: std.mem.Allocator, input: []const u8) ![]u8 {

@@ -1,0 +1,43 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 552 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 68 688 Tm (Unit) Tj ET
+BT /F1 10 Tf 1 0 0 1 396 688 Tm (Ready) Tj ET
+BT /F1 10 Tf 1 0 0 1 494 688 Tm (Pending) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 648 Tm (Sterile) Tj ET
+BT /F1 10 Tf 1 0 0 1 414 648 Tm (11) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 648 Tm (2) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 608 Tm (Control) Tj ET
+BT /F1 10 Tf 1 0 0 1 420 608 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 530 608 Tm (-) Tj ET
+BT /F1 10 Tf 1 0 0 1 68 466 Tm (unassigned carrier notes) Tj ET
+BT /F1 10 Tf 1 0 0 1 60 420 Tm (Labels below are not reconciled to a unit) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000843 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+911
+%%EOF

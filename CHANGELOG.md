@@ -4,6 +4,25 @@
 
 ### Added
 
+- Schema 0.20 adds conservative block section ancestry and chunk section owners,
+  with document-global heading IDs shared by batch and streaming output.
+- Optional source-range glyph geometry retains native quads and indivisible
+  ligatures. ActualText replacements keep group bounds without invented quads.
+- `extract-adaptive --max-decoded-stream-bytes` bounds each decoder/filter and
+  predictor stage, including embedded fonts and lazy object streams.
+- JavaScript adapters accept schema 0.20 and expose geometry and decoder-limit
+  options. Streaming checks cross-page section references before completion.
+- Deterministic CLI controls cover cross-format table identity, quote geometry,
+  decoder refusal, section ancestry, long numbering, and outline cycles.
+
+- Frozen statement drawings check section labels, directional wrapped rows,
+  indentation, sparse amounts and narrative boundaries through both JSONL
+  formats. Independent physical row envelopes reject incorrect attachments.
+
+- Independent development drawings check separated table regions, persistent
+  financial columns, exact source ownership and surrounding prose through both
+  public JSONL formats. Previously observed real-document holdouts stay frozen.
+
 - A source-bound real-document table pack freezes selected merged headers and
   continuation controls across separate development and holdout issuers. Local
   original PDFs stay outside Git; failed qualifications remain evidence.
@@ -24,6 +43,25 @@
 
 ### Fixed
 
+- Batch and streaming extraction share one bounded table-continuation policy.
+  Partial headers, missing evidence, page gaps, and intervening tables abstain.
+- Native line grouping distinguishes opposite writing directions, including
+  vertical text, while retaining source text and provenance.
+- Resource refusals propagate through permissive decode recovery. The order of
+  `--permissive` and an explicit decoder-limit flag cannot clear that limit.
+- Deep numbered headings saturate before the counter and PART offset can
+  overflow. Outline traversal detects repeated references and separately
+  bounds recursion, retaining later siblings and readable page text.
+
+- Schema 0.19.4 assembles corroborated section rows and wrapped labels without
+  suppressing refused native sources through heuristic fallback. Transformed
+  text uses private scale evidence while retaining public declared font sizes;
+  padded currency dashes preserve their literal text and amount columns.
+- Schema 0.19.3 isolates table regions and assigns source membership explicitly,
+  retaining unrelated native text and distinguishing cells in separate regions.
+- The real-document gate rejects array-shaped public table bounds while retaining
+  the independently frozen truth coordinate format.
+
 - Schema 0.19.2 keeps batch debug assets bound to original document pages when
   extraction selects a window starting after page one.
 
@@ -43,6 +81,10 @@
   unverified.
 
 ### Changed
+
+- README now leads with a runnable local example, output choices, and fit limits.
+  Detailed commands and architecture live in linked guides; broad unmeasured
+  comparisons with other parsers have been removed.
 
 - CI runs adapter test files serially to avoid process-start deadline contention
   observed during concurrent local verification.

@@ -30,6 +30,7 @@ const FontEncoding = encoding_mod.FontEncoding;
 pub const GlyphSpan = struct {
     page_index: u32 = 0,
     bbox: layout.BBox = .{},
+    quad: ?[4][2]f64 = null,
     text_matrix: [6]f64 = .{ 1, 0, 0, 1, 0, 0 },
     font_name: ?[]const u8 = null,
     font_size: f64 = 0,
@@ -486,6 +487,7 @@ pub const SpanCollector = struct {
     current_line_id: u32 = 0,
     current_mcid: ?i32 = null,
     pending_bbox: ?layout.BBox = null,
+    pending_layout_font_size: f64 = 0,
     pending_unicode_map_error: bool = false,
     pending_actual_text: bool = false,
     current_actual_text: ?[]const u8 = null,
@@ -616,12 +618,17 @@ pub const SpanCollector = struct {
             const owned_text = try self.allocator.dupe(u8, text);
             errdefer self.allocator.free(owned_text);
             const glyph = semanticRunGlyph(raw, text, self.actual_text_mcid);
+            var point_size: f64 = 0;
+            for (raw) |source| {
+                if (glyphNormalFontSize(source.text_matrix, source.font_size, source.writing_mode)) |size| point_size = @max(point_size, size);
+            }
             const font_name = if (glyph.font_name) |name| try self.allocator.dupe(u8, name) else null;
             self.spans.appendAssumeCapacity(TextSpan.init(.{
                 .page_index = self.page_index,
                 .bbox = glyph.bbox,
                 .text = owned_text,
                 .font = .{ .name = font_name, .size = glyph.font_size },
+                .layout_font_size = if (point_size > 0) point_size else null,
                 .block_id = self.current_block_id,
                 .line_id = self.current_line_id,
                 .mcid = self.actual_text_mcid,
@@ -669,6 +676,7 @@ pub const SpanCollector = struct {
             .page_index = self.page_index,
             .bbox = bbox,
             .text_matrix = self.userTextMatrix(),
+            .quad = self.currentGlyphQuad(advance, decoded),
             .font_name = font_name,
             .font_size = self.current_font_size,
             .source_code = decoded.source_code,
@@ -696,6 +704,7 @@ pub const SpanCollector = struct {
             try self.text_buffer.appendSlice(self.allocator, decoded.utf8_text);
         }
         self.pending_bbox = unionOptionalBBox(self.pending_bbox, bbox);
+        if (glyphNormalFontSize(self.userTextMatrix(), self.current_font_size, decoded.writing_mode)) |size| self.pending_layout_font_size = @max(self.pending_layout_font_size, size);
         self.pending_actual_text = self.pending_actual_text or has_actual_text;
         if (!has_actual_text) {
             self.pending_unicode_map_error = self.pending_unicode_map_error or unicode_map_error;
@@ -760,6 +769,7 @@ pub const SpanCollector = struct {
         if (self.current_actual_text != null) {
             self.text_buffer.clearRetainingCapacity();
             self.pending_bbox = null;
+            self.pending_layout_font_size = 0;
             self.pending_unicode_map_error = false;
             self.pending_actual_text = false;
             return;
@@ -780,6 +790,7 @@ pub const SpanCollector = struct {
             .source = .native_pdf,
             .confidence = if (self.pending_unicode_map_error) 0.82 else 1.0,
             .font = .{ .name = font_name, .size = self.current_font_size, .has_to_unicode = self.current_font_has_to_unicode },
+            .layout_font_size = if (self.pending_layout_font_size > 0) self.pending_layout_font_size else glyphNormalFontSize(self.userTextMatrix(), self.current_font_size, self.current_writing_mode),
             .block_id = self.current_block_id,
             .line_id = self.current_line_id,
             .mcid = self.current_mcid,
@@ -792,6 +803,7 @@ pub const SpanCollector = struct {
 
         self.text_buffer.clearRetainingCapacity();
         self.pending_bbox = null;
+        self.pending_layout_font_size = 0;
         self.pending_unicode_map_error = false;
         self.pending_actual_text = false;
     }
@@ -859,6 +871,7 @@ pub const SpanCollector = struct {
         result.unicode_map_error = false;
         result.actual_text = true;
         result.semantic_replacement = true;
+        result.quad = null;
         result.raw_glyph_count = @intCast(raw.len);
         result.source_code = 0;
         result.source_byte_count = 0;
@@ -967,22 +980,34 @@ pub const SpanCollector = struct {
     }
 
     fn currentGlyphBBox(self: *const SpanCollector, advance: f64, decoded: encoding_mod.FontEncoding.DecodedGlyph) layout.BBox {
+        const points = self.currentGlyphQuad(advance, decoded);
+        return boundsOfPoints(points);
+    }
+
+    fn currentGlyphQuad(self: *const SpanCollector, advance: f64, decoded: encoding_mod.FontEncoding.DecodedGlyph) [4][2]f64 {
         const ascender = decoded.ascender / 1000.0 * self.current_font_size;
         const descender = decoded.descender / 1000.0 * self.current_font_size;
         const local = if (decoded.writing_mode == 1)
             layout.BBox{ .x0 = descender, .y0 = -advance, .x1 = ascender, .y1 = 0 }
         else
             layout.BBox{ .x0 = 0, .y0 = self.current_text_rise + descender, .x1 = advance, .y1 = self.current_text_rise + ascender };
-        return transformedBounds(self.userTextMatrix(), local);
+        return transformedPoints(self.userTextMatrix(), local);
     }
 
     fn transformedBounds(matrix: [6]f64, box: layout.BBox) layout.BBox {
-        const points = [_][2]f64{
+        return boundsOfPoints(transformedPoints(matrix, box));
+    }
+
+    fn transformedPoints(matrix: [6]f64, box: layout.BBox) [4][2]f64 {
+        return .{
             transformPoint(matrix, box.x0, box.y0),
             transformPoint(matrix, box.x1, box.y0),
             transformPoint(matrix, box.x1, box.y1),
             transformPoint(matrix, box.x0, box.y1),
         };
+    }
+
+    fn boundsOfPoints(points: [4][2]f64) layout.BBox {
         var x0 = points[0][0];
         var y0 = points[0][1];
         var x1 = x0;
@@ -1027,6 +1052,16 @@ pub const SpanCollector = struct {
             std.mem.eql(u8, text, "\xE2\x88\x92");
     }
 };
+
+fn glyphNormalFontSize(matrix: [6]f64, declared_size: f64, writing_mode: u8) ?f64 {
+    const axis_x = if (writing_mode == 1) -matrix[2] else matrix[0];
+    const axis_y = if (writing_mode == 1) -matrix[3] else matrix[1];
+    const axis_scale = @sqrt(axis_x * axis_x + axis_y * axis_y);
+    if (!std.math.isFinite(axis_scale) or axis_scale <= 0) return null;
+    const normal_scale = @abs(matrix[0] * matrix[3] - matrix[1] * matrix[2]) / axis_scale;
+    const size = declared_size * normal_scale;
+    return if (std.math.isFinite(size) and size > 0) size else null;
+}
 
 /// Operand types for content stream
 pub const Operand = union(enum) {
@@ -1739,6 +1774,38 @@ test "span collector derives bounds from decoded glyph advances" {
     try std.testing.expectEqual(.unknown, span.paint.paint_state);
     try std.testing.expectEqual(.unknown, collector.getGlyphs()[0].paint.clip_state);
     try std.testing.expectEqual(.unknown, collector.getChars()[0].paint.paint_state);
+}
+
+test "span collector retains declared Tf and records Tm CTM and inverse point scales" {
+    const variants = [_]struct { font: f64, text_scale: f64, ctm_scale: f64 }{
+        .{ .font = 1, .text_scale = 12, .ctm_scale = 1 },
+        .{ .font = 120, .text_scale = 0.1, .ctm_scale = 1 },
+        .{ .font = 1, .text_scale = 1, .ctm_scale = 12 },
+    };
+    for (variants) |variant| {
+        var collector = SpanCollector.init(std.testing.allocator, 0);
+        defer collector.deinit();
+        collector.setFont("F1", variant.font, true);
+        collector.setPosition(100, 200);
+        collector.setTextMatrix(.{ variant.text_scale, 0, 0, variant.text_scale, 100, 200 });
+        collector.setGraphicsState(.{ .ctm = .{ variant.ctm_scale, 0, 0, variant.ctm_scale, 0, 0 } });
+        try collector.writeDecodedGlyph(.{ .source_code = 'A', .source_bytes = "A", .bytes_consumed = 1, .utf8_text = "A", .glyph_width = 750, .ascender = 800, .descender = -200 });
+        try collector.flush();
+        const span = collector.getSpans()[0];
+        try std.testing.expectEqual(variant.font, span.font.size);
+        try std.testing.expectEqual(variant.font, span.font_size);
+        try std.testing.expectApproxEqAbs(@as(f64, 12), span.layout_font_size.?, 0.000001);
+        try std.testing.expectApproxEqAbs(@as(f64, 12), span.y1 - span.y0, 0.000001);
+        try std.testing.expectEqual(@as(f64, 0), collector.pending_layout_font_size);
+        try collector.setActualText("Exact replacement");
+        try collector.writeDecodedGlyph(.{ .source_code = 'B', .source_bytes = "B", .bytes_consumed = 1, .utf8_text = "B", .glyph_width = 750, .ascender = 800, .descender = -200 });
+        try collector.setActualText(null);
+        const replacement = collector.getSpans()[1];
+        try std.testing.expectEqualStrings("Exact replacement", replacement.text);
+        try std.testing.expectEqual(variant.font, replacement.font.size);
+        try std.testing.expectApproxEqAbs(@as(f64, 12), replacement.layout_font_size.?, 0.000001);
+    }
+    try std.testing.expectEqual(@as(?f64, null), glyphNormalFontSize(.{ 0, 0, 0, 0, 0, 0 }, 12, 0));
 }
 
 test "span collector records generated gaps and vertical glyph movement" {

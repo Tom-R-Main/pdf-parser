@@ -1,0 +1,198 @@
+{
+  "tables": [
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Task",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Due",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Done",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Seal",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "11",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "9",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Pack",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 612,
+        "x1": 540,
+        "y1": 720
+      }
+    },
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Task",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Due",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Done",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Load",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "17",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "15",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Ship",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 54,
+        "y0": 398,
+        "x1": 540,
+        "y1": 506
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "This section is a separate work queue",
+      "region": {
+        "x0": 52,
+        "y0": 556,
+        "x1": 278,
+        "y1": 571
+      }
+    }
+  ],
+  "explanation": "Same font and column alignment do not merge distinct reports across intervening prose."
+}

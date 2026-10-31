@@ -30,7 +30,7 @@ test('actual CLI without caller source identity keeps every artifact source null
 
 // Small generated, redistribution-safe PDF. Each marked group contains repeated
 // lines; a second page checks that origin identity includes the actual page.
-function fixturePdf(content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (Repeated evidence.) Tj 0 -24 Td (Repeated evidence.) Tj ET EMC') {
+function fixturePdf(content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (Repeated evidence.) Tj 0 -24 Td (Repeated evidence.) Tj ET EMC', secondContent = content) {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>',
@@ -38,7 +38,7 @@ function fixturePdf(content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (R
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>',
     `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>',
-    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+    `<< /Length ${Buffer.byteLength(secondContent)} >>\nstream\n${secondContent}\nendstream`,
   ];
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
@@ -52,6 +52,38 @@ function fixturePdf(content = '/Span << /MCID 7 >> BDC BT /F1 12 Tf 20 250 Td (R
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf, 'ascii');
 }
+
+test('actual batch and stream adapters retain source text with opt-in glyph geometry and decoded bounds', { skip: !available }, async () => {
+  const bytes = fixturePdf();
+  const baseline = await extractPdfDocument(bytes, { binaryPath });
+  const detailed = await extractPdfDocument(bytes, { binaryPath, includeGlyphGeometry: true, maxDecodedStreamBytes: 4096 });
+  assert.equal(detailed.sourceText, baseline.sourceText);
+  assert.ok(baseline.spans.every(span => span.glyph_geometry.length === 0));
+  assert.ok(detailed.spans.every(span => span.glyph_geometry.length > 0));
+  const pages = [];
+  const receipt = await extractPdfPages(bytes, { binaryPath, includeGlyphGeometry: true, maxDecodedStreamBytes: 4096, onPage: page => pages.push(page) });
+  assert.equal(receipt.complete, true);
+  assert.ok(pages.flatMap(page => page.spans).every(span => span.glyph_geometry.length > 0));
+  assert.equal(pages.map(page => page.sourceText).join('\n\n'), detailed.sourceText);
+  await assert.rejects(extractPdfDocument(bytes, { binaryPath, maxDecodedStreamBytes: 1 }), { code: 'document' });
+  await assert.rejects(extractPdfPages(bytes, { binaryPath, maxDecodedStreamBytes: 1, onPage() {} }), { code: 'document' });
+});
+
+test('actual stream adapter validates inherited sections across page boundaries at closeout', { skip: !available }, async () => {
+  const line = (text, y, size) => `BT /F1 ${size} Tf 1 0 0 1 20 ${y} Tm (${text}) Tj ET`;
+  const bytes = fixturePdf([line('PART I', 260, 20), line('1. Scope', 200, 18), line('scope body', 140, 12)].join('\n'),
+    [line('next page body', 260, 12), line('1.1 Definitions', 200, 18), line('definition body', 140, 12)].join('\n'));
+  const batch = await extractPdfDocument(bytes, { binaryPath });
+  const pages = [];
+  const receipt = await extractPdfPages(bytes, { binaryPath, onPage: page => pages.push(page) });
+  assert.equal(receipt.complete, true);
+  const sectionByText = rows => rows.map(row => ({ text: row.text, section: row.section }));
+  assert.deepEqual(sectionByText(pages.flatMap(page => page.blocks)), sectionByText(batch.blocks));
+  const scope = batch.blocks.find(block => block.text === '1. Scope');
+  const continued = pages[1].blocks.find(block => block.text === 'next page body');
+  assert.equal(continued.section.section_id, scope.block_id);
+  assert.ok(continued.section.ancestry.length > 0);
+});
 
 // Reuse the checked-in scan pixels; an incremental update supplies two disjoint
 // placements per page without adding a binary fixture or another PDF library.
@@ -80,7 +112,7 @@ test('actual CLI -> validated rich text -> overlapping chunks -> page/span locat
   skip: available ? false : 'Build the parser with zig build to run the real CLI integration',
 }, async () => {
   const document = await extractPdfDocument(fixturePdf(), { binaryPath });
-  assert.equal(document.manifest.schema_version, '0.19.2');
+  assert.equal(document.manifest.schema_version, '0.20.0');
   assert.equal(document.spans.length, 4);
   assert.equal(document.blocks.length, 4);
   assert.equal(document.sourceText, Array(4).fill('Repeated evidence.').join('\n\n'));
@@ -141,7 +173,7 @@ test('actual multi-page stream preserves global ownership with page-local locato
   const receipt = await extractPdfPages(fixturePdf(), { binaryPath, onPage: async page => { pages.push(page); } });
   assert.equal(receipt.complete, true);
   assert.equal(receipt.pageCount, 2);
-  assert.equal(receipt.schemaVersion, '0.19.2');
+  assert.equal(receipt.schemaVersion, '0.20.0');
   assert.deepEqual(pages.map(page => page.pageIndex), [0, 1]);
   assert.equal(new Set(pages.flatMap(page => page.spans.map(span => span.span_id))).size, 4);
   for (const page of pages) {

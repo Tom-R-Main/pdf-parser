@@ -1,0 +1,78 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1633 >>
+stream
+0.5 w
+54 548 m 54 724 l S
+300 548 m 300 724 l S
+415 548 m 415 724 l S
+530 548 m 530 724 l S
+54 724 m 530 724 l S
+54 680 m 530 680 l S
+54 636 m 530 636 l S
+54 592 m 530 592 l S
+54 548 m 530 548 l S
+BT /F1 10 Tf 1 0 0 1 62 702 Tm (Channel) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 702 Tm (Planned) Tj ET
+BT /F1 10 Tf 1 0 0 1 423 702 Tm (Spent) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 658 Tm (Mail) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 658 Tm (90) Tj ET
+BT /F1 10 Tf 1 0 0 1 423 658 Tm (86) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 614 Tm (Calls) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 614 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 570 Tm (Visits) Tj ET
+BT /F1 10 Tf 1 0 0 1 308 570 Tm (15) Tj ET
+BT /F1 10 Tf 1 0 0 1 423 570 Tm (\(3\)) Tj ET
+54 304 m 54 464 l S
+214 304 m 214 464 l S
+360 304 m 360 464 l S
+445 304 m 445 464 l S
+530 304 m 530 464 l S
+54 464 m 530 464 l S
+54 424 m 530 424 l S
+54 384 m 530 384 l S
+54 344 m 530 344 l S
+54 304 m 530 304 l S
+BT /F1 10 Tf 1 0 0 1 62 442 Tm (Stock) Tj ET
+BT /F1 10 Tf 1 0 0 1 222 442 Tm (Depot) Tj ET
+BT /F1 10 Tf 1 0 0 1 368 442 Tm (Held) Tj ET
+BT /F1 10 Tf 1 0 0 1 453 442 Tm (Free) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 402 Tm (Bolts) Tj ET
+BT /F1 10 Tf 1 0 0 1 222 402 Tm (North) Tj ET
+BT /F1 10 Tf 1 0 0 1 368 402 Tm (12) Tj ET
+BT /F1 10 Tf 1 0 0 1 453 402 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 362 Tm (Cable) Tj ET
+BT /F1 10 Tf 1 0 0 1 222 362 Tm (West) Tj ET
+BT /F1 10 Tf 1 0 0 1 368 362 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 453 362 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 322 Tm (Tape) Tj ET
+BT /F1 10 Tf 1 0 0 1 222 322 Tm (East) Tj ET
+BT /F1 10 Tf 1 0 0 1 453 322 Tm (5) Tj ET
+BT /F1 10 Tf 1 0 0 1 70 506 Tm (Batch reviewed independently) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001925 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1993
+%%EOF

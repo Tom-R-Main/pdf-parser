@@ -1,0 +1,116 @@
+{
+  "tables": [
+    {
+      "column_count": 3,
+      "rows": [
+        {
+          "row_index": 0,
+          "cells": [
+            {
+              "text": "Unit",
+              "row": 0,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Ready",
+              "row": 0,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "Held",
+              "row": 0,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 1,
+          "cells": [
+            {
+              "text": "Press",
+              "row": 1,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "7",
+              "row": 1,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "2",
+              "row": 1,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        },
+        {
+          "row_index": 2,
+          "cells": [
+            {
+              "text": "Lift",
+              "row": 2,
+              "column": 0,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "0",
+              "row": 2,
+              "column": 1,
+              "rowspan": 1,
+              "colspan": 1
+            },
+            {
+              "text": "",
+              "row": 2,
+              "column": 2,
+              "rowspan": 1,
+              "colspan": 1
+            }
+          ]
+        }
+      ],
+      "topology_required": true,
+      "source_ownership_required": true,
+      "region": {
+        "x0": 160,
+        "y0": 520,
+        "x1": 520,
+        "y1": 640
+      }
+    }
+  ],
+  "retained_prose": [
+    {
+      "text": "All units inspected before release",
+      "region": {
+        "x0": 88,
+        "y0": 681,
+        "x1": 296,
+        "y1": 696
+      }
+    },
+    {
+      "text": "No owner action remains",
+      "region": {
+        "x0": 168,
+        "y0": 473,
+        "x1": 310,
+        "y1": 488
+      }
+    }
+  ],
+  "explanation": "Prose overlapping the horizontal table extent remains outside the cells and table region."
+}

@@ -7,6 +7,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 const runtime = @import("runtime.zig");
+const section_hierarchy = @import("section_hierarchy.zig");
 
 pub const BBox = layout.BBox;
 pub const TextSpan = layout.TextSpan;
@@ -52,6 +53,7 @@ pub const ReconciledBlock = struct {
     span_count: u32,
     source_mask: SourceMask,
     confidence: f32,
+    section: section_hierarchy.Annotation = .{},
 };
 
 pub const RagChunk = struct {
@@ -277,6 +279,11 @@ pub fn renderMarkdown(allocator: std.mem.Allocator, doc: *const ReconciledDocume
             try writer.writeAll("\n\n");
         }
 
+        if (block.section.heading_level) |level| {
+            for (0..@min(level, 6)) |_| try writer.writeByte('#');
+            try writer.print(" {s}\n", .{block.text});
+            continue;
+        }
         switch (block.kind) {
             .heading => try writer.print("## {s}\n", .{block.text}),
             .list_item => try writer.print("- {s}\n", .{stripListPrefix(block.text)}),
@@ -701,6 +708,8 @@ fn copySpan(
     copied.source = source;
     copied.text = try allocator.dupe(u8, span.text);
     errdefer allocator.free(@constCast(copied.text));
+    copied.glyph_geometry = try allocator.dupe(layout.GlyphGeometry, span.glyph_geometry);
+    errdefer allocator.free(copied.glyph_geometry);
 
     copied.font.name = null;
     copied.font.encoding = null;
@@ -726,6 +735,7 @@ fn freeOwnedSpan(allocator: std.mem.Allocator, span: TextSpan) void {
     allocator.free(@constCast(span.text));
     if (span.font.name) |name| allocator.free(@constCast(name));
     if (span.font.encoding) |encoding| allocator.free(@constCast(encoding));
+    if (span.glyph_geometry.len > 0) allocator.free(span.glyph_geometry);
 }
 
 const DuplicateIndex = struct {
@@ -761,6 +771,13 @@ fn findDuplicate(spans: []const ReconciledSpan, duplicate_index: *const Duplicat
     const same_page_indices = duplicate_index.indicesForPage(candidate.span.page_index) orelse return null;
     for (same_page_indices) |index| {
         const existing = spans[index];
+        const existing_tracked = existing.span.native_source_index != null or existing.span.preserve_source_identity;
+        const candidate_tracked = candidate.span.native_source_index != null or candidate.span.preserve_source_identity;
+        if (existing.span.table_cell_owner != null and candidate.span.table_cell_owner == null and candidate_tracked) continue;
+        if (candidate.span.table_cell_owner != null and existing.span.table_cell_owner == null and existing_tracked) continue;
+        if (existing.span.table_cell_owner == null and candidate.span.table_cell_owner == null and existing_tracked and candidate_tracked) {
+            if (existing.span.native_source_index == null or candidate.span.native_source_index == null or existing.span.native_source_index != candidate.span.native_source_index) continue;
+        }
         if (existing.span.table_cell_owner) |owner| {
             if (candidate.span.table_cell_owner) |other| {
                 if (!std.meta.eql(owner, other)) continue;
@@ -778,6 +795,8 @@ fn mergeDuplicate(allocator: std.mem.Allocator, existing: *ReconciledSpan, candi
     const merged_mask = existing.source_mask | candidate.source_mask;
     const replace = sourceScore(candidate) > sourceScore(existing.*);
     const cell_owner = existing.span.table_cell_owner orelse candidate.span.table_cell_owner;
+    const native_source_index = existing.span.native_source_index orelse candidate.span.native_source_index;
+    const preserve_source_identity = existing.span.preserve_source_identity or candidate.span.preserve_source_identity;
 
     if (replace) {
         const old_span = existing.span;
@@ -790,6 +809,8 @@ fn mergeDuplicate(allocator: std.mem.Allocator, existing: *ReconciledSpan, candi
 
     existing.source_mask = merged_mask;
     existing.span.table_cell_owner = cell_owner;
+    existing.span.native_source_index = native_source_index;
+    existing.span.preserve_source_identity = preserve_source_identity;
     existing.source_count = countSourceBits(merged_mask);
     existing.duplicate_count += 1;
     existing.confidence = @max(existing.confidence, candidate.confidence);
@@ -1400,7 +1421,7 @@ test "fresh OCR independent crop boundaries separate overlapping PDF regions" {
 
 test "reconciliation preserves cell identities across overlap and native duplicates" {
     var first = testSpan("0", .table_model, 210, 670, 230, 690);
-    first.table_cell_owner = .{ .layout_block_index = 7, .row_index = 1, .column_index = 1 };
+    first.table_cell_owner = .{ .region_index = 7, .row_index = 1, .column_index = 1 };
     var second = first;
     second.table_cell_owner.?.column_index = 2;
     const cells = [_]TextSpan{ first, second };
@@ -1412,6 +1433,50 @@ test "reconciliation preserves cell identities across overlap and native duplica
     defer merged.deinit();
     try std.testing.expectEqual(@as(usize, 1), merged.spans.len);
     try std.testing.expectEqualDeep(first.table_cell_owner, merged.spans[0].span.table_cell_owner);
+    second.table_cell_owner = .{ .region_index = 8, .row_index = 1, .column_index = 1 };
+    var separate_regions = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, second } }}, .{});
+    defer separate_regions.deinit();
+    try std.testing.expectEqual(@as(usize, 2), separate_regions.spans.len);
+}
+
+test "tracked residual leaves and aggregates cannot become cell evidence" {
+    var cell = testSpan("Same", .table_model, 10, 20, 90, 32);
+    cell.table_cell_owner = .{ .region_index = 4, .row_index = 1, .column_index = 0 };
+    var leaf = testSpan("Same", .native_pdf, 10, 20, 90, 32);
+    leaf.native_source_index = 17;
+    leaf.preserve_source_identity = true;
+    var aggregate = leaf;
+    aggregate.native_source_index = null;
+    var document = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ cell, leaf, aggregate } }}, .{ .preserve_input_order = true });
+    defer document.deinit();
+    try std.testing.expectEqual(@as(usize, 3), document.spans.len);
+    try std.testing.expectEqualDeep(cell.table_cell_owner, document.spans[0].span.table_cell_owner);
+    try std.testing.expectEqual(@as(?layout.TableCellOwner, null), document.spans[1].span.table_cell_owner);
+    try std.testing.expectEqual(@as(?layout.TableCellOwner, null), document.spans[2].span.table_cell_owner);
+    try std.testing.expectEqual(@as(?u32, null), document.spans[2].span.native_source_index);
+}
+
+test "distinct tracked native identities remain separate while repeated identity deduplicates" {
+    var first = testSpan("Same", .native_pdf, 10, 20, 90, 32);
+    first.native_source_index = 17;
+    var second = first;
+    second.native_source_index = 18;
+    var separate = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, second } }}, .{});
+    defer separate.deinit();
+    try std.testing.expectEqual(@as(usize, 2), separate.spans.len);
+    var repeated = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, first } }}, .{});
+    defer repeated.deinit();
+    try std.testing.expectEqual(@as(usize, 1), repeated.spans.len);
+    var untracked = first;
+    untracked.native_source_index = null;
+    untracked.confidence = 1;
+    first.confidence = 0.8;
+    first.preserve_source_identity = true;
+    var merged = try reconcile(std.testing.allocator, &.{.{ .spans = &.{ first, untracked } }}, .{});
+    defer merged.deinit();
+    try std.testing.expectEqual(@as(usize, 1), merged.spans.len);
+    try std.testing.expectEqual(@as(?u32, 17), merged.spans[0].span.native_source_index);
+    try std.testing.expect(merged.spans[0].span.preserve_source_identity);
 }
 
 test "coordinate serializers include hocr alto and debug overlay" {

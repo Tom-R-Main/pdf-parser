@@ -728,7 +728,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.19.2", parsed.value.object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.20.0", parsed.value.object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("0.4.0-dev", parsed.value.object.get("parser_version").?.string);
     try std.testing.expectEqualStrings("document_manifest", parsed.value.object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-clean-native", parsed.value.object.get("source_id").?.string);
@@ -774,7 +774,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     const debug_assets = parsed.value.object.get("debug_assets").?.array.items;
     try std.testing.expect(debug_assets.len > 0);
     try expectProvenanceObject(debug_assets[0]);
-    try std.testing.expectEqualStrings("0.19.2", debug_assets[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.20.0", debug_assets[0].object.get("schema_version").?.string);
     try std.testing.expect(debug_assets[0].object.get("asset_kind") != null);
     try std.testing.expect(debug_assets[0].object.get("path") != null);
     try std.testing.expectEqual(.null, debug_assets[0].object.get("path").?);
@@ -785,7 +785,7 @@ test "versioned schema renders native document manifest spans blocks chunks and 
     try std.testing.expectEqualStrings("debug", debug_assets[0].object.get("provenance").?.object.get("source_kind").?.string);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_name\":\"document_manifest\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.19.2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"schema_version\":\"0.20.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"block\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"record_type\":\"rag_chunk\"") != null);
@@ -909,7 +909,7 @@ test "versioned artifact jsonl starts with manifest then typed records" {
     try std.testing.expect(manifest.value.object.get("output_artifacts") != null);
     try std.testing.expect(manifest.value.object.get("extraction_counts") != null);
     try std.testing.expect(manifest.value.object.get("capability_coverage") != null);
-    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.19.2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"schema_version\":\"0.20.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl[first_newline + 1 ..], "\"record_type\":\"span\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, jsonl, "\"record_type\":\"route_trace\"") != null);
     try expectJsonlLinesParse(allocator, jsonl);
@@ -941,7 +941,7 @@ test "specialist protocol emits batch request records for routed table formula r
     const requests = parsed.value.object.get("specialist_requests").?.array.items;
     try std.testing.expect(requests.len > 0);
     try expectProvenanceObject(requests[0]);
-    try std.testing.expectEqualStrings("0.19.2", requests[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.20.0", requests[0].object.get("schema_version").?.string);
     try std.testing.expectEqualStrings("specialist_request", requests[0].object.get("record_type").?.string);
     try std.testing.expectEqualStrings("external-specialist", requests[0].object.get("source_id").?.string);
     try std.testing.expect(requests[0].object.get("requested_kind") != null);
@@ -1035,7 +1035,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.19.2","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.20.0","record_type":"specialist_response","request_id":"%s","specialist_id":"fixture-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(script);
@@ -1111,7 +1111,7 @@ test "configured formula specialist produces owned linked lifecycle records" {
         const formulas = response.object.get("formulas").?.array.items;
         try std.testing.expectEqual(@as(usize, 1), formulas.len);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("schema_name").?.string);
-        try std.testing.expectEqualStrings("0.19.2", formulas[0].object.get("schema_version").?.string);
+        try std.testing.expectEqualStrings("0.20.0", formulas[0].object.get("schema_version").?.string);
         try std.testing.expectEqualStrings("formula", formulas[0].object.get("record_type").?.string);
         try std.testing.expectEqualStrings("source-formula", formulas[0].object.get("source_id").?.string);
         try expectProvenanceObject(formulas[0]);
@@ -1512,7 +1512,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const tables = parsed.value.object.get("tables").?.array.items;
     try std.testing.expect(tables.len > 0);
     try expectProvenanceObject(tables[0]);
-    try std.testing.expectEqualStrings("0.19.2", tables[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.20.0", tables[0].object.get("schema_version").?.string);
     try std.testing.expect(tables[0].object.get("logical_table_id") != null);
     try std.testing.expect(tables[0].object.get("table_part_index") != null);
     try std.testing.expect(tables[0].object.get("continued_from_table_id") != null);
@@ -1522,7 +1522,7 @@ test "versioned schema exposes financial table cell span metadata" {
     const cells = tables[0].object.get("rows").?.array.items[0].object.get("cells").?.array.items;
     try std.testing.expect(cells.len > 0);
     try std.testing.expectEqualStrings("table_cell", cells[0].object.get("schema_name").?.string);
-    try std.testing.expectEqualStrings("0.19.2", cells[0].object.get("schema_version").?.string);
+    try std.testing.expectEqualStrings("0.20.0", cells[0].object.get("schema_version").?.string);
     try std.testing.expect(cells[0].object.get("cell_id") != null);
     try std.testing.expectEqualStrings("external-merged-cells", cells[0].object.get("source_id").?.string);
     try std.testing.expect(cells[0].object.get("raw_text") != null);
@@ -1542,6 +1542,52 @@ test "versioned schema exposes financial table cell span metadata" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"numeric\":{\"is_numeric\":true,\"value\":1200.000000") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"source_span_ids\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"bbox\":{\"x0\":") != null);
+}
+
+test "adaptive statements consume transformed geometry spans without changing declared fonts" {
+    const allocator = std.testing.allocator;
+    for ([_]testpdf.StatementFontTransform{ .scaled_text, .inverse_text, .scaled_graphics }) |transform| {
+        const declared_size: f64 = if (transform == .inverse_text) 120 else 1;
+        const pdf_data = try testpdf.generateTransformedStatementPdf(allocator, transform);
+        defer allocator.free(pdf_data);
+        const doc = try zpdf.Document.openFromMemory(allocator, pdf_data, zpdf.ErrorConfig.permissive());
+        defer doc.close();
+        var result = try doc.extractAdaptive(allocator, .{ .enable_ocr = false });
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 1), result.tables.len);
+        const table = result.tables[0];
+        try std.testing.expectEqual(@as(usize, 3), table.column_count);
+        try std.testing.expectEqual(@as(usize, 5), table.rows.len);
+        const expected = [_][3][]const u8{
+            .{ "Item", "Now", "Prior" },       .{ "CAPITAL", "", "" },  .{ "Long label", "12", "10" },
+            .{ "Portable carrier", "4", "3" }, .{ "Tail", "16", "13" },
+        };
+        for (table.rows, expected) |row, values| for (row.cells, values) |cell, text| {
+            try std.testing.expectEqualStrings(text, cell.text);
+            try std.testing.expectEqual(@as(u32, 1), cell.colspan);
+        };
+        try std.testing.expectEqual(@as(usize, 15), table.source_span_indices.len);
+        for (table.source_span_indices, 0..) |source_index, index| try std.testing.expectEqual(@as(u32, @intCast(index)), source_index);
+        for (result.native_pages[0]) |span| {
+            try std.testing.expectEqual(declared_size, span.font.size);
+            try std.testing.expectEqual(declared_size, span.font_size);
+            try std.testing.expectApproxEqAbs(@as(f64, 12), span.layout_font_size.?, 0.000001);
+        }
+        const json = try zpdf.schema.renderArtifactJson(allocator, &result, .{ .source_id = "transformed-statement" });
+        defer allocator.free(json);
+        try std.testing.expect(std.mem.indexOf(u8, json, "layout_font_size") == null);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+        defer parsed.deinit();
+        for (parsed.value.object.get("spans").?.array.items) |span| {
+            const value = span.object.get("font").?.object.get("size").?;
+            const size: f64 = switch (value) {
+                .float => |number| number,
+                .integer => |number| @floatFromInt(number),
+                else => return error.UnexpectedFontSize,
+            };
+            try std.testing.expectEqual(declared_size, size);
+        }
+    }
 }
 
 test "versioned schema exposes AcroForm field records" {
@@ -2759,6 +2805,7 @@ test "ruled invoice assigns wrapped cells and footer lines semantically" {
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(allocator);
     try doc.writePageTablesJson(0, allocator, runtime.arrayListWriter(&json, allocator));
+    errdefer std.debug.print("Invoice table regression output: {s}\n", .{json.items});
 
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"text\":\"A-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json.items, "\"text\":\"Implementation services\"") != null);

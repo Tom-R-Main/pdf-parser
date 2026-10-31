@@ -1,0 +1,62 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1192 >>
+stream
+0.5 w
+54 740 m 540 740 l S
+BT /F1 10 Tf 1 0 0 1 62 686 Tm (Item) Tj ET
+BT /F1 10 Tf 1 0 0 1 376 686 Tm (Window A) Tj ET
+BT /F1 10 Tf 1 0 0 1 476 686 Tm (Window B) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 646 Tm (Cash) Tj ET
+BT /F1 10 Tf 1 0 0 1 394 646 Tm (1,275) Tj ET
+BT /F1 10 Tf 1 0 0 1 494 646 Tm (1,190) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 606 Tm (Goods) Tj ET
+BT /F1 10 Tf 1 0 0 1 412 606 Tm (40) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 606 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 566 Tm (Total assets) Tj ET
+BT /F1 10 Tf 1 0 0 1 394 566 Tm (1,315) Tj ET
+BT /F1 10 Tf 1 0 0 1 494 566 Tm (1,190) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 526 Tm (Payables) Tj ET
+BT /F1 10 Tf 1 0 0 1 394 526 Tm (\(125\)) Tj ET
+BT /F1 10 Tf 1 0 0 1 494 526 Tm (\(110\)) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 486 Tm (Reserve) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 486 Tm (-) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 446 Tm (Balance) Tj ET
+BT /F1 10 Tf 1 0 0 1 394 446 Tm (1,190) Tj ET
+BT /F1 10 Tf 1 0 0 1 494 446 Tm (1,080) Tj ET
+340 590 m 424 590 l S
+440 590 m 524 590 l S
+340 488 m 424 488 l S
+440 488 m 524 488 l S
+340 410 m 424 410 l S
+440 410 m 524 410 l S
+340 412 m 424 412 l S
+440 412 m 524 412 l S
+BT /F1 10 Tf 1 0 0 1 160 752 Tm (Inventory reconciliation) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001484 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1552
+%%EOF

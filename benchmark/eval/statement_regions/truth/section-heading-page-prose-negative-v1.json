@@ -1,0 +1,42 @@
+{
+  "tables": [],
+  "retained_prose": [
+    {
+      "text": "WORKSHOP OVERVIEW",
+      "region": {
+        "x0": 52,
+        "y0": 707,
+        "x1": 158,
+        "y1": 722
+      }
+    },
+    {
+      "text": "Tools are checked before each workday",
+      "region": {
+        "x0": 52,
+        "y0": 645,
+        "x1": 278,
+        "y1": 660
+      }
+    },
+    {
+      "text": "Cabinets hold sample materials only",
+      "region": {
+        "x0": 52,
+        "y0": 605,
+        "x1": 266,
+        "y1": 620
+      }
+    },
+    {
+      "text": "No quantities are reported on this page",
+      "region": {
+        "x0": 52,
+        "y0": 565,
+        "x1": 290,
+        "y1": 580
+      }
+    }
+  ],
+  "explanation": "Page prose with a section heading, horizontal rule and graphic axes establishes no numeric table."
+}

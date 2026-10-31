@@ -13,6 +13,10 @@ export interface OcrLimits {
   maxAttemptsPerPage?: number;
 }
 export interface ExtractionOptions {
+  /** Opt in to exact-span glyph/replacement-group geometry. */
+  includeGlyphGeometry?: boolean;
+  /** Maximum decoded bytes in each native PDF stream. */
+  maxDecodedStreamBytes?: number;
   /** Host-owned executable selection. No environment or default path discovery. */
   binaryPath: string;
   timeoutMs?: number;
@@ -59,10 +63,26 @@ export interface ManifestRecord extends ArtifactRecord {
   input_sha256: string;
   artifact_counts: { spans: number; blocks: number; rag_chunks: number; [key: string]: unknown };
   text_contract: { offset_unit: 'utf8_byte'; range_convention: 'half_open'; page_index_base: 0;
-    geometry: { coordinate_space: 'pdf_user_space'; unit: 'point'; highlight_precision: 'span_bbox'; display_transform: null } };
+    geometry: { coordinate_space: 'pdf_user_space'; unit: 'point'; highlight_precision: 'span_bbox'; optional_glyph_geometry?: boolean; display_transform: null } };
 }
 /** Unchanged PDF-space bbox; these are not browser or screen coordinates. */
 export interface PdfBBox { x0: number; y0: number; x1: number; y1: number }
+/** An indivisible source glyph or semantic replacement, not a character box. */
+export interface GlyphGeometry {
+  text_start_byte: number;
+  text_end_byte: number;
+  precision: 'glyph' | 'replacement_group';
+  bbox: PdfBBox;
+  quad: [[number, number], [number, number], [number, number], [number, number]] | null;
+}
+export interface SectionAnnotation {
+  heading_level: number | null;
+  signal: 'bookmark' | 'numbering' | 'style' | null;
+  /** Existing document-global heading block IDs. */
+  section_id: string | null;
+  parent_section_id: string | null;
+  ancestry: string[];
+}
 export interface SpanRecord extends ArtifactRecord {
   record_type: 'span';
   span_id: string;
@@ -71,6 +91,8 @@ export interface SpanRecord extends ArtifactRecord {
   bbox: PdfBBox;
   text: string;
   text_view: TextView;
+  /** 0.20 opt-in geometry in exact span UTF-8 bytes; empty when unavailable. */
+  glyph_geometry?: GlyphGeometry[];
   /** 0.16 operator/bbox evidence; not final rendered visibility. */
   paint?: PaintEvidence;
   /** 0.17 PDF content-stream and Form placement identity; null for derived evidence. */
@@ -165,6 +187,7 @@ export interface ByteSourceSegment {
   source_end_byte: number | null;
 }
 export interface BlockRecord extends ArtifactRecord {
+  section?: SectionAnnotation;
   record_type: 'block';
   block_id: string;
   page_index: number;
@@ -174,6 +197,8 @@ export interface BlockRecord extends ArtifactRecord {
   source_map: (ByteSourceSegment & { source_span_id: string | null })[];
 }
 export interface ChunkRecord extends ArtifactRecord {
+  /** 0.20 owners in source-block order; a chunk may span sections. */
+  section_ids?: string[];
   record_type: 'rag_chunk';
   chunk_id: string;
   content: string;

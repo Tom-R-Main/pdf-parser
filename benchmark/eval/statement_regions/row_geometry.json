@@ -1,0 +1,444 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "statement-section-labels-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 674,
+                "x1": 550,
+                "y1": 710
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 638,
+                "x1": 550,
+                "y1": 674
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 602,
+                "x1": 550,
+                "y1": 638
+              }
+            },
+            {
+              "row_index": 3,
+              "region": {
+                "x0": 60,
+                "y0": 566,
+                "x1": 550,
+                "y1": 602
+              }
+            },
+            {
+              "row_index": 4,
+              "region": {
+                "x0": 60,
+                "y0": 530,
+                "x1": 550,
+                "y1": 566
+              }
+            },
+            {
+              "row_index": 5,
+              "region": {
+                "x0": 60,
+                "y0": 494,
+                "x1": 550,
+                "y1": 530
+              }
+            },
+            {
+              "row_index": 6,
+              "region": {
+                "x0": 60,
+                "y0": 450,
+                "x1": 550,
+                "y1": 494
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "wrapped-label-before-values-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 668,
+                "x1": 550,
+                "y1": 710
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 592,
+                "x1": 550,
+                "y1": 668
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 550,
+                "x1": 550,
+                "y1": 592
+              }
+            },
+            {
+              "row_index": 3,
+              "region": {
+                "x0": 60,
+                "y0": 508,
+                "x1": 550,
+                "y1": 550
+              }
+            },
+            {
+              "row_index": 4,
+              "region": {
+                "x0": 60,
+                "y0": 466,
+                "x1": 550,
+                "y1": 508
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "wrapped-label-after-values-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 668,
+                "x1": 550,
+                "y1": 710
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 588,
+                "x1": 550,
+                "y1": 668
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 546,
+                "x1": 550,
+                "y1": 588
+              }
+            },
+            {
+              "row_index": 3,
+              "region": {
+                "x0": 60,
+                "y0": 504,
+                "x1": 550,
+                "y1": 546
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "indented-hierarchy-sparse-subtotal-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 692,
+                "x1": 550,
+                "y1": 730
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 654,
+                "x1": 550,
+                "y1": 692
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 616,
+                "x1": 550,
+                "y1": 654
+              }
+            },
+            {
+              "row_index": 3,
+              "region": {
+                "x0": 60,
+                "y0": 578,
+                "x1": 550,
+                "y1": 616
+              }
+            },
+            {
+              "row_index": 4,
+              "region": {
+                "x0": 60,
+                "y0": 540,
+                "x1": 550,
+                "y1": 578
+              }
+            },
+            {
+              "row_index": 5,
+              "region": {
+                "x0": 60,
+                "y0": 502,
+                "x1": 550,
+                "y1": 540
+              }
+            },
+            {
+              "row_index": 6,
+              "region": {
+                "x0": 60,
+                "y0": 464,
+                "x1": 550,
+                "y1": 502
+              }
+            },
+            {
+              "row_index": 7,
+              "region": {
+                "x0": 60,
+                "y0": 426,
+                "x1": 550,
+                "y1": 464
+              }
+            },
+            {
+              "row_index": 8,
+              "region": {
+                "x0": 60,
+                "y0": 388,
+                "x1": 550,
+                "y1": 426
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "intervening-narrative-boundary-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 684,
+                "x1": 550,
+                "y1": 724
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 644,
+                "x1": 550,
+                "y1": 684
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 604,
+                "x1": 550,
+                "y1": 644
+              }
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 452,
+                "x1": 550,
+                "y1": 492
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 412,
+                "x1": 550,
+                "y1": 452
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 372,
+                "x1": 550,
+                "y1": 412
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "repeated-header-separate-statements-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 680,
+                "x1": 550,
+                "y1": 720
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 640,
+                "x1": 550,
+                "y1": 680
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 600,
+                "x1": 550,
+                "y1": 640
+              }
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 508,
+                "x1": 550,
+                "y1": 548
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 468,
+                "x1": 550,
+                "y1": 508
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 428,
+                "x1": 550,
+                "y1": 468
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "detached-label-fragment-boundary-v1",
+      "tables": [
+        {
+          "rows": [
+            {
+              "row_index": 0,
+              "region": {
+                "x0": 60,
+                "y0": 670,
+                "x1": 550,
+                "y1": 710
+              }
+            },
+            {
+              "row_index": 1,
+              "region": {
+                "x0": 60,
+                "y0": 630,
+                "x1": 550,
+                "y1": 670
+              }
+            },
+            {
+              "row_index": 2,
+              "region": {
+                "x0": 60,
+                "y0": 590,
+                "x1": 550,
+                "y1": 630
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "section-heading-page-prose-negative-v1",
+      "tables": []
+    }
+  ],
+  "controls": {
+    "geometry_tolerance_points": 2
+  },
+  "scope": "Supplemental row envelopes derived solely from frozen pre-assessment drawing coordinates; no native whitespace-edge equality claim."
+}

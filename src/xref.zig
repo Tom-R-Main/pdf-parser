@@ -64,9 +64,11 @@ pub const XRefParseError = error{
     InvalidTrailer,
     UnsupportedXrefFormat,
     OutOfMemory,
+    OutputTooLarge,
 };
 
 pub const ParseOptions = struct {
+    decompress_options: decompress.Options = .{},
     recover: bool = true,
     diagnostics: ?*std.ArrayList(structural.Diagnostic) = null,
     diagnostic_allocator: ?std.mem.Allocator = null,
@@ -201,6 +203,7 @@ fn parseXRefFromOffset(hash_allocator: std.mem.Allocator, parse_allocator: std.m
                     .message = "Parsed hybrid /XRefStm stream referenced by xref table",
                 });
                 _ = parseXrefStream(parse_allocator, data, stream_offset, &xref, true, options) catch |err| {
+                    if (decompress.isResourceError(err)) return err;
                     emit(hash_allocator, options, .{
                         .code = .malformed_xref_stream_row,
                         .severity = if (options.recover) .warning else .error_,
@@ -361,7 +364,10 @@ fn parseXrefTable(
                 .diagnostics = options.diagnostics,
                 .diagnostic_allocator = options.diagnostic_allocator,
             });
-            const trailer_obj = p.parseObject() catch return XRefParseError.InvalidTrailer;
+            const trailer_obj = p.parseObject() catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return XRefParseError.InvalidTrailer;
+            };
 
             return switch (trailer_obj) {
                 .dict => |d| d,
@@ -474,7 +480,10 @@ fn parseXrefStream(
         .diagnostics = options.diagnostics,
         .diagnostic_allocator = options.diagnostic_allocator,
     });
-    const indirect = p.parseIndirectObject() catch return XRefParseError.InvalidXrefStream;
+    const indirect = p.parseIndirectObject() catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return XRefParseError.InvalidXrefStream;
+    };
 
     const stream = switch (indirect.obj) {
         .stream => |s| s,
@@ -501,12 +510,17 @@ fn parseXrefStream(
     if (entry_size == 0) return XRefParseError.InvalidXrefStream;
 
     // Decompress stream data (arena-allocated, no need to free)
-    const decoded = decompress.decompressStream(
+    const decoded = decompress.decompressStreamWithOptions(
         allocator,
         stream.data,
         dict.get("Filter"),
         dict.get("DecodeParms"),
-    ) catch return XRefParseError.InvalidXrefStream;
+        options.decompress_options,
+    ) catch |err| {
+        if (err == error.OutputTooLarge) return error.OutputTooLarge;
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return XRefParseError.InvalidXrefStream;
+    };
 
     // Get /Index array (object number ranges), default is [0 Size]
     const size = dict.getInt("Size") orelse return XRefParseError.InvalidXrefStream;
@@ -929,6 +943,15 @@ test "parse xref table merges hybrid XRefStm stream entries" {
         if (diagnostic.code == .hybrid_xref_stream) saw_hybrid = true;
     }
     try std.testing.expect(saw_hybrid);
+
+    // A traditional fallback is available, but a resource refusal from the
+    // hybrid stream must not turn the same document into a successful parse.
+    for ([_]bool{ true, false }) |recover| {
+        try std.testing.expectError(error.OutputTooLarge, parseXRefWithOptions(std.testing.allocator, arena.allocator(), pdf.items, .{
+            .recover = recover,
+            .decompress_options = .{ .max_output_bytes = 5 },
+        }));
+    }
 }
 
 test "parse xref rejects malformed trailer deterministically" {

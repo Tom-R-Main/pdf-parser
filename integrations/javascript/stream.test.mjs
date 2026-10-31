@@ -86,6 +86,57 @@ function coordinateFixture() {
   return records;
 }
 
+function hierarchyFixture() {
+  const records = coordinateFixture();
+  for (const record of records) {
+    record.schema_version = '0.20.0';
+    if (record.record_type === 'span') record.glyph_geometry = [];
+    if (record.trace_kind === 'page_route') record.vector_evidence = null;
+    if (record.record_type === 'block') record.section = {
+      heading_level: record.page_index === 0 ? 1 : null,
+      signal: record.page_index === 0 ? 'bookmark' : null,
+      section_id: 'block-0', parent_section_id: null, ancestry: ['block-0'],
+    };
+  }
+  return records;
+}
+
+test('0.20 stream resolves previous-page sections only at complete document closeout', async t => {
+  const result = await run(t, hierarchyFixture());
+  assert.equal(result.receipt.schemaVersion, '0.20.0');
+  assert.equal(result.receipt.complete, true);
+  assert.equal(result.pages[1].blocks[0].section.section_id, 'block-0');
+});
+
+test('0.20 stream keeps private section metadata separate from mutable page callbacks', async t => {
+  const result = await run(t, hierarchyFixture(), { onPage(page) {
+    page.blocks[0].section.ancestry.length = 0;
+    page.blocks[0].section.heading_level = null;
+    page.blocks[0].section.section_id = null;
+  } });
+  assert.equal(result.receipt.complete, true);
+});
+
+for (const [name, mutate] of [
+  ['unresolved previous-page section', records => {
+    const block = records.find(record => record.block_id === 'block-1');
+    block.section.section_id = 'block-999';
+    block.section.ancestry = ['block-999'];
+  }],
+  ['cyclic section graph', records => {
+    const first = records.find(record => record.block_id === 'block-0');
+    const second = records.find(record => record.block_id === 'block-1');
+    first.section = { heading_level: 2, signal: 'bookmark', section_id: 'block-0', parent_section_id: 'block-1', ancestry: ['block-1', 'block-0'] };
+    second.section = { heading_level: 3, signal: 'bookmark', section_id: 'block-1', parent_section_id: 'block-0', ancestry: ['block-0', 'block-1'] };
+  }],
+]) test(`0.20 refuses complete receipt for ${name}`, async t => {
+  const records = hierarchyFixture();
+  mutate(records);
+  const pages = [];
+  await assert.rejects(run(t, records, { onPage: page => pages.push(page.pageIndex) }), { code: 'protocol' });
+  assert.deepEqual(pages, [0, 1]);
+});
+
 test('0.18 stream pages retain their explicit global page geometry', async t => {
   const result = await run(t, coordinateFixture());
   assert.equal(result.receipt.schemaVersion, '0.18.0');
@@ -125,6 +176,17 @@ test('forwards the native allocation budget and validates it before starting', a
   for (const value of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
     await assert.rejects(extractPdfPages(input, { binaryPath: result.path, onPage() {}, maxNativePageMemoryBytes: value }), RangeError);
   }
+});
+
+test('stream forwards glyph geometry and validates decoded-stream bounds before launching', async t => {
+  const result = await run(t, fixture(), { includeGlyphGeometry: true, maxDecodedStreamBytes: 4096 });
+  const { args } = JSON.parse(await readFile(result.audit, 'utf8'));
+  assert.ok(args.includes('--include-glyph-geometry'));
+  assert.equal(args[args.indexOf('--max-decoded-stream-bytes') + 1], '4096');
+  for (const value of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1, '4096']) {
+    await assert.rejects(extractPdfPages(input, { binaryPath: result.path, onPage() {}, maxDecodedStreamBytes: value }), RangeError);
+  }
+  await assert.rejects(extractPdfPages(input, { binaryPath: result.path, onPage() {}, includeGlyphGeometry: 'true' }), TypeError);
 });
 
 test('stream forwards explicit OCR bounds and partial-result policy', async (t) => {

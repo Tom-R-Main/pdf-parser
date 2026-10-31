@@ -110,6 +110,8 @@ fn printUsage() !void {
         \\                  Write specialist request JSONL without invoking specialists
         \\  --max-output-bytes N     Stream serialized-byte cap (positive integer)
         \\  --max-page-memory-bytes N  Stream live adaptive-page allocation cap
+        \\  --max-decoded-stream-bytes N  Per-stage decode cap (default: 256 MiB)
+        \\  --include-glyph-geometry  Include source-range glyph quads when available
         \\  --ocr-max-image-pixels N  Accepted OCR raster pixel cap
         \\  --ocr-max-image-bytes N   Accepted OCR raster file byte cap
         \\  --ocr-max-regions N       OCR crop count cap per page
@@ -509,7 +511,7 @@ fn runExtract(allocator: std.mem.Allocator, args: []const []const u8) !void {
 fn nativeReadableQualityFails(doc: *zpdf.Document, pages: []const usize, allocator: std.mem.Allocator) !bool {
     for (pages) |page_num| {
         var result = doc.analyzeNativePageLayout(page_num, allocator) catch |err| {
-            if (err == error.OutOfMemory) return err;
+            if (zpdf.decompress.isResourceError(err)) return err;
             return true;
         };
         defer result.deinit();
@@ -1041,6 +1043,8 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
     var allow_partial = false;
     var max_output_bytes: ?usize = null;
     var max_page_memory_bytes: ?usize = null;
+    var include_glyph_geometry = false;
+    var max_decoded_stream_bytes: ?usize = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -1057,6 +1061,12 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
         } else if (std.mem.eql(u8, arg, "--source-id")) {
             i += 1;
             if (i < args.len) source_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--include-glyph-geometry")) {
+            include_glyph_geometry = true;
+        } else if (std.mem.eql(u8, arg, "--max-decoded-stream-bytes")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            max_decoded_stream_bytes = try parsePositiveResourceLimit(args[i]);
         } else if (std.mem.eql(u8, arg, "--max-output-bytes") or std.mem.eql(u8, arg, "--max-page-memory-bytes")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1170,6 +1180,7 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
     defer password_input.deinit(allocator);
     error_mode.password = password_input.value;
 
+    if (max_decoded_stream_bytes) |limit| error_mode.decompress_options.max_output_bytes = limit;
     const doc = zpdf.Document.openWithConfig(allocator, path, error_mode) catch |err| {
         std.debug.print("Error opening {s}: {}\n", .{ path, err });
         return err;
@@ -1224,6 +1235,7 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
             .max_output_bytes = max_output_bytes,
             .max_page_memory_bytes = max_page_memory_bytes,
             .adaptive_options = .{
+                .include_glyph_geometry = include_glyph_geometry,
                 .page_start = window.start,
                 .page_end = window.end,
                 .enable_ocr = enable_ocr,
@@ -1252,6 +1264,7 @@ fn runExtractAdaptive(allocator: std.mem.Allocator, args: []const []const u8) !v
             .max_output_bytes = max_output_bytes,
             .max_page_memory_bytes = max_page_memory_bytes,
             .adaptive_options = .{
+                .include_glyph_geometry = include_glyph_geometry,
                 .page_start = window.start,
                 .page_end = window.end,
                 .enable_ocr = enable_ocr,
@@ -2072,7 +2085,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         \\request_id=$(printf '%s' "$request" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
         \\crop=$(printf '%s' "$request" | sed -n 's/.*"crop_image_path":"\([^"]*\)".*/\1/p')
         \\test -n "$crop" && test -f "$crop" || exit 7
-        \\printf '{"schema_version":"0.19.2","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
+        \\printf '{"schema_version":"0.20.0","record_type":"specialist_response","request_id":"%s","specialist_id":"cli-formula","specialist_kind":"formula","status":"completed","formulas":[{"text":"x^2+y^2=z^2","format":"latex","confidence":0.95}]}\n' "$request_id"
         \\
     );
     runtime.closeFile(formula_file);
@@ -2146,7 +2159,7 @@ test "adaptive CLI emits specialist request JSONL sidecars" {
         const requests = try runtime.readFileAllocAlignedCwd(allocator, requests_path, .fromByteUnits(1));
         defer allocator.free(requests);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"record_type\":\"specialist_request\"") != null);
-        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.19.2\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, requests, "\"schema_version\":\"0.20.0\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"source_id\":\"external-specialist-cli\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_kind\":\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, requests, "\"requested_outputs\"") != null);

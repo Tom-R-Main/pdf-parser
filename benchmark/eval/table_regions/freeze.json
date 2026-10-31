@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "files_sha256": {
+    "corpus/stacked-different-grids.pdf": "23c1c8c8de46bf13262cde669357879c70c6b24f4afb439a699c92230534f647",
+    "truth/stacked-different-grids.json": "be7ce8da2dd2250adc98f017f2c98f12f2f1c964f99d1958ddff683a15c91c60",
+    "corpus/partial-rules-statement.pdf": "3ddccf1daff65ffd4b697559956981be0c21070cc74622fe278c724ead99f75a",
+    "truth/partial-rules-statement.json": "760bd403afe3ea63fe27ce43f6c818910de8fa9a0e8ac8805b3f1be601a318a5",
+    "corpus/centered-title-body-alignment.pdf": "ff3cb7b22e68993af01813e8dc9a8efec36e1b65d681d0739669dacfa47928de",
+    "truth/centered-title-body-alignment.json": "f9a51a705de24f70528b229c2c8a9bd523b386dc83e39c9803b2a3787b8fa702",
+    "corpus/complete-section-statement.pdf": "1fe4fd997e2f93ab94b4bb94c043273c2e90f2ac914dabca9e631e88681cadee",
+    "truth/complete-section-statement.json": "3995f89aad4e4fb0821bbeab4e9d4d82ee61508b218bc6238976556b591c1ccd",
+    "corpus/prose-diagram-negative.pdf": "1c7eb09a1b95c4ef79fe764d679eb86ee31c99aca6ad4a8de94c6c117f250e6f",
+    "truth/prose-diagram-negative.json": "af1537fa278f1cdc7c8d01763c76787ee257a253b5af9b37429167083015fff2",
+    "corpus/mixed-ruled-borderless.pdf": "b6944a7b2df3a8927b6b03e5b4fac2cf00029ba29e53c2a625e9fc248fef0ee2",
+    "truth/mixed-ruled-borderless.json": "b30715520273b531056f85f8014ab89b1bc881ca382b148b3fa1f17fa998ff0e",
+    "corpus/overlapping-width-prose.pdf": "916eb739768941d4a62a5ebb21915bff15102b6772c0734131d6a0cc729ed690",
+    "truth/overlapping-width-prose.json": "fed26a2e8b5a3738531e2282e3873519d14310c0923a2f99c27a4360a9fcbc75",
+    "corpus/adjacent-same-alignment.pdf": "684947ab35e3949fbb2bea82805135317d061a8e1929f3b595317496c188539b",
+    "truth/adjacent-same-alignment.json": "a75cf907e62e3f7aefa688034c75622aca54544267432da5b52c0b9ef0472bf8",
+    "cases.json": "3a48406e4aaba97647b13f56e979c5d4d42d2be35d14b09e59b8d545f88c5e15",
+    "generate.py": "b2605979cdde0f283156332c259f516cef2526a1b20f2bc214bf467f37482323"
+  },
+  "controls": {
+    "region_tolerance_points": 6,
+    "geometry_tolerance_points": 2
+  },
+  "scope": "Independent synthetic development drawings; no holdout qualification or continuation claim.",
+  "acceptance": [
+    "exact table count, regular occupancy, column extent and cell text",
+    "one source span owner per nonblank cell; blank differs from zero and dash",
+    "finite raw PDF geometry, bounded separate table regions",
+    "retained prose remains outside table cells",
+    "both public JSONL lifecycle contracts"
+  ]
+}

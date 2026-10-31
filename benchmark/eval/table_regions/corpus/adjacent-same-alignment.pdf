@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 822 >>
+stream
+0.5 w
+BT /F1 10 Tf 1 0 0 1 62 698 Tm (Task) Tj ET
+BT /F1 10 Tf 1 0 0 1 406 698 Tm (Due) Tj ET
+BT /F1 10 Tf 1 0 0 1 500 698 Tm (Done) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 662 Tm (Seal) Tj ET
+BT /F1 10 Tf 1 0 0 1 412 662 Tm (11) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 662 Tm (9) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 626 Tm (Pack) Tj ET
+BT /F1 10 Tf 1 0 0 1 418 626 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 626 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 484 Tm (Task) Tj ET
+BT /F1 10 Tf 1 0 0 1 406 484 Tm (Due) Tj ET
+BT /F1 10 Tf 1 0 0 1 500 484 Tm (Done) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 448 Tm (Load) Tj ET
+BT /F1 10 Tf 1 0 0 1 412 448 Tm (17) Tj ET
+BT /F1 10 Tf 1 0 0 1 512 448 Tm (15) Tj ET
+BT /F1 10 Tf 1 0 0 1 62 412 Tm (Ship) Tj ET
+BT /F1 10 Tf 1 0 0 1 518 412 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 54 561 Tm (This section is a separate work queue) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001113 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1181
+%%EOF

@@ -78,6 +78,22 @@ oversized output and process failures remain explicit. Specialist failure reject
 the result by default; `allowPartial:true` explicitly permits retaining partial
 artifacts and unresolved recovery assessments.
 
+Schema `0.20` adds validated `block.section` ancestry, chunk `section_ids` and
+span `glyph_geometry` while preserving the existing text views and source maps.
+Both extraction adapters accept `includeGlyphGeometry:true` to pass
+`--include-glyph-geometry`, and `maxDecodedStreamBytes` to set the positive
+per-filter/predictor decode cap. The default decode cap is 256 MiB per stage;
+it is independent of host output/page budgets and is not a process memory cap.
+The rich records expose finer geometry when supported, but the existing
+`locateSourceRange` compatibility bbox remains span-level. Resolve each
+selected span range against its glyph entries when finer highlights are needed;
+preserve indivisible ligatures and grouped ActualText precision.
+
+The streaming reader retains compact section metadata for earlier pages and
+checks cross-page ancestry before returning a completed receipt. Callback
+pages remain provisional until that receipt, including when their shape is
+valid but a referenced heading has not yet been fully validated.
+
 Both batch and streaming options accept positive integer OCR budgets:
 
 ```js

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseArtifactJsonl, PdfExtractionError } from './extract.mjs';
+import { parseArtifactJsonl, parseProvisionalPageJsonl, validateSectionReferences, PdfExtractionError } from './extract.mjs';
 import { terminateSubprocess } from './subprocess.mjs';
 import { ocrArguments } from './ocr-options.mjs';
 
@@ -65,6 +65,7 @@ async function consume(binaryPath, args, options, inputSha256) {
   let records = 0;
   let outputBytes = 0;
   let finished = false;
+  const sectionBlocks = [];
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const line = async (buffer) => {
     if (++records > options.maxRecords) throw new PdfExtractionError('output_limit', 'Stream exceeded its record budget');
@@ -78,7 +79,7 @@ async function consume(binaryPath, args, options, inputSha256) {
     const firstRecord = !manifest;
     if (firstRecord) {
       if (type !== 'document_manifest' || record.streaming !== true || record.sequence_scope !== 'document' ||
-        !/^0\.(14|15|16|17|18|19)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
+        !/^0\.(14|15|16|17|18|19|20)\.\d+$/.test(record.schema_version ?? '') || !integer(record.page_count) ||
         typeof record.document_id !== 'string' || !record.document_id || record.input_sha256 !== inputSha256 || record.source_id !== inputSha256) fail('Invalid stream manifest');
       if (record.page_count > options.maxPages) throw new PdfExtractionError('output_limit', 'Stream exceeded its page-count budget');
       if (!Array.isArray(record.errors) || record.errors.length) fail('Stream manifest reports document errors');
@@ -116,7 +117,11 @@ async function consume(binaryPath, args, options, inputSha256) {
       pageBytes += buffer.length + 1;
       if (pageBytes > options.maxPageBytes) throw new PdfExtractionError('output_limit', 'Stream exceeded its page budget');
       const batchManifest = { ...manifest, streaming: false, artifact_counts: pageCounts };
-      const document = parseArtifactJsonl([JSON.stringify(batchManifest), ...pageLines].join('\n') + '\n', { inputSha256, expectedSourceId: inputSha256 });
+      const document = parseProvisionalPageJsonl([JSON.stringify(batchManifest), ...pageLines].join('\n') + '\n', { inputSha256, expectedSourceId: inputSha256 });
+      if (manifest.schema_version.startsWith('0.20.')) {
+        for (const block of document.blocks) sectionBlocks.push({ block_id: block.block_id, page_index: block.page_index,
+          section: { ...block.section, ancestry: [...block.section.ancestry] } });
+      }
       // This projection has page-local offsets even though artifact IDs and page
       // indices remain document-global. Delivered pages are provisional until
       // the final receipt; callbacks must not treat delivery as completion.
@@ -134,6 +139,7 @@ async function consume(binaryPath, args, options, inputSha256) {
         !Array.isArray(record.errors) || record.errors.length) fail('Invalid document completion');
       checkCounts(record.artifact_counts, totals);
       checkCounts(record.route_counts, routeTotals);
+      if (manifest.schema_version.startsWith('0.20.')) validateSectionReferences(sectionBlocks);
       finished = true;
     } else {
       const field = countFields[type];
@@ -187,8 +193,8 @@ async function consume(binaryPath, args, options, inputSha256) {
   }
 }
 
-/** Incremental local CLI adapter. Memory budgets cover retained JSONL and IDs,
- * not the parser's RSS or data the caller retains inside its callback. */
+/** Incremental local CLI adapter. Budgets bound JSONL and the number of retained
+ * identities/section annotations, not RSS or data retained inside callbacks. */
 export async function extractPdfPages(buffer, options) {
   if (!(buffer instanceof Uint8Array)) throw new TypeError('PDF input must be bytes');
   if (!options || typeof options.binaryPath !== 'string' || !options.binaryPath || typeof options.onPage !== 'function') throw new TypeError('binaryPath and onPage are required');
@@ -197,6 +203,8 @@ export async function extractPdfPages(buffer, options) {
   const limits = { ...options };
   const ocrArgs = ocrArguments(options.ocrLimits);
   if (options.allowPartial !== undefined && typeof options.allowPartial !== 'boolean') throw new TypeError('allowPartial must be a boolean');
+  if (options.includeGlyphGeometry !== undefined && typeof options.includeGlyphGeometry !== 'boolean') throw new TypeError('includeGlyphGeometry must be a boolean');
+  if (options.maxDecodedStreamBytes !== undefined && (!integer(options.maxDecodedStreamBytes) || options.maxDecodedStreamBytes < 1)) throw new RangeError('Invalid decoded stream limit');
   for (const [key, defaultValue] of Object.entries(defaults)) {
     limits[key] ??= defaultValue;
     if (!integer(limits[key]) || limits[key] < 1 || (key === 'timeoutMs' && limits[key] > 2_147_483_647)) throw new RangeError('Invalid streaming limits');
@@ -215,6 +223,8 @@ export async function extractPdfPages(buffer, options) {
     if (options.maxNativePageMemoryBytes !== undefined) args.push('--max-page-memory-bytes', String(options.maxNativePageMemoryBytes));
     if (!options.enableOcr) args.push('--no-ocr');
     if (options.allowPartial) args.push('--allow-partial');
+    if (options.includeGlyphGeometry) args.push('--include-glyph-geometry');
+    if (options.maxDecodedStreamBytes !== undefined) args.push('--max-decoded-stream-bytes', String(options.maxDecodedStreamBytes));
     return await consume(options.binaryPath, args, limits, inputSha256);
   } catch (error) {
     failure = error instanceof PdfExtractionError ? error : new PdfExtractionError('unavailable', 'Local streaming I/O failed', { cause: error });

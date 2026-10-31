@@ -1,785 +1,168 @@
 # pdf-parser
 
-A capable Zig PDF extraction engine for deterministic text, layout, tables,
-OCR routing, and versioned JSON/JSONL artifacts.
+Extract text, tables, and form values from PDFs with a Zig parser. The output
+keeps page geometry and source references, so an ingestion pipeline can show
+where a result came from.
 
-## Status
+The native extraction path is deterministic. Adaptive extraction adds layout,
+table reconstruction, routing to local OCR, and versioned JSON/JSONL records.
+Use the CLI as a subprocess when you need to isolate and supervise each run.
 
-This is a capable parser with real project surfaces: the native parser,
-adaptive extraction CLI, versioned artifact schema, streaming JSONL, C ABI,
-Python bindings, benchmark runner, known-password decryption, OCR routing,
-structured tables, forms, provenance, visual review assets, and specialist
-protocol all have test coverage.
+This is a capable pre-1.0 parser. The current development build is `0.4.0-dev`
+and its adaptive schema is `0.20.0`. Check [the changelog](CHANGELOG.md) before
+updating a pinned parser or schema version.
 
-The project is still pre-1.0, so public schema and API details may change until
-the output contract graduates to `1.0.0`. The deterministic native path and
-artifact JSONL shape are the primary integration surfaces today. Formula is the
-first opt-in non-OCR specialist; the remaining specialist families and
-hard-document accuracy work are active development areas.
+## Build and extract
 
-## Features
+Use **Zig 0.17.0**, as pinned in [.zig-version](.zig-version). Run these commands
+from the repository root:
 
-- Memory-mapped file reading, zero-copy where possible
-- Streaming text extraction with efficient arena allocation
-- Multiple decompression filters: FlateDecode, ASCII85, ASCIIHex, LZW, RunLength
-- Font encoding support: WinAnsi, MacRoman, ToUnicode CMap, embedded Type0
-  CMaps, and predefined Adobe Japan1/GB1/CNS1/Korea1 CMaps
-- XRef table and stream parsing (PDF 1.5+)
-- Known-password Standard Security Handler decryption for encrypted PDFs
-- Configurable error handling (strict or permissive)
-- Structure tree extraction for tagged PDFs (PDF/UA)
-- Geometric (Y→X) reading order for non-tagged PDFs
-- Markdown export for structured PDFs
-- Adaptive extraction orchestration with native/layout/complexity/reconciler stages
-- Local Tesseract OCR adapter for pages or regions routed as scanned content
-- AcroForm field extraction, including nested/inherited widget values
-- Geometry-aware table reconstruction for aligned, ruled, merged-cell, rowspan,
-  footnote, and multi-page financial table fixtures
-- JSON/JSONL/RAG/hOCR/ALTO/debug-SVG output surfaces with typed provenance
-- Optional visual review sidecars for page overlays, table grids, OCR routes,
-  low-confidence regions, and span/block ids
-- Specialist protocol records for OCR/table/formula/layout/entity adapters
-- JSON inspection and trace output for page and region routing decisions
-- Corpus benchmark scorecards for parser versions, external tools, private
-  manifests, and CI quality gates
-
-## Benchmarking And Optimization
-
-Performance claims should be generated from fast artifacts and checked
-against byte-stable output, not copied from one-off local timings. Build the
-optimized parser once, then profile the extraction lanes separately:
-
-```bash
-zig build -Doptimize=fast --summary all
-.venv/bin/python benchmark/eval/profile_lanes.py \
-  --manifest benchmark/eval/large/manifest.tsv \
-  --lanes native-text,adaptive-artifact-jsonl,adaptive-stream-jsonl,ocr-routed \
-  --repeat 3 \
-  --hash-output \
-  --output benchmark/eval/outputs/profile/baseline-large.jsonl
-.venv/bin/python benchmark/eval/analyze_baseline.py \
-  --profile-jsonl benchmark/eval/outputs/profile/baseline-large.jsonl \
-  --manifest benchmark/eval/large/manifest.tsv \
-  --output benchmark/eval/outputs/profile/baseline-report.json \
-  --table-output benchmark/eval/outputs/profile/baseline-report.md
-```
-
-Use the tiny checked-in corpus for correctness gates and the ignored large
-cache for performance work. The large manifest is designed to cover 100-page,
-1k-page, image-heavy, object-stream-heavy, encrypted, and table-heavy PDFs
-without committing large third-party documents.
-
-Recent local ReleaseFast optimization checks on Apple M4 Pro kept output hashes
-unchanged while improving the measured hot paths:
-
-| Optimization | Fixture / lane | Before | After |
-|--------------|----------------|-------:|------:|
-| Reused decoded content streams | PDF Reference 1k / native text | 461.0ms | 329.2ms |
-| Indexed route/provenance lookups | table-heavy SEC / artifact JSONL | 731.6ms | 555.1ms |
-| Bucketed body-font estimation | table-heavy SEC / native text | 232.3ms | 224.6ms |
-| Bucketed body-font estimation | table-heavy SEC / artifact JSONL | 480.2ms | 464.8ms |
-
-Treat these as local regression evidence, not universal parser rankings. For
-external comparisons, use `benchmark/eval/compare.py --ensure-releasefast` so
-the `pdf-parser` lane runs `zig-out/bin/pdf-parser-eval` instead of rebuilding
-inside each document timing.
-
-## Evaluation Corpus
-
-The checked-in evaluation corpus is intentionally small and deterministic, with
-manifest metadata for source notes, redistribution status, SHA256, expected route
-counts, and optional ground-truth labels.
-
-```bash
-zig build eval-corpus
-zig build eval -- --adaptive \
-  --ocr-executable tesseract \
-  --ocr-rasterizer pdftoppm \
-  --manifest benchmark/eval/corpus/manifest.tsv
-zig build benchmark-eval
-pdf-parser benchmark \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --suite-id tiny-corpus \
-  --tools pdf-parser:adaptive,pdf-parser:native \
-  --thresholds benchmark/eval/thresholds.json \
-  --output benchmark/eval/outputs/scorecards/tiny-corpus.json \
-  --jsonl benchmark/eval/outputs/scorecards/tiny-corpus.records.jsonl
-.venv/bin/python benchmark/eval/compare.py \
-  --pdf-parser-adaptive \
-  --tools pdf-parser,pymupdf,pypdfium2,pdfplumber \
-  --ensure-releasefast \
-  --manifest benchmark/eval/corpus/manifest.tsv
-.venv/bin/python benchmark/eval/structural_compare.py \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --output /tmp/pdf-parser-structural.jsonl
-.venv/bin/python benchmark/eval/font_compare.py \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --output /tmp/pdf-parser-font-diff.jsonl
-.venv/bin/python benchmark/eval/render_oracle.py \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --category visual_truth \
-  --output /tmp/pdf-parser-render-oracle.jsonl
-.venv/bin/python benchmark/eval/table_compare.py \
-  --manifest benchmark/eval/table_stress/manifest.tsv \
-  --output /tmp/pdf-parser-table-stress.jsonl
-python3 benchmark/eval/ocr_form_quality.py \
-  --output /tmp/pdf-parser-ocr-form-quality.json
-python3 benchmark/eval/ocr_hard_document_quality.py \
-  --output /tmp/pdf-parser-ocr-hard-document-quality.json
-python3 benchmark/eval/ocr_hard_document_quality.py \
-  --pdf benchmark/eval/corpus/scanned_typewritten/jpx-public-domain-map-cover.pdf \
-  --truth benchmark/eval/ground_truth/ocr_text/scanned_typewritten/jpx-public-domain-map-cover.json \
-  --output /tmp/pdf-parser-ocr-jpx-hard-document-quality.json
-.venv/bin/python benchmark/eval/fetch_large_corpus.py --dry-run
-.venv/bin/python benchmark/eval/run_baseline.py --large
-.venv/bin/python benchmark/eval/profile_lanes.py \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --lanes native-text,adaptive-artifact-jsonl \
-  --output /tmp/pdf-parser-profile.jsonl
-.venv/bin/python benchmark/eval/analyze_baseline.py \
-  --compare-jsonl benchmark/eval/outputs/comparison/baseline.jsonl \
-  --profile-jsonl /tmp/pdf-parser-profile.jsonl \
-  --manifest benchmark/eval/large/manifest.tsv \
-  --output /tmp/pdf-parser-baseline-report.json \
-  --table-output /tmp/pdf-parser-baseline-report.md
-```
-
-Current fixture classes include clean born-digital text, academic two-column
-layout, scientific formulas, synthetic image-only scans, public-domain real
-JBIG2 and JPX scans, mixed native/scan pages,
-financial tables, AcroForms, weird-font cases, visual truth fixtures, and
-corrupt/adversarial PDFs.
-`benchmark/eval/font_compare.py` runs the weird-font subset against
-`pdf-parser`, PyMuPDF, and pypdfium2; use it as differential accuracy evidence,
-not as a claim that the Python tools are universal ground truth. The Sleisenger
-reductions cover standard Symbol glyph names and family-scoped MathematicalPi
-private names with exact Unicode expectations. The `benchmark-eval` build step
-also requires exact native text across every checked-in hard-font fixture.
-Financial
-table truth can assert cell text plus `rowspan`, `colspan`, `role`, `page`, and
-bbox-aware provenance. Form truth asserts field name/type/value sequences.
-Formula truth can assert both text and simple structure records.
-
-`benchmark/eval/render_oracle.py` is an optional render-backed differential
-lane. It runs `extract-adaptive --format artifact-jsonl --debug-assets-dir`,
-renders pages with Poppler `pdftoppm` by default, maps span/block/table/route
-geometry into raster pixels using the emitted SVG overlay viewBox, and reports
-coverage signals for rotated pages, clipped text, invisible OCR-like layers,
-ruled-table pixels, and mixed image regions. Use `--renderer all` to include
-optional pypdfium2 and `mutool draw` lanes, and `--materialize-dir` to write
-rendered pages or low-coverage crops for review. Generated PNGs and crops are
-local artifacts only; they should not be committed.
-
-`benchmark/eval/pdfium-rasterizer` is an optional PDFium-backed adapter for the
-same one-page `pdftoppm` subprocess contract used by OCR. It uses the local
-virtual environment when present and otherwise requires `pypdfium2` in the
-active Python environment:
-
-```bash
-pdf-parser extract --adaptive --format artifact-jsonl \
-  --ocr-executable tesseract \
-  --ocr-rasterizer benchmark/eval/pdfium-rasterizer \
-  scanned.pdf
-```
-
-This keeps native extraction deterministic while delegating JBIG2, JPX/JPEG2000,
-Type3, and other render-completeness cases to PDFium when a raster-backed route
-is explicitly selected. It does not make PDFium a text-extraction authority.
-
-`benchmark/eval/table_stress` is a separate checked-in financial table stress
-pack. It contains small synthetic reductions for SEC statement continuations,
-borderless bank statements, wrapped invoice totals, procurement nested headers,
-and legal schedules drawn out of order. Use `benchmark/eval/table_compare.py`
-to compare structured table artifacts against PyMuPDF `Page.find_tables()` and
-optional pdfplumber lanes. The stress runner reports cell text, role, bbox IoU,
-numeric, continuation, and source-span coverage metrics where the truth sidecar
-provides labels. Larger source PDFs and redistribution-unclear page reductions
-belong under ignored benchmark cache paths, not git.
-The OCR form quality gate records the exact OCR and rasterizer versions and
-reports token precision and F1 as well as recall, so duplicate layout/OCR
-layers cannot pass by repeating all expected tokens. Date separator glyph loss
-is normalized before semantic token scoring. The gate also requires exact
-date/vendor/amount row tuples, row count, individual columns, and total recovery.
-
-`pdf-parser benchmark` is the product-facing corpus runner. It emits a full
-scorecard JSON plus optional record-oriented JSONL with `benchmark_run`,
-`benchmark_lane`, `benchmark_document_result`, `benchmark_category_summary`,
-`benchmark_regression`, and `benchmark_scorecard` records. Tool lanes are
-neutral: use `pdf-parser:native`, `pdf-parser:adaptive`, or
-`command:<id>=<command template with {pdf}>`. `--candidate-command` and
-`--baseline-command` compare two pdf-parser-compatible executables and
-`--fail-on-regression` makes the scorecard usable as a CI ingestion gate.
-Benchmark schema `0.3.0` adds absolute `minimum` and `maximum` thresholds for
-homogeneous capability manifests, so a standalone candidate or two equally
-degraded versions cannot pass on relative comparison alone. Checked-in examples
-live under `benchmark/eval/gates/`.
-
-For structural parser hardening, use the qpdf differential lane:
-
-```bash
-pdf-parser check --format json doc.pdf
-pdf-parser inspect structure --format json doc.pdf
-.venv/bin/python benchmark/eval/structural_compare.py \
-  --manifest benchmark/eval/corpus/manifest.tsv \
-  --output benchmark/eval/outputs/structural/tiny-corpus.jsonl
-```
-
-The structural report records input hash, page count, xref/trailer summary,
-encryption presence, stable diagnostic codes, recovery actions, and
-`status: ok|recovered|failed`. qpdf remains an external oracle for
-benchmarking and fixture derivation; extraction never shells out to qpdf.
-
-`benchmark/eval/corpus` is the tiny checked-in correctness and regression
-corpus. Large public or private PDFs belong under ignored
-`benchmark/eval/raw_cache/large`; use `benchmark/eval/fetch_large_corpus.py` to
-download/derive local performance fixtures and `benchmark/eval/profile_lanes.py`
-to measure native text, adaptive artifact JSONL, streaming JSONL, and OCR-routed
-lanes before doing parser optimization. The profiler keeps OCR isolated by
-default: adaptive JSONL lanes pass `--no-ocr`, while `ocr-routed` invokes
-Tesseract and can be bounded with `--ocr-pages`. OCR routes first use 200 DPI
-with PSM 6 and grayscale rasterization. Empty or low-quality results may retry
-once at 300 DPI with PSM 11, after which the parser selects deterministically
-from the recorded attempts. Use the OCR CLI controls to compare policies or
-`--ocr-color` when comparing against the older RGB raster path. Add
-`--hash-output` during optimization
-validation runs when byte-for-byte output stability matters; hashes are computed
-after the timed subprocess exits, and the analyzer summarizes hash stability
-when hashes are present. `benchmark/eval/analyze_baseline.py`
-turns comparator and profiler JSONL into grouped JSON/Markdown reports and
-records whether manifest PDFs are locally present. It also ranks measured
-optimization candidates and next actions, so the next slice is chosen from
-evidence instead of hunches. `benchmark/eval/run_baseline.py --large` runs the
-whole fast baseline workflow and skips large profiling until the ignored
-cache is populated.
-
-## Requirements
-
-- Zig 0.17.0
-- Optional: `tesseract` and `pdftoppm` for OCR eval routes
-- Optional: Python virtualenv with Pillow for render-oracle checks, plus
-  PyMuPDF, pypdfium2, and pdfplumber for cross-parser comparison
-
-## Building
-
-For diagnostic memory checks on Linux or with the optional macOS Valgrind fork,
-see [Memory checks](docs/memory-checks.md).
-
-Select the Zig 0.17.0 toolchain before building and check `zig version`. If the
-compiler is installed in this checkout's ignored toolchain directory, select it
-for the current shell:
-
-```bash
-export PATH="$PWD/.zig-cache/toolchains/zig-aarch64-macos-0.17.0:$PATH"
+```sh
 zig version
+zig build --summary all
+./zig-out/bin/pdf-parser extract-adaptive \
+  --input benchmark/eval/corpus/clean_born_digital/clean-native.pdf \
+  --format artifact-jsonl --no-ocr
 ```
 
-Use the appropriate toolchain directory for your platform. This changes only the
-current shell's compiler selection.
+The example uses a small checked-in PDF. It writes a document manifest followed
+by records for extracted text, layout blocks, routes, and retrieval chunks.
+The manifest includes the parser and schema versions, input hash, page count,
+and artifact counts.
 
-```bash
-zig build              # Build library and CLI
-zig build test         # Run tests
+To extract your own PDF and keep an external source identity with every record:
+
+```sh
+./zig-out/bin/pdf-parser extract-adaptive \
+  --input document.pdf --source-id source-123 \
+  --format artifact-jsonl --no-ocr > document.jsonl
 ```
 
-## Usage
+`--no-ocr` disables fresh OCR. To recognize scans and routed image regions,
+install Tesseract and Poppler's `pdftoppm`, then omit that flag. The native
+parser can run without those OCR tools. Readable extraction may also use
+`pdftotext` when the native layout quality check fails; such text retains
+`poppler_text` provenance.
 
-### Library
+## Choose an output
 
-```zig
-const std = @import("std");
-const pdf_parser = @import("pdf_parser");
+| Task | Command or format | Result |
+| --- | --- | --- |
+| Ingest a complete document | `extract-adaptive --format artifact-jsonl` | Manifest-first batch records |
+| Persist pages as they finish | `extract-adaptive --format stream-jsonl` | Page lifecycle events and artifacts |
+| Read native text | `extract document.pdf` | Text with the default accuracy path |
+| Use content-stream order | `extract --fast document.pdf` | Native text with fewer reconstruction stages |
+| Find a phrase | `search "annual revenue" document.pdf` | Normalized matches with source information |
+| Inspect routing | `inspect complexity document.pdf --format json` | Page and region decisions |
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+Commands in the table use `./zig-out/bin/pdf-parser`. Run that binary with
+`--help` for options, or see [usage and integration](docs/usage.md) for examples.
 
-    const doc = try pdf_parser.Document.open(allocator, "file.pdf");
-    defer doc.close();
+Accept a complete stream only after a valid `document_finished` record and a
+successful process exit. Receiving a page is useful partial work; it does not
+prove that the rest of the document finished.
 
-    var buf: [4096]u8 = undefined;
-    var bw = std.Io.File.stdout().writer(init.io, &buf);
-    const writer = &bw.interface;
-    defer writer.flush() catch {};
+## Keep the evidence
 
-    for (0..doc.pageCount()) |page_num| {
-        try doc.extractText(page_num, writer);
-    }
-}
+Adaptive records carry page indices, bounding boxes, source kinds, confidence,
+and provenance links. Blocks and chunks have hashed text views and exact UTF-8
+source maps. Synthetic spaces have no invented source glyph.
+
+Tables retain rows, cells, raw values, numeric hints, roles, spans, and source
+ownership. Section annotations use matched bookmarks, numbering, then heading
+style; ambiguous matches abstain. Cross-page table continuation uses one
+bounded policy in both output formats.
+
+For finer quote geometry and a decoded-stream limit:
+
+```sh
+./zig-out/bin/pdf-parser extract-adaptive \
+  --input document.pdf --format artifact-jsonl --no-ocr \
+  --include-glyph-geometry --max-decoded-stream-bytes 16777216
 ```
 
-### CLI
+Geometry is optional. A ligature remains one source glyph, and an ActualText
+replacement retains group bounds without invented character boxes. Coordinates
+remain in raw PDF user space; use the page transforms when drawing highlights.
+The [output schema](docs/output-schema.md) defines units, ranges, precision,
+record ordering, and compatibility rules.
 
-```bash
-pdf-parser extract document.pdf              # Extract all pages (uses structure tree for reading order)
-pdf-parser extract -p 1-10 document.pdf      # Extract pages 1-10
-pdf-parser extract -o out.txt document.pdf   # Output to file
-pdf-parser extract --fast document.pdf       # Cheaper stream-order native lane
-pdf-parser extract --raw-recall document.pdf # Loss-minimizing search/diagnostic channel
-pdf-parser extract --adaptive -f json doc.pdf
-pdf-parser extract --adaptive -f jsonl doc.pdf
-pdf-parser extract --adaptive -f artifact-jsonl doc.pdf
-pdf-parser extract --adaptive -f stream-jsonl doc.pdf
-pdf-parser extract --adaptive -f rag-jsonl doc.pdf
-pdf-parser extract --adaptive --no-ocr -f artifact-jsonl doc.pdf
-pdf-parser extract-adaptive --input doc.pdf --source-id external-123 --format artifact-jsonl
-pdf-parser extract-adaptive --input doc.pdf --source-id external-123 --format artifact-jsonl \
-  --emit-specialist-requests requests.jsonl
-pdf-parser extract-adaptive --input doc.pdf --format artifact-jsonl --debug-assets-dir review-assets
-pdf-parser extract --adaptive -f hocr doc.pdf
-pdf-parser extract --adaptive -f alto doc.pdf
-pdf-parser extract --adaptive -f debug-svg doc.pdf
-pdf-parser extract --adaptive --trace doc.pdf
-pdf-parser inspect complexity doc.pdf --format json
-pdf-parser inspect extraction doc.pdf --format json
-pdf-parser search "Evaluation summary" document.pdf # Normalized, multi-source phrase search
-pdf-parser info document.pdf                 # Show document info
-pdf-parser bench document.pdf                # Run benchmark
-pdf-parser benchmark --manifest benchmark/eval/corpus/manifest.tsv \
-  --tools pdf-parser:adaptive --output /tmp/pdf-parser-scorecard.json
+## Integrate it
+
+The CLI/JSONL boundary is the default integration surface. The repository also
+includes a C ABI, Python bindings, JavaScript adapters, a stateless HTTP wrapper,
+and a WebAssembly build.
+
+The JavaScript adapters use a host-selected executable, validate records, and
+retain source positions. Node 22 or newer is required:
+
+```js
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { extractPdfDocument } from './integrations/javascript/index.mjs';
+
+const document = await extractPdfDocument(await readFile('document.pdf'), {
+  binaryPath: resolve('zig-out/bin/pdf-parser'),
+  includeGlyphGeometry: true,
+  maxDecodedStreamBytes: 16 * 1024 * 1024,
+});
+console.log(document.blocks.map(block => block.text).join('\n\n'));
 ```
 
-`--fast` skips structure-tree, layout/table reconstruction, and the readable
-Poppler fallback while retaining native decoding and AcroForm text. Use it for
-throughput-sensitive text ingestion where content-stream order is acceptable;
-the default accuracy lane remains the quality contract.
+See [host adapters](docs/host-adapters.md) for streaming, cancellation, budgets,
+UTF-16 locators, and prompt projections. Use `zig build shared` for the C ABI;
+its header is [include/pdf_parser.h](include/pdf_parser.h). The Python package
+keeps the name `zpdf`; [its guide](python/README.md) covers installation and use.
 
-### Search semantics
+OCR and formula recognition run outside the PDF kernel. Tesseract OCR is local;
+formula recognition requires an explicitly configured specialist. Table,
+layout, and entity specialist families currently emit requests. A protocol
+record alone does not mean a specialist has run.
 
-`pdf-parser search` uses the rich native search path. It normalizes ASCII case,
-Unicode whitespace, compatibility hyphens and quotes, common presentation
-ligatures, and conservative line-end hyphenation. Each page compares structured,
-full-context, native reading-order, and native content-order views, unions their
-matches, and conservatively deduplicates occurrences only when supported by
-normalized page identity, exact glyph evidence, or matching local context.
-Candidates without one of those signals are
-retained rather than silently dropped. Results
-identify their source. Reproducible text views report byte offsets; native
-glyph-backed results expose their exact sorted glyph indices as stable locators;
-the first/last fields are a compatibility envelope. They retain geometry through
-the Zig API. Search normalization removes PDF layout controls such as
-zero-width space and word joiner but preserves script-shaping ZWNJ and ZWJ.
+## Limits that matter
 
-The existing `Document.search`, C `zpdf_search`, and Python `Document.search`
-surfaces remain compatibility APIs: ASCII-case-insensitive exact substring
-matching over structured extraction with independently allocated context
-strings. New Zig callers can use `Document.searchDetailed` and must call
-`SearchReport.deinit`. Its `page_failures` distinguishes a partial search from
-a true no-match result, while `pages_searched` reports the number of document
-pages considered (including for a query that normalizes to empty). Full-context
-inventory hits may have no geometry when their text came from a Form XObject or
-document-scoped AcroForm value that is not represented in the native glyph
-collector.
+- Text availability and successful OCR do not prove complete page coverage.
+  Recovery records keep unresolved regions and failed attempts visible.
+- Table continuation is heuristic. Unrelated tables can share a header and
+  geometry; partial headers and page gaps remain separate.
+- Section hierarchy and fine quote geometry have deterministic regression
+  controls. Broad real-document hierarchy and visual-highlight accuracy remain
+  unqualified. The experimental reading-order graph is diagnostic; legacy order
+  remains the default.
+- `--max-decoded-stream-bytes` bounds each filter or predictor stage, not total
+  retained memory. Streaming also supports `--max-output-bytes` and
+  `--max-page-memory-bytes`; document caches, allocator overhead, and subprocess
+  memory are outside the page budget.
+- Known-password decryption is supported. Image render completeness for formats
+  such as JBIG2 and JPEG2000 depends on an external rasterizer when OCR is used.
 
-`inspect extraction` includes per-font CMap, CIDSystemInfo, ToUnicode,
-embedded-font, CIDToGIDMap, and Unicode mapping-provenance counters so missing
-text can be attributed to a specific font and mapping layer. It also counts
-bounded Type3 CharProc `d0`/`d1` metric and bounding-box captures separately
-from rendering support. Selection diagnostics compare reading-order candidates
-with a Form-aware full-context
-Unicode inventory and report missing/extra codepoints, decoded Form XObjects,
-coverage, and the selected output path.
+## Test and measure
 
-Readable extraction now preserves glyph geometry through a native layout pass
-that classifies joins, spaces, line breaks, block breaks, and region breaks with
-confidence and provenance. The raw recall channel remains separate. Before
-readable/RAG output, native layout is gated on boundary/token/line metrics,
-extreme token and line rates, and non-whitespace recall. If it fails, the CLI
-runs one document-level `pdftotext` process and marks those spans as
-`poppler_text` (`external_text` provenance). Native region/gutter segmentation
-is used for columns; adaptive region routing emits one primary specialist
-request per region.
-
-Adaptive extraction keeps fast native extraction on the default path while
-recording when a page or region should be routed elsewhere. Current route names
-include `use_native`, `queue_ocr`, `candidate_layout`, `candidate_table`,
-`candidate_formula`, and `candidate_table_formula`. The trace JSON reports page
-index, region index, span count, route, confidence, signal scores, and reasons
-such as `image_dominant`, `missing_tounicode`, `table_alignment`,
-`formula_density`, and `low_reading_order_confidence`. Use `--no-ocr` when a
-host pipeline wants adaptive structure and routing evidence without invoking
-fresh OCR subprocesses.
-
-Adaptive `json` emits the versioned public schema: a `document_manifest` plus
-typed `span`, `block`, `table`, `form_field`, `route_trace`,
-`specialist_request`, `specialist_response`, `specialist_result`, `rag_chunk`,
-and `debug_asset` records. `artifact-jsonl` emits the same contract as a
-manifest-first batch JSONL stream for host applications and ingestion
-pipelines. Schema `0.11.0` added one `specialist_attempt` record per OCR
-invocation, including configuration, bounded diagnostics, quality signals, and
-the selected attempt. Schema `0.12.0` added document-global specialist request
-identity across batch/streaming output and the first optional, bounded formula
-JSONL subprocess lifecycle. Schema `0.13.0` closes the visual loop for
-file-backed, unrotated pages: routed formula regions become deterministic,
-page-clamped PNG crops; successful responses replace overlapping native spans
-with `formula_model` spans and provenance-bearing formula artifacts. Crop or
-specialist failures leave native text intact.
-`stream-jsonl` emits page-by-page lifecycle events and artifacts as
-soon as each page is processed: `document_manifest`, `page_started`, route
-traces, specialist requests/results, page artifacts, `page_finished`, optional
-debug assets, then `document_finished`. `jsonl` remains a compatibility span
-stream, and `rag-jsonl` remains chunk-only. The schema is documented in
-[docs/output-schema.md](docs/output-schema.md).
-
-Visual review assets remain formal `debug_asset` records (introduced in schema
-`0.11.0`). By
-default they are references with `path:null`, `uri:null`, and null hashes. Add
-`--debug-assets-dir DIR` to materialize deterministic sidecar files such as
-`page-0001.table-grid.svg`, `page-0001.ocr-routes.svg`,
-`page-0001.glyph-trace.jsonl`, `document.hocr.html`, and
-`document.route-trace.json`; the corresponding records then include file
-path, byte length, SHA256, page scope, layers, and provenance.
-
-For host applications, prefer the neutral adapter command:
-
-```bash
-pdf-parser extract-adaptive \
-  --input doc.pdf \
-  --source-id external-system-id \
-  --format artifact-jsonl \
-  --debug-assets-dir review-assets
+```sh
+zig build test --summary all
+zig build shared wasm --summary all
+node --test --test-concurrency=1 integrations/javascript/*.test.mjs
+python3 benchmark/eval/section_safety.py --output benchmark/eval/outputs/section-safety-run
 ```
 
-`source_id` is a caller-owned external identity, separate from the parser's
-`document_id`. It is emitted on the manifest, artifacts, chunks, and provenance
-envelopes so any pipeline can join records back to its own source table,
-object-store key, or ingestion run.
+Choose a fresh output directory for each safety run. The
+[evaluation guide](benchmark/eval/README.md) covers the small correctness corpus,
+frozen table and reading-order controls, and regression gates. The
+[benchmarking guide](docs/benchmarking.md) separates native, adaptive, streaming,
+and OCR lanes. Use fast builds and repeatable scorecards for performance claims;
+debug timings and one document do not establish a general ranking.
 
-Encrypted PDFs are opened with a supplied known password, not cracked:
+## Documentation
 
-```bash
-pdf-parser extract encrypted.pdf --password "$PDF_PASSWORD"
-pdf-parser extract-adaptive \
-  --input encrypted.pdf \
-  --source-id external-system-id \
-  --password-file .pdf-password \
-  --format artifact-jsonl
-```
-
-`--password-file` reads one local file and ignores trailing CR/LF bytes. Do not
-use it with secret files you do not intend the worker process to read. The
-parser records encryption/authentication metadata in the document manifest, but
-never emits the password.
-
-### Packaging For Host Apps
-
-Use three integration modes, in this order:
-
-1. **CLI subprocess**: recommended default for workers, research applications ingestion, and
-   Cloud Run jobs. It is easiest to isolate, supervise, retry, and deploy:
-
-   ```bash
-   pdf-parser extract-adaptive \
-     --input doc.pdf \
-     --source-id external-system-id \
-     --format artifact-jsonl
-   pdf-parser extract-adaptive \
-     --input doc.pdf \
-     --source-id external-system-id \
-     --format stream-jsonl
-   ```
-
-2. **C ABI**: use `zig build shared` and include `pdf_parser.h` for Python,
-   Node, native, or other host bindings. The ABI returns the same versioned
-   JSON/JSONL artifacts as allocated buffers; callers must release returned
-   buffers with `pdf_parser_free_buffer(...)` or clear the full result with
-   `pdf_parser_result_clear(...)`.
-
-   ```c
-   PdfParserAdaptiveOptions options = {
-       .abi_version = PDF_PARSER_ABI_VERSION,
-       .format = PDF_PARSER_FORMAT_ARTIFACT_JSONL,
-       .input_path = "doc.pdf",
-       .source_id = "external-system-id",
-       .password = "known-password",
-       .permissive = 1,
-   };
-   PdfParserAdaptiveResult result = {0};
-   int status = pdf_parser_extract_adaptive_file(&options, &result);
-   if (status == PDF_PARSER_STATUS_OK) {
-       /* result.output/result.output_len is artifact JSONL */
-   }
-   pdf_parser_result_clear(&result);
-   ```
-
-   Python exposes the same surface as `zpdf.extract_adaptive(...,
-   password="known-password")` or `password_file=".pdf-password"`. Node
-   wrappers should prefer Node-API over direct V8 bindings for ABI stability,
-   while research applications can continue using the subprocess path first.
-
-3. **HTTP server**: useful for later long-running batch corpora or internal
-   services. It is a stateless wrapper around the same adapter:
-
-   ```bash
-   pdf-parser serve --host 0.0.0.0 --port 8080
-   curl -s http://localhost:8080/v1/extract-adaptive \
-     -H 'content-type: application/json' \
-     -d '{"input_path":"doc.pdf","source_id":"external-system-id","format":"stream-jsonl"}'
-   ```
-
-   Endpoints are `GET /healthz`, `GET /v1/capabilities`, and
-   `POST /v1/extract-adaptive`. Cloud Run services should bind to
-   `0.0.0.0:$PORT`; Cloud Run jobs should use the CLI subprocess mode and exit
-   when the document or manifest finishes.
-
-The specialist protocol keeps the Zig kernel deterministic while making local
-specialists swappable. Route traces identify regions that need OCR, table,
-formula, layout, or entity review; `specialist_request` records include the
-page/region bbox, route reasons, signal scores, native spans/blocks, optional
-crop/debug asset references, and provenance. By default the parser emits
-requests and does not invoke table/formula/layout/entity specialists. Existing
-Tesseract OCR output is represented as `specialist_response` and
-`specialist_result` records when OCR runs. An explicitly enabled formula
-specialist uses JSONL-over-stdin/stdout: one crop-backed request JSON object in,
-one strictly linked response JSON object out. Table, layout, and entity
-specialists remain request-only.
-
-Optional specialist flags:
-
-```bash
-pdf-parser extract-adaptive \
-  --input doc.pdf \
-  --source-id external-system-id \
-  --format artifact-jsonl \
-  --emit-specialist-requests requests.jsonl \
-  --specialist-config specialists.json
-```
-
-The minimal specialist config shape is a JSON object with optional `ocr`,
-`table`, `formula`, `layout`, and `entity` entries. Formula entries may include
-`enabled`, `executable`, `args`, `rasterizer_executable`, `crop_dpi`,
-`crop_padding_points`, `crop_grayscale`, and `timeout_ms`. Formula invocation
-is opt-in and model-neutral; no recognizer package is bundled. Memory-opened
-documents, invalid geometry and unsupported rotations produce explicit
-crop-stage outcomes. The development schema `0.18` maps declared quarter turns
-through shared crop transforms; scan orientation detection is separate.
-
-The document manifest is the top-level intelligence summary: input SHA256,
-parser/schema versions, page count, encrypted/corrupt flags, route counts,
-OCR/table/form/formula extraction counts, output artifact hashes or stream hash
-slots, warnings/errors, and capability coverage. That makes it suitable as the
-stable run record for general pipelines, not just this CLI.
-
-For research applications-style ingestion, `stream-jsonl` maps naturally to durable
-processing records: `document_manifest` as a manifest artifact,
-`page_started`/`page_finished`/`document_finished` as status artifacts,
-`span`/`block`/`table` as extracted text artifacts, `route_trace` and
-`specialist_request` as metadata or OCR/specialist diagnostics,
-`specialist_attempt`/`specialist_result` as returned specialist evidence, and `rag_chunk` as
-chunk-index artifacts that can be queued for embeddings before the full
-document finishes.
-
-Table records are structured data artifacts: rows/cells, page-aware geometry,
-logical multi-page table ids, continuation links, `rowspan`/`colspan`, roles
-(`header`, `row_header`, `data`, `note`, `footer`), confidence, raw and
-normalized text, deterministic numeric hints, and source span ids when
-available. OCR remains local and deterministic: when a page or region is routed
-to OCR, the adapter invokes Tesseract and reconciles the fresh OCR spans with
-native PDF spans rather than replacing the whole page.
-
-### Python
-
-```python
-import zpdf
-
-with zpdf.Document("file.pdf") as doc:
-    print(doc.page_count)
-
-    # Single page
-    text = doc.extract_page(0)
-
-    # All pages (accuracy mode is default)
-    all_text = doc.extract_all()
-
-    # Fast mode (higher throughput, stream-order extraction)
-    fast_text = doc.extract_all(mode="fast")
-
-    # Page info
-    info = doc.get_page_info(0)
-    print(f"{info.width}x{info.height}")
-
-# Zero-copy memory open (unsafe semantics for other language bindings)
-with zpdf.Document.open_memory_unsafe(open("file.pdf", "rb").read()) as doc:
-    print(doc.page_count)
-```
-
-Build the shared library first:
-```bash
-zig build -Doptimize=fast
-PYTHONPATH=python python3 examples/basic.py
-```
-
-## Project Structure
-
-```
-src/
-├── root.zig         # Document API and core types
-├── main.zig         # CLI entry point
-├── capi.zig         # C ABI exports for FFI
-├── server.zig       # Stateless HTTP host adapter
-├── wapi.zig         # WASM API exports
-├── parser.zig       # PDF object parser
-├── xref.zig         # XRef table/stream parsing
-├── pagetree.zig     # Page tree resolution
-├── decompress.zig   # Stream decompression filters
-├── encoding.zig     # Font encoding and CMap parsing
-├── font_mapping.zig # Independent code, CID, GID, and Unicode mapping stages
-├── agl.zig          # Adobe Glyph List mappings
-├── legacy_font_mapping.zig # Family-scoped private glyph-name mappings
-├── cff.zig          # CFF/Type1 font parsing
-├── interpreter.zig  # Content stream interpreter
-├── structtree.zig   # Structure tree parser (PDF/UA)
-├── layout.zig       # Text layout and bounding boxes
-├── markdown.zig     # Markdown export
-├── complexity.zig   # Cheap page/region routing signals
-├── adaptive.zig     # Adaptive extraction orchestration and trace records
-├── stream.zig       # Page-by-page adaptive JSONL artifact streaming
-├── reconcile.zig    # Provenance-preserving span/block/chunk outputs
-├── specialists.zig  # Table/formula heuristics and adapter stubs
-├── specialist_protocol.zig # Public JSONL protocol for local specialists
-├── ocr.zig          # OCR routing adapter and Tesseract subprocess/C-FFI hooks
-├── eval.zig         # Evaluation metrics
-├── eval_runner.zig  # Eval CLI
-├── benchmark_runner.zig # Corpus benchmark scorecards and regression gates
-├── eval_corpus_writer.zig # Deterministic fixture writer
-└── simd.zig         # SIMD-accelerated parsing
-
-include/pdf_parser.h # Public C ABI header
-python/zpdf/         # Python bindings (cffi, legacy package name)
-benchmark/eval/      # Tiny eval corpus, truth labels, thresholds, scorecards, comparator
-examples/            # Usage examples
-```
-
-## Reading Order
-
-pdf-parser extracts text in logical reading order using a three-tier approach:
-
-1. **Structure Tree** (preferred): Uses the PDF's semantic structure for tagged/accessible PDFs (PDF/UA). Correctly handles multi-column layouts, sidebars, tables, and captions.
-
-2. **Geometric Sort** (fallback): When no structure tree exists, sorts text spans by Y→X position to approximate visual reading order.
-
-3. **Stream Order** (last resort): When bounding box extraction fails, falls back to raw PDF content stream order.
-
-| Method | Pros | Cons |
-|--------|------|------|
-| Structure tree | Correct semantic order, handles complex layouts | Only works on tagged PDFs |
-| Geometric sort | Works on any PDF, respects visual layout | May fail on complex multi-column layouts |
-| Stream order | Always works | May not match visual order |
-
-Adaptive mode adds a fourth reconstruction layer for harder pages: it scores
-page/region complexity, reconstructs table rows and cells from layout geometry
-and ruling lines, invokes OCR only for scanned routes, then reconciles native,
-OCR, table, formula, and form spans with typed provenance.
-
-The versioned JSON, artifact JSONL, and streaming JSONL schema is currently
-`0.19.2` in local development, with parser build identity `0.4.0-dev` after the
-`v0.3.0` release. Schema `0.17.0` landed in [PR #6](https://github.com/Tom-R-Main/pdf-parser/pull/6)
-at `9cac608`, with all six CI checks green. Schemas `0.18.0` and `0.19.0` landed
-in [PR #7](https://github.com/Tom-R-Main/pdf-parser/pull/7) at `478d73a`, with all
-six PR CI checks green. Schema `0.19.1` landed in
-[PR #8](https://github.com/Tom-R-Main/pdf-parser/pull/8) at `1483f41`, with all
-six PR CI checks green. Schema `0.19.2` is a local working-tree continuation.
-The `0.19` vector-routing continuation's 23 outlined-text and
-negative-control fixtures, 13 real CLI/SDK tests and both JSONL readers are
-qualified in the [implementation evidence](docs/parser-host-implementation-plan.md#bounded-vector-routing-019-locally-checked).
-Every emitted record carries a `provenance` envelope with document and
-source identity, input hash context, artifact id, page/bbox, source kind,
-confidence, related span/block/chunk ids, route trace ids, and route reasons.
-This makes parser outputs usable as reviewable evidence in host pipelines
-without removing the older top-level compatibility fields.
-
-Schema `0.14.0` also provides hash-bound text views, block-to-span source maps,
-and chunk-to-block maps with explicit synthetic whitespace. The
-[neutral JavaScript adapters](docs/host-adapters.md) expose rich extraction,
-UTF-16 locators, overlap-aware chunk origins and separate prompt projections.
-Schema `0.15.0` adds reconciled span/table/cell ownership and page/region recovery
-assessments. Streaming supports output and adaptive page allocation budgets;
-the JavaScript page adapter validates lifecycle completion and applies
-backpressure. Schema `0.16.0` retains rendering-mode and rectangular-clipping
-evidence on native spans and adds bounded, page/region-scoped OCR crops with
-accepted PNG hashes. Crops preserve native text on refusal and expose unresolved
-quota skips. Visual completeness remains unverified; paint evidence describes
-operators and span bounds rather than final pixel visibility.
-Schema `0.17.0` adds content-stream and Form invocation scope to spans.
-ActualText and classified text boundaries survive adaptive reconstruction; Form
-text uses scoped resources and transformed geometry. Native and adaptive text
-quality gates run against the same born-digital and hard-font floors.
-Schema `0.18.0` adds nullable page geometry and OCR/formula pixel transforms for
-declared quarter-turn pages. Source bboxes remain raw, unrotated PDF user-space
-coordinates; UserUnit determines their physical size. Display geometry uses the
-effective CropBox in physical points, while rasterization uses MediaBox and
-retains bounded crop budgets. Legacy PageInfo dimensions and the manifest's
-`display_transform:null` remain compatible. These mappings do not detect scan
-orientation or establish visual completeness.
-Rotated OCR retains recognized word order; inferred tables on those pages are
-not promoted to table artifacts until their topology is qualified.
-Schema `0.19.0` adds nullable vector evidence to page and region routes. Bounded
-painted-path collection and geometric grouping can request regional OCR for
-unexplained vector contours. Rules, simple boxes, native-accounted shapes and
-isolated symbols can be withheld. The collector caps retained shapes at 512,
-segments per path at 512, operators at 100,000, cumulative vector-lexer input at
-8 MiB, graphics stack depth at 32, Form invocations at 256 and candidate regions
-at 64. Page summaries retain operator and byte counters. These lexer bounds
-exclude initial PDF decompression and do not establish whole-process memory
-limits. Native accounting uses rectangle unions capped at 64 intersections per
-coverage query and 1,000,000 native-span checks during page classification;
-candidate-merge coverage has its own bounded check budget. Exhaustion produces
-partial evidence and abstention.
-Partial or limited evidence remains explicit. Grouping uses known display axes;
-candidate bboxes stay in raw PDF coordinates. Exact candidate bounds can be
-retained within a larger image OCR route to avoid duplicate crops. These
-candidates require retained OCR text intersecting the exact candidate extent
-before recovery is reported; recognized text elsewhere in the bitmap crop does
-not qualify. Recovery and merged route bounds leave completeness unverified.
-Vector candidates do not establish recognized glyphs, final visibility or
-complete coverage, and use the existing
-OCR engine and crop budgets.
-Host adoption remains explicit; accepted schema families and parser/compiler
-pins must be updated together.
-
-## Comparison
-
-| Feature | pdf-parser | pdfium | MuPDF | pdfplumber |
-|---------|------|--------|-------|------------|
-| **Text Extraction** | | | |
-| Stream order | Yes | Yes | Yes | Yes |
-| Tagged/structure tree | Yes | No | Yes | No |
-| Visual/layout reading order | Yes | No | Yes | Yes |
-| Word bounding boxes | Yes | Yes | Yes | Yes |
-| Local OCR route | Yes | No | No | No |
-| AcroForm value extraction | Yes | Partial | Partial | Partial |
-| Ruled table cell geometry | Yes | No | No | Yes |
-| Rowspan/colspan/role output | Yes | No | No | Partial |
-| **Font Support** | | | |
-| WinAnsi/MacRoman | Yes | Yes | Yes | Yes |
-| ToUnicode CMap | Yes | Yes | Yes | Yes |
-| CID fonts (Type0) | Partial* | Yes | Yes | Yes |
-| Type3 extraction metrics | Partial | Yes | Yes | Yes |
-| ActualText marked content | Yes | Yes | Yes | Partial |
-| **Compression** | | | |
-| FlateDecode, LZW, ASCII85/Hex | Yes | Yes | Yes | Yes |
-| JBIG2, JPEG2000 | No | Yes | Yes | Via dependencies |
-| **Other** | | | |
-| Encrypted PDFs | Known password | Yes | Yes | Via dependencies |
-| Rendering | No | Yes | Yes | No |
-
-*\*CID fonts: Supports embedded encoding CMaps, 167 predefined Adobe CMaps,
-`usecmap` inheritance, vertical writing mode, and supplement-bounded scalar or
-multi-codepoint CID-to-Unicode fallback for Adobe Japan1/GB1/CNS1/Korea1.
-Identity CIDs without ToUnicode or another defensible Unicode source remain
-explicitly unresolved.*
-
-**Use pdf-parser when:** Batch extraction, deterministic Zig-native pipelines,
-PDF/UA/tagged PDFs, local OCR fallback, financial table provenance, form values,
-or RAG/debug outputs matter.
-
-**Use pdfium when:** Browser integration, full PDF support, proven stability.
-
-**Use MuPDF when:** Complex visual layouts, rendering needed.
-
-**Use pdfplumber when:** Python table-extraction workflows and interactive
-layout debugging matter more than a native Zig pipeline.
+- [Usage and integration](docs/usage.md): CLI, Zig, C, Python, and server examples.
+- [Output schema](docs/output-schema.md): public records and compatibility policy.
+- [JavaScript host adapters](docs/host-adapters.md): extraction and source locators.
+- [Architecture](docs/architecture.md): kernel, adaptive pipeline, and public boundaries.
+- [Evaluation](benchmark/eval/README.md) and [memory checks](docs/memory-checks.md).
+- [Changelog](CHANGELOG.md) and [0.20 implementation evidence](docs/parser-improvements-2026-10-31.md).
 
 ## License
 
-MIT for new implementation work. This project began from `Lulzx/zpdf` at commit
-`5eba7ade759d32b0d425eb905c17106b484dee30`, which was released under CC0-1.0;
-see `NOTICE.md` and `LICENSES/CC0-1.0.txt` for provenance.
+MIT for new implementation work. This project began from `Lulzx/zpdf` at
+`5eba7ade759d32b0d425eb905c17106b484dee30`, released under CC0-1.0. See
+[NOTICE.md](NOTICE.md) and [the original license](LICENSES/CC0-1.0.txt).

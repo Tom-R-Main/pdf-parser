@@ -12,6 +12,7 @@ const schema = @import("schema.zig");
 const specialist_protocol = @import("specialist_protocol.zig");
 const visual_assets = @import("visual_assets.zig");
 const resource_limits = @import("resource_limits.zig");
+const table_continuation = @import("table_continuation.zig");
 
 pub const StreamingEventType = enum {
     document_manifest,
@@ -68,6 +69,13 @@ pub fn extractAdaptiveStreaming(
     var event_index: u64 = 0;
     var table_context = StreamTableContext{};
     var region_index_base: u32 = 0;
+    var local_section_state = adaptive.section_hierarchy.State{};
+    const owned_section_bookmarks = if (options.adaptive_options.section_bookmarks == null)
+        try adaptive.collectSectionBookmarks(allocator, document)
+    else
+        null;
+    defer if (owned_section_bookmarks) |items| adaptive.freeSectionBookmarks(allocator, items);
+    const section_bookmarks = options.adaptive_options.section_bookmarks orelse owned_section_bookmarks.?;
 
     var owned_fallback_page_index: ?adaptive.DocumentTextPageIndex = null;
     if (options.adaptive_options.fallback_page_index == null) {
@@ -105,6 +113,9 @@ pub fn extractAdaptiveStreaming(
         page_options.page_end = page_idx + 1;
         page_options.fallback_page_index = fallback_page_index;
         page_options.region_index_base = region_index_base;
+        page_options.section_bookmarks = section_bookmarks;
+        page_options.section_state = options.adaptive_options.section_state orelse &local_section_state;
+        page_options.section_block_base = options.adaptive_options.section_block_base + @as(u32, @intCast(summary.artifact_counts.blocks));
 
         var page_budget = resource_limits.BudgetAllocator{
             .parent = allocator,
@@ -274,7 +285,7 @@ fn writePageArtifacts(
         if (table.page_index != page_index) continue;
         const global_table_index = offsets.table_base + @as(u32, @intCast(local_index));
         var stream_table = table;
-        table_context.apply(&stream_table, global_table_index);
+        _ = table_context.apply(&stream_table, global_table_index);
         try schema.writeTableStreamRecord(allocator, writer, document_id, source_id, input_sha256, result, stream_table, global_table_index, offsets, .{
             .event_type = "table",
             .event_index = event_index.*,
@@ -306,95 +317,7 @@ fn writePageArtifacts(
     return counts;
 }
 
-const StreamTableContext = struct {
-    previous: ?PreviousTable = null,
-
-    fn apply(self: *StreamTableContext, table: *layout.TableGrid, global_table_index: u32) void {
-        table.logical_table_index = global_table_index;
-        table.table_part_index = 0;
-        table.continued_from_table_index = null;
-        table.continued_to_table_index = null;
-
-        const signature = PreviousTable.fromTable(table.*, global_table_index) orelse {
-            self.previous = null;
-            return;
-        };
-
-        if (self.previous) |previous| {
-            if (previous.continuesTo(signature)) {
-                table.logical_table_index = previous.logical_table_index;
-                table.table_part_index = previous.table_part_index + 1;
-                table.continued_from_table_index = previous.table_index;
-            }
-        }
-
-        self.previous = .{
-            .table_index = global_table_index,
-            .logical_table_index = table.logical_table_index orelse global_table_index,
-            .table_part_index = table.table_part_index,
-            .page_index = table.page_index,
-            .column_count = table.column_count,
-            .x0 = table.bounds.x0,
-            .width = table.bounds.x1 - table.bounds.x0,
-            .header_hash = signature.header_hash,
-        };
-    }
-};
-
-const PreviousTable = struct {
-    table_index: u32,
-    logical_table_index: u32,
-    table_part_index: u32,
-    page_index: u32,
-    column_count: usize,
-    x0: f64,
-    width: f64,
-    header_hash: u64,
-
-    fn fromTable(table: layout.TableGrid, table_index: u32) ?PreviousTable {
-        const header_hash = tableHeaderHash(table) orelse return null;
-        return .{
-            .table_index = table_index,
-            .logical_table_index = table.logical_table_index orelse table_index,
-            .table_part_index = table.table_part_index,
-            .page_index = table.page_index,
-            .column_count = table.column_count,
-            .x0 = table.bounds.x0,
-            .width = table.bounds.x1 - table.bounds.x0,
-            .header_hash = header_hash,
-        };
-    }
-
-    fn continuesTo(self: PreviousTable, current: PreviousTable) bool {
-        if (current.page_index <= self.page_index) return false;
-        if (current.column_count == 0 or current.column_count != self.column_count) return false;
-        if (current.header_hash != self.header_hash) return false;
-        const width_delta = @abs(self.width - current.width);
-        const left_delta = @abs(self.x0 - current.x0);
-        return left_delta <= 18.0 and width_delta <= @max(24.0, @max(self.width, 1.0) * 0.08);
-    }
-};
-
-fn tableHeaderHash(table: layout.TableGrid) ?u64 {
-    for (table.rows) |row| {
-        var header_cells: usize = 0;
-        var text_cells: usize = 0;
-        var hash: u64 = 14695981039346656037;
-        for (row.cells) |cell| {
-            if (cell.text.len == 0) continue;
-            text_cells += 1;
-            if (cell.role == .header) header_cells += 1;
-            for (cell.text) |byte| {
-                hash ^= std.ascii.toLower(byte);
-                hash *%= 1099511628211;
-            }
-            hash ^= '|';
-            hash *%= 1099511628211;
-        }
-        if (text_cells > 0 and header_cells * 2 >= text_cells) return hash;
-    }
-    return null;
-}
+const StreamTableContext = table_continuation.Context;
 
 fn pageBBox(page: anytype) layout.BBox {
     return .{

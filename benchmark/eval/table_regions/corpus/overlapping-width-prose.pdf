@@ -1,0 +1,50 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 673 >>
+stream
+0.5 w
+160 520 m 160 640 l S
+330 520 m 330 640 l S
+425 520 m 425 640 l S
+520 520 m 520 640 l S
+160 640 m 520 640 l S
+160 600 m 520 600 l S
+160 560 m 520 560 l S
+160 520 m 520 520 l S
+BT /F1 10 Tf 1 0 0 1 168 618 Tm (Unit) Tj ET
+BT /F1 10 Tf 1 0 0 1 338 618 Tm (Ready) Tj ET
+BT /F1 10 Tf 1 0 0 1 433 618 Tm (Held) Tj ET
+BT /F1 10 Tf 1 0 0 1 168 578 Tm (Press) Tj ET
+BT /F1 10 Tf 1 0 0 1 338 578 Tm (7) Tj ET
+BT /F1 10 Tf 1 0 0 1 433 578 Tm (2) Tj ET
+BT /F1 10 Tf 1 0 0 1 168 538 Tm (Lift) Tj ET
+BT /F1 10 Tf 1 0 0 1 338 538 Tm (0) Tj ET
+BT /F1 10 Tf 1 0 0 1 90 686 Tm (All units inspected before release) Tj ET
+BT /F1 10 Tf 1 0 0 1 170 478 Tm (No owner action remains) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000964 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1032
+%%EOF
