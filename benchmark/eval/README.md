@@ -21,6 +21,20 @@ must finish within its timeout and retain the page's body text.
 Run `node --test integrations/javascript/*.test.mjs` for strict batch/stream
 consumer validation and actual CLI adapter roundtrips.
 
+LZW controls exercise omitted/default and explicit `EarlyChange`, every
+9-to-12-bit width transition, clear-code resets and composed predictors through
+native text and both public JSONL formats:
+
+```sh
+python3 benchmark/eval/lzw_early_change.py --output benchmark/eval/outputs/lzw-run
+```
+
+The harness runs 24 CLI checks on eight generated inputs. Pass `--qpdf qpdf`
+when that optional tool is installed to compare complete decoded stream bytes
+independently. Zig unit checks also cover exact output caps, invalid parameter
+values and allocation-failure cleanup. These controls do not establish general
+PDF conformance.
+
 The independent [table region development controls](table_regions/README.md)
 check separated regions, persistent columns, exact source ownership, and prose
 retention in both public JSONL formats. Their drawing truth is frozen before

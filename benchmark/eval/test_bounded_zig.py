@@ -77,10 +77,12 @@ class BoundedBuildTests(unittest.TestCase):
             f"subprocess.Popen([sys.executable,'-c',{sleeper!r}])\n"
             f"ready=pathlib.Path({str(child_ready)!r})\n"
             "while not ready.exists(): time.sleep(.01)\n"
+            # Once the write crosses the limit, the monitor may stop the group
+            # before the writer can print again. Log readiness before growing it.
+            "print('child group ready',flush=True)\n"
             "p=pathlib.Path(os.environ['ZIG_GLOBAL_CACHE_DIR'])/'large'\n"
             "with p.open('wb') as f:\n"
             " f.write(b'x'*(2*1024*1024)); f.flush(); os.fsync(f.fileno())\n"
-            "print('allocated over budget',flush=True)\n"
             "time.sleep(60)\n"
         )
         unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
@@ -94,10 +96,28 @@ class BoundedBuildTests(unittest.TestCase):
             self.assertEqual(child_stopped.read_text(), "terminated")
             self.assertIsNone(unrelated.poll(), "runner killed an unrelated process")
             self.assertTrue((self.cache / "global/large").exists())
-            self.assertIn(b"allocated over budget", self.log.read_bytes())
+            self.assertIn(b"child group ready", self.log.read_bytes())
         finally:
             unrelated.terminate()
             unrelated.wait(timeout=5)
+
+    def test_budget_stop_does_not_require_output_after_allocation(self):
+        # Hold the writer after allocation so the monitor must stop it without
+        # relying on a later log line or successful command exit.
+        result = self.run_child(
+            "import os,pathlib,time\n"
+            "p=pathlib.Path(os.environ['ZIG_GLOBAL_CACHE_DIR'])/'large'\n"
+            "with p.open('wb') as f:\n"
+            " f.write(b'x'*(2*1024*1024)); f.flush(); os.fsync(f.fileno())\n"
+            "time.sleep(60)\n"
+            "print('must not reach this line',flush=True)\n"
+        )
+        receipt = self.read_receipt()
+        self.assertEqual(result, 124)
+        self.assertEqual(receipt["status"], "allocation_budget_exceeded")
+        self.assertNotEqual(receipt["command_exit_code"], 0)
+        self.assertGreater(receipt["observed_budget_overshoot_bytes"], 0)
+        self.assertEqual(self.log.read_bytes(), b"")
 
     def test_preexisting_cache_over_budget_never_starts_command(self):
         self.cache.mkdir()

@@ -589,7 +589,23 @@ fn decodeLZWWithLimit(
     params: ?Object,
     max_size: usize,
 ) ![]u8 {
-    _ = params; // TODO: EarlyChange parameter
+    // PDF defaults to changing one code early. A null dictionary value is
+    // equivalent to an absent entry; an explicit value must be integer 0 or 1.
+    var early_change: u16 = 1;
+    if (params) |p| {
+        if (p == .dict) {
+            if (p.dict.get("EarlyChange")) |value| {
+                switch (value) {
+                    .null => {},
+                    .integer => |number| {
+                        if (number != 0 and number != 1) return DecompressError.InvalidFilterParams;
+                        early_change = @intCast(number);
+                    },
+                    else => return DecompressError.InvalidFilterParams,
+                }
+            }
+        }
+    }
 
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
@@ -691,7 +707,7 @@ fn decodeLZWWithLimit(
         prev_code = code;
 
         // Increase code size when needed
-        if (table.size >= (@as(u16, 1) << code_size) and code_size < 12) {
+        if (code_size < 12 and table.size >= (@as(u16, 1) << code_size) - early_change) {
             code_size += 1;
         }
     }
@@ -942,6 +958,105 @@ test "LZW dictionary entries are released after decoding" {
     defer std.testing.allocator.free(decoded);
 
     try std.testing.expectEqualStrings("AB", decoded);
+}
+
+// These streams deliberately use only literal codes. The width windows count
+// decoded literals, independently of the decoder's dictionary implementation:
+// the first literal adds no entry; subsequent literals add one each.
+fn lzwTestWidth(literal_index: usize, early_change: u1) u4 {
+    const first: usize = if (early_change == 1) 254 else 255;
+    if (literal_index < first) return 9;
+    if (literal_index < first + 512) return 10;
+    if (literal_index < first + 512 + 1024) return 11;
+    return 12;
+}
+
+fn appendLzwTestCode(allocator: std.mem.Allocator, encoded: *std.ArrayList(u8), bit_count: *usize, code: u16, width: u4) !void {
+    for (0..width) |index| {
+        if (bit_count.* % 8 == 0) try encoded.append(allocator, 0);
+        const code_shift: u4 = @intCast(@as(usize, width) - 1 - index);
+        const byte_shift: u3 = @intCast(7 - bit_count.* % 8);
+        encoded.items[encoded.items.len - 1] |= @as(u8, @intCast((code >> code_shift) & 1)) << byte_shift;
+        bit_count.* += 1;
+    }
+}
+
+fn lzwLiteralTestStream(allocator: std.mem.Allocator, count: usize, early_change: u1, reset: bool) ![]u8 {
+    var encoded: std.ArrayList(u8) = .empty;
+    errdefer encoded.deinit(allocator);
+    var bits: usize = 0;
+    try appendLzwTestCode(allocator, &encoded, &bits, 256, 9);
+    for (0..count) |index| {
+        try appendLzwTestCode(allocator, &encoded, &bits, @intCast(index % 251), lzwTestWidth(index, early_change));
+    }
+    if (reset) {
+        try appendLzwTestCode(allocator, &encoded, &bits, 256, lzwTestWidth(count, early_change));
+        try appendLzwTestCode(allocator, &encoded, &bits, 'A', 9);
+        try appendLzwTestCode(allocator, &encoded, &bits, 258, 9); // KwKwK after reset: AAA.
+        try appendLzwTestCode(allocator, &encoded, &bits, 257, 9);
+    } else {
+        try appendLzwTestCode(allocator, &encoded, &bits, 257, lzwTestWidth(count, early_change));
+    }
+    return encoded.toOwnedSlice(allocator);
+}
+
+test "LZW EarlyChange selects every code-width boundary and resets at twelve bits" {
+    const allocator = std.testing.allocator;
+    for ([_]u1{ 0, 1 }) |early_change| {
+        var entries = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = .{ .integer = early_change } }};
+        const params: Object = .{ .dict = .{ .entries = &entries } };
+        // End codes immediately before/at/after each transition catch off-by-one
+        // errors. The long stream also exercises sustained twelve-bit codes.
+        for ([_]usize{ 253, 254, 255, 256, 765, 766, 767, 768, 1789, 1790, 1791, 1792, 3837 }) |count| {
+            const encoded = try lzwLiteralTestStream(allocator, count, early_change, false);
+            defer allocator.free(encoded);
+            const decoded = try decompressStreamWithOptions(allocator, encoded, .{ .name = "LZWDecode" }, params, .{ .max_output_bytes = count });
+            defer allocator.free(decoded);
+            try std.testing.expectEqual(count, decoded.len);
+            for (decoded, 0..) |byte, index| try std.testing.expectEqual(@as(u8, @intCast(index % 251)), byte);
+            try std.testing.expectError(error.OutputTooLarge, decompressStreamWithOptions(allocator, encoded, .{ .name = "LZWDecode" }, params, .{ .max_output_bytes = count - 1 }));
+            if (early_change == 1) {
+                const default_decoded = try decodeLZW(allocator, encoded, null);
+                defer allocator.free(default_decoded);
+                try std.testing.expectEqualSlices(u8, decoded, default_decoded);
+            }
+        }
+        const encoded = try lzwLiteralTestStream(allocator, 1800, early_change, true);
+        defer allocator.free(encoded);
+        const decoded = try decodeLZW(allocator, encoded, params);
+        defer allocator.free(decoded);
+        try std.testing.expectEqual(@as(usize, 1803), decoded.len);
+        for (decoded[0..1800], 0..) |byte, index| try std.testing.expectEqual(@as(u8, @intCast(index % 251)), byte);
+        try std.testing.expectEqualStrings("AAA", decoded[1800..]);
+    }
+}
+
+test "LZW EarlyChange rejects invalid values and treats null as the default" {
+    const allocator = std.testing.allocator;
+    const encoded = try lzwLiteralTestStream(allocator, 260, 1, false);
+    defer allocator.free(encoded);
+    for ([_]Object{ .{ .integer = -1 }, .{ .integer = 2 }, .{ .real = 1 }, .{ .boolean = true }, .{ .name = "1" } }) |value| {
+        var entries = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = value }};
+        try std.testing.expectError(error.InvalidFilterParams, decodeLZW(allocator, encoded, .{ .dict = .{ .entries = &entries } }));
+    }
+    var entries = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = .null }};
+    const decoded = try decodeLZW(allocator, encoded, .{ .dict = .{ .entries = &entries } });
+    defer allocator.free(decoded);
+    try std.testing.expectEqual(@as(usize, 260), decoded.len);
+}
+
+fn lzwEarlyChangeAllocationProbe(allocator: std.mem.Allocator, encoded: []const u8, early_change: u1) !void {
+    var entries = [_]Object.Dict.Entry{.{ .key = "EarlyChange", .value = .{ .integer = early_change } }};
+    const decoded = try decodeLZW(allocator, encoded, .{ .dict = .{ .entries = &entries } });
+    defer allocator.free(decoded);
+}
+
+test "LZW EarlyChange releases transition output and dictionary on allocation failure" {
+    for ([_]u1{ 0, 1 }) |early_change| {
+        const encoded = try lzwLiteralTestStream(std.testing.allocator, 260, early_change, false);
+        defer std.testing.allocator.free(encoded);
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, lzwEarlyChangeAllocationProbe, .{ encoded, early_change });
+    }
 }
 
 fn lzwAllocationProbe(allocator: std.mem.Allocator) !void {
