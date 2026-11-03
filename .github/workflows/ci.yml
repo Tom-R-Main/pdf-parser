@@ -401,7 +401,9 @@ jobs:
           python3 - <<'PY'
           import importlib.util
           from pathlib import Path
+          import sys
           import urllib.request
+          sys.path.insert(0, str(Path("benchmark/eval").resolve()))
           spec = importlib.util.spec_from_file_location("profile", "benchmark/eval/ocr_profile.py")
           profile = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(profile)
@@ -418,6 +420,7 @@ jobs:
       - name: Build task-local real OCR tools and parser
         run: |
           python3 -m unittest discover -s benchmark/eval -p 'test_ocr_profile.py'
+          python3 -m unittest discover -s benchmark/eval -p 'test_owned_process.py'
           python3 benchmark/eval/ocr_profile.py build \
             --source-cache benchmark/eval/raw_cache/live-ocr-profile \
             --traineddata /usr/share/tesseract-ocr/5/tessdata/eng.traineddata \

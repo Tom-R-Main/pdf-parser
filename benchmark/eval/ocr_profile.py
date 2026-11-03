@@ -10,11 +10,12 @@ from pathlib import Path
 import platform
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tarfile
 import time
+
+from owned_process import cleanup_process_group
 
 ROOT = Path(__file__).resolve().parents[2]
 PINS = {
@@ -59,20 +60,12 @@ def run(output: Path, label: str, argv: list, *, env=None, timeout=900) -> dict:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
         finally:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            cleanup = cleanup_process_group(proc)
     result = dict(command=list(map(str, argv)), cwd=str(ROOT), exit_code=proc.returncode, timed_out=timed_out,
                   duration_seconds=round(time.monotonic() - started, 3), pid=proc.pid,
-                  stdout=str(stdout), stderr=str(stderr), stdout_sha256=sha(stdout), stderr_sha256=sha(stderr), owned_group_cleanup=True)
+                  stdout=str(stdout), stderr=str(stderr), stdout_sha256=sha(stdout), stderr_sha256=sha(stderr),
+                  owned_group_cleanup=True, process_group_cleanup=cleanup)
     write_json(output / (label + ".receipt.json"), result)
     print(label, result["exit_code"], flush=True)
     return result
@@ -280,7 +273,7 @@ def gate(args) -> int:
     elf = checked(output, "renderer-elf", ["readelf", "-d", profile["binaries"]["pdftoppm"]])
     arithmetic = arithmetic_receipt(output, args.profile, profile)
     targets = {**profile["artifacts"], **loaded}
-    for file in [args.profile, args.parser.resolve(), args.evaluator.resolve(), Path(__file__), ROOT / "benchmark/eval/corpus/manifest.tsv", ROOT / "benchmark/eval/corpus/metadata.jsonl"]:
+    for file in [args.profile, args.parser.resolve(), args.evaluator.resolve(), Path(__file__), Path(__file__).with_name("owned_process.py"), ROOT / "benchmark/eval/corpus/manifest.tsv", ROOT / "benchmark/eval/corpus/metadata.jsonl"]:
         targets[str(file)] = sha(file)
     source_identity = {name: sha(ROOT / name) for name in ("src/adaptive.zig", "src/specialist_protocol.zig", "src/layout.zig", "src/eval_runner.zig")}
     raster = profile["wrappers"]["pdftoppm"]

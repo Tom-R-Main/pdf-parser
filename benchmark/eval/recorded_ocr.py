@@ -13,11 +13,12 @@ import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import struct
 import subprocess
 import sys
 import time
+
+from owned_process import cleanup_process_group
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -92,26 +93,21 @@ def provider(role: str, args: list[str]) -> int:
     return 0
 
 
-def run(command: list[str], output: Path, label: str, env: dict) -> dict:
+def run(command: list[str], output: Path, label: str, env: dict, *, timeout=90) -> dict:
     start = time.monotonic()
     timed_out = False
     with (output / (label + '.stdout')).open('xb') as stdout, (output / (label + '.stderr')).open('xb') as stderr:
         child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
         try:
-            code = child.wait(timeout=90)
+            child.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(child.pid, signal.SIGKILL)
-            code = child.wait()
         finally:
-            try:
-                os.killpg(child.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-    return dict(command=command, pid=child.pid, exit_code=code, timed_out=timed_out, duration_seconds=round(time.monotonic() - start, 3),
+            cleanup = cleanup_process_group(child)
+    return dict(command=command, pid=child.pid, exit_code=child.returncode, timed_out=timed_out, duration_seconds=round(time.monotonic() - start, 3),
                 stdout=str(output / (label + '.stdout')), stderr=str(output / (label + '.stderr')),
                 stdout_sha256=sha(output / (label + '.stdout')), stderr_sha256=sha(output / (label + '.stderr')),
-                owned_process_group_cleaned=True)
+                owned_process_group_cleaned=True, process_group_cleanup=cleanup)
 
 
 def verify(args: argparse.Namespace) -> dict:
