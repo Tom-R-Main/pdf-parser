@@ -91,7 +91,7 @@ record ordering, and compatibility rules.
 
 The CLI/JSONL boundary is the default integration surface. The repository also
 includes a C ABI, Python bindings, JavaScript adapters, a stateless HTTP wrapper,
-and a WebAssembly build.
+and a [browser WASM API](docs/wasm.md) with an owned Worker and versioned numeric ABI.
 
 The JavaScript adapters use a host-selected executable, validate records, and
 retain source positions. Node 22 or newer is required:

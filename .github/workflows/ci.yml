@@ -135,6 +135,21 @@ jobs:
       - name: Build shared library
         run: zig build shared --summary all
 
+      - name: Verify recorded external-OCR routing (no live OCR)
+        run: |
+          python3 -m unittest discover -s benchmark/eval -p 'test_recorded_ocr.py'
+          python3 benchmark/eval/recorded_ocr.py \
+            --fixture benchmark/eval/recorded_ocr/jpx-mac-2026-11-01/fixture.json \
+            --output benchmark/eval/outputs/recorded-ocr-ci
+
+      - name: Upload recorded OCR routing evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: recorded-ocr-routing
+          path: benchmark/eval/outputs/recorded-ocr-ci
+          if-no-files-found: warn
+
       - name: Verify adaptive provenance and bounded recovery
         run: |
           python3 benchmark/eval/table_continuation_parity.py --output benchmark/eval/outputs/parser-020-ci/table-parity
@@ -253,7 +268,7 @@ jobs:
             libpdf_parser.so
 
   wasm:
-    name: Build WASM
+    name: WASM ABI and staged browser consumer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -266,6 +281,18 @@ jobs:
       - name: Build WASM
         run: zig build wasm
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Test actual WASM ABI and wrapper
+        run: node --test --test-concurrency=1 benchmark/eval/wasm/*.test.mjs
+
+      # GitHub's Ubuntu image supplies Chrome. The runner fails explicitly
+      # when unavailable; it never installs browser dependencies implicitly.
+      - name: Test staged browser delivery and Worker lifecycle
+        run: node benchmark/eval/wasm/browser.mjs benchmark/eval/outputs/wasm-browser-ci
+
       - name: Enforce WASM size budget
         run: |
           wasm_size=$(wc -c < zig-out/bin/pdf_parser.wasm)
@@ -273,6 +300,14 @@ jobs:
             echo "WASM artifact exceeds 3,250,000-byte budget: $wasm_size"
             exit 1
           fi
+
+      - name: Upload WASM consumer evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: wasm-consumer
+          path: benchmark/eval/outputs/wasm-browser-ci
+          if-no-files-found: warn
 
   adaptive-ocr:
     name: Adaptive OCR quality gate
@@ -338,3 +373,73 @@ jobs:
             /tmp/ocr-hard-document-quality.json
             /tmp/ocr-jpx-hard-document-quality.json
           if-no-files-found: ignore
+
+  live-ocr-profile:
+    name: Live OCR arithmetic profile (strict corpus)
+    runs-on: ubuntu-24.04
+    container: debian:13.6-slim
+    timeout-minutes: 20
+    steps:
+      - name: Install build dependencies in the isolated CI container
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git curl xz-utils cmake ninja-build g++ binutils pkg-config \
+            python3 python3-pil libleptonica-dev liblcms2-dev libfreetype-dev libfontconfig-dev \
+            libjpeg-dev libpng-dev libtiff-dev zlib1g-dev tesseract-ocr-eng
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Download pinned release archives (builder itself is offline)
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import urllib.request
+          spec = importlib.util.spec_from_file_location("profile", "benchmark/eval/ocr_profile.py")
+          profile = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(profile)
+          cache = Path("benchmark/eval/raw_cache/live-ocr-profile")
+          cache.mkdir(parents=True, exist_ok=True)
+          for name, (version, url, digest) in profile.PINS.items():
+              suffix = ".tar.xz" if name == "poppler" else ".tar.gz"
+              target = cache / (name + "-" + version + suffix)
+              with urllib.request.urlopen(url, timeout=60) as response:
+                  target.write_bytes(response.read())
+              profile.require_hash(target, digest)
+          PY
+
+      - name: Build task-local real OCR tools and parser
+        run: |
+          python3 -m unittest discover -s benchmark/eval -p 'test_ocr_profile.py'
+          python3 benchmark/eval/ocr_profile.py build \
+            --source-cache benchmark/eval/raw_cache/live-ocr-profile \
+            --traineddata /usr/share/tesseract-ocr/5/tessdata/eng.traineddata \
+            --output benchmark/eval/outputs/live-ocr-profile
+          zig build --summary all
+          zig build benchmark-eval --summary all
+
+      - name: Enforce live raster identity, original strict corpus and semantic floors
+        run: |
+          python3 benchmark/eval/ocr_profile.py gate \
+            --profile benchmark/eval/outputs/live-ocr-profile/profile.json \
+            --output benchmark/eval/outputs/live-ocr-qualified
+
+      - name: Upload live qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: live-ocr-profile
+          path: |
+            benchmark/eval/outputs/live-ocr-profile/*.json
+            benchmark/eval/outputs/live-ocr-profile/*.stdout
+            benchmark/eval/outputs/live-ocr-profile/*.stderr
+            benchmark/eval/outputs/live-ocr-profile/build-attempt-*
+            benchmark/eval/outputs/live-ocr-qualified
+          if-no-files-found: warn

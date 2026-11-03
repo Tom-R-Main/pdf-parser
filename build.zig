@@ -70,6 +70,10 @@ pub fn build(b: *std.Build) void {
     shared_step.dependOn(&install_header.step);
 
     // WebAssembly build
+    const wasm_max_memory = b.option(u64, "wasm-max-memory", "Maximum WebAssembly linear memory in bytes (page aligned)") orelse 512 * 1024 * 1024;
+    if (wasm_max_memory < 4 * 1024 * 1024 or wasm_max_memory > 4 * 1024 * 1024 * 1024 or wasm_max_memory % 65536 != 0) {
+        @panic("wasm-max-memory must be page aligned and between 4 MiB and 4 GiB");
+    }
     const wasm = b.addExecutable(.{
         .name = "pdf_parser",
         .root_module = parserModule(b, "src/wapi.zig", b.resolveTargetQuery(.{
@@ -79,6 +83,7 @@ pub fn build(b: *std.Build) void {
     });
     wasm.entry = .disabled;
     wasm.rdynamic = true;
+    wasm.max_memory = wasm_max_memory;
 
     const wasm_step = b.step("wasm", "Build WebAssembly module");
     const install_wasm = b.addInstallArtifact(wasm, .{});
