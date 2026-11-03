@@ -268,7 +268,7 @@ jobs:
             libpdf_parser.so
 
   wasm:
-    name: WASM ABI and staged browser consumer
+    name: Build WASM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
