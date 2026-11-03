@@ -1,0 +1,16 @@
+{
+  "doc_id": "jpx-public-domain-map-cover",
+  "pdf": "benchmark/eval/corpus/scanned_typewritten/jpx-public-domain-map-cover.pdf",
+  "pdf_sha256": "58e3465bcb9823a610102b1d17f4ee71b7bcab94fb06b87bf0676ab70d0c8056",
+  "tsv": "reference.tsv",
+  "tsv_sha256": "57942c632ae23f56edbe7c31c2ead36611f57ee145c0bd807699a5cae9cea5c8",
+  "capture": "capture.json",
+  "capture_sha256": "455283cf7ac46371ab6deab72d85a2eb27fb8c5ea32a0445bf4be61f4d0dc08b",
+  "page_index": 0,
+  "dpi": 300,
+  "psm": 11,
+  "pixels": [1190, 1975],
+  "language": "eng",
+  "grayscale": true,
+  "qualification": "Recorded macOS external-OCR input for deterministic routing regression; not live Linux OCR qualification"
+}

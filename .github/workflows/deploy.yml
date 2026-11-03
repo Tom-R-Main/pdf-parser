@@ -28,11 +28,12 @@ jobs:
       - name: Build WASM
         run: zig build wasm
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
       - name: Prepare deploy directory
-        run: |
-          mkdir -p deploy
-          cp web/index.html deploy/
-          cp zig-out/bin/pdf_parser.wasm deploy/
+        run: node benchmark/eval/wasm/stage.mjs deploy
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5

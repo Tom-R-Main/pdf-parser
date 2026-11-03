@@ -937,7 +937,7 @@ class BenchmarkHygieneTests(unittest.TestCase):
         row = table_compare.skipped(entry, "pymupdf-find-tables", "PyMuPDF is not installed")
 
         self.assertEqual("table_compare_result", row["record_type"])
-        self.assertEqual("0.3.0", row["table_compare_schema_version"])
+        self.assertEqual("0.4.0", row["table_compare_schema_version"])
         self.assertEqual("skipped", row["status"])
         self.assertEqual(["invoice"], row["table_case_tags"])
 

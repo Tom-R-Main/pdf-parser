@@ -398,7 +398,15 @@ pub fn evaluateOneToJsonl(allocator: std.mem.Allocator, options: Options) ![]u8 
         .table_regions = options.table_regions orelse extraction.counters.table_regions,
         .formula_regions = options.formula_regions orelse extraction.counters.formula_regions,
     };
-    try validateExpectedRouteCounts(options, counters, doc_id);
+    validateExpectedRouteCounts(options, counters, doc_id) catch |err| {
+        if (err == error.RouteCountMismatch) {
+            var diagnostic_buffer: [1024]u8 = undefined;
+            var diagnostic_writer = std.Io.File.stderr().writerStreaming(runtime.current(), &diagnostic_buffer);
+            writeRouteCountMismatchDiagnostic(&diagnostic_writer.interface, options, counters, doc_id) catch {};
+            diagnostic_writer.interface.flush() catch {};
+        }
+        return err;
+    };
 
     const result: eval.DocumentResult = .{
         .doc_id = doc_id,
@@ -432,6 +440,25 @@ pub fn evaluateOneToJsonl(allocator: std.mem.Allocator, options: Options) ![]u8 
     };
 
     return eval.resultToJsonl(allocator, result);
+}
+
+fn writeRouteCountMismatchDiagnostic(writer: anytype, options: Options, counters: eval.ExtractionCounters, doc_id: []const u8) !void {
+    try writer.writeAll("{\"diagnostic\":\"route_count_mismatch\",\"doc_id\":\"");
+    try writeJsonEscaped(writer, doc_id);
+    try writer.writeAll("\",\"expected\":{");
+    inline for (.{ "ocr_pages", "table_regions", "formula_regions" }, 0..) |field, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.print("\"{s}\":", .{field});
+        if (@field(options, "expected_" ++ field)) |value| {
+            try writer.print("{d}", .{value});
+        } else try writer.writeAll("null");
+    }
+    try writer.writeAll("},\"actual\":{");
+    inline for (.{ "ocr_pages", "table_regions", "formula_regions" }, 0..) |field, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.print("\"{s}\":{d}", .{ field, @field(counters, field) });
+    }
+    try writer.writeAll("}}\n");
 }
 
 fn validateExpectedRouteCounts(options: Options, counters: eval.ExtractionCounters, doc_id: []const u8) !void {
@@ -2507,4 +2534,26 @@ test "eval runner validates expected route counters" {
     }, .{
         .table_regions = 2,
     }, "doc"));
+}
+
+test "route mismatch diagnostic retains document identity and every expected and actual counter" {
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(std.testing.allocator);
+    try writeRouteCountMismatchDiagnostic(runtime.arrayListWriter(&bytes, std.testing.allocator), .{
+        .expected_table_regions = 4,
+        .expected_formula_regions = 6,
+    }, .{ .ocr_pages = 1, .table_regions = 1, .formula_regions = 5 }, "jpx\"cover\n");
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes.items, .{});
+    defer parsed.deinit();
+    const record = parsed.value.object;
+    try std.testing.expectEqualStrings("route_count_mismatch", record.get("diagnostic").?.string);
+    try std.testing.expectEqualStrings("jpx\"cover\n", record.get("doc_id").?.string);
+    const expected = record.get("expected").?.object;
+    const actual = record.get("actual").?.object;
+    try std.testing.expect(expected.get("ocr_pages").? == .null);
+    try std.testing.expectEqual(@as(i64, 4), expected.get("table_regions").?.integer);
+    try std.testing.expectEqual(@as(i64, 6), expected.get("formula_regions").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), actual.get("ocr_pages").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), actual.get("table_regions").?.integer);
+    try std.testing.expectEqual(@as(i64, 5), actual.get("formula_regions").?.integer);
 }

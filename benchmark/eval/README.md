@@ -95,7 +95,11 @@ adversarial page-tree recovery.
 checked-in corpus. Each row records the fixture id, source note, redistribution
 status, PDF SHA256, and expected OCR/table/formula route counts. Manifest eval
 loads this sidecar automatically when it sits next to `manifest.tsv` and fails
-if the adaptive counters differ from those expectations. Large or raw third-party
+if the adaptive counters differ from those expectations. On a mismatch, stderr
+also includes a `route_count_mismatch` JSON diagnostic with the document id and
+all expected/actual OCR, table, and formula counts; the command still fails.
+These are routing-candidate counts, not counts of recognized tables or formulas.
+Large or raw third-party
 corpora should live under `benchmark/eval/raw_cache/`, which is ignored by git;
 checked-in PDFs should stay small and redistributable. The
 `jbig2-public-domain-preface` fixture is a deterministic page-10 derivative of
@@ -129,8 +133,8 @@ color JPX map/cover; the remaining JBIG2 object is only the small Google
 watermark mask. The roughly 188 KB fixture forces rasterization of real JPX
 content and gates the selected 300-DPI sparse-text fallback and readable cover
 labels separately from noisy map detail. OCR-derived table/formula region counts
-are recorded but remain observational because the pinned Linux and current macOS
-toolchains segment the map differently while recovering the same required text:
+are observational in this live semantic gate because Linux and macOS toolchains
+segment the map differently while recovering the same required text:
 
 ```sh
 qpdf --deterministic-id --object-streams=disable \
@@ -142,6 +146,14 @@ python3 benchmark/eval/ocr_hard_document_quality.py \
   --truth benchmark/eval/ground_truth/ocr_text/scanned_typewritten/jpx-public-domain-map-cover.json \
   --output /tmp/pdf-parser-ocr-jpx-hard-document-quality.json
 ```
+
+The separate [recorded external-OCR gate](recorded_ocr/README.md) checks the
+original 4 table / 6 formula expectations against a hash-verified macOS TSV.
+Strict live corpus evaluation still fails if its route counts differ.
+
+For live Linux runs, the [OCR arithmetic profile](ocr_profile/README.md) builds
+isolated, pinned tools and checks real rasterization, OCR, original route counts,
+and semantic floors. Each environment must pass its qualification gate.
 
 The ignored large corpus explicitly inventories a real technical reference with
 CID Identity/no-ToUnicode cases and the full public-domain scan containing

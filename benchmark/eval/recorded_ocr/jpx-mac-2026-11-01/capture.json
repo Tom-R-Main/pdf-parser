@@ -1,0 +1,92 @@
+{
+  "status": "captured",
+  "wall_timeout_seconds": 20,
+  "commands": [
+    {
+      "argv": [
+        "tesseract",
+        "--version"
+      ],
+      "name": "version",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "pdftoppm",
+        "-v"
+      ],
+      "name": "rasterizer-version",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "pdftoppm",
+        "-q",
+        "-png",
+        "-gray",
+        "-singlefile",
+        "-r",
+        "300",
+        "-f",
+        "1",
+        "-l",
+        "1",
+        "-x",
+        "0",
+        "-y",
+        "0",
+        "-W",
+        "1190",
+        "-H",
+        "1975",
+        "benchmark/eval/corpus/scanned_typewritten/jpx-public-domain-map-cover.pdf",
+        "CAPTURE_OUTPUT/page"
+      ],
+      "name": "rasterize",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "tesseract",
+        "CAPTURE_OUTPUT/page.png",
+        "stdout",
+        "-l",
+        "eng",
+        "--psm",
+        "11",
+        "--dpi",
+        "300",
+        "tsv",
+        "quiet"
+      ],
+      "name": "ocr",
+      "exit": 0
+    }
+  ],
+  "input_pdf_sha256": "58e3465bcb9823a610102b1d17f4ee71b7bcab94fb06b87bf0676ab70d0c8056",
+  "eng_traineddata_sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+  "tesseract_version": "tesseract 5.5.2",
+  "rasterizer_version": "pdftoppm version 26.02.0",
+  "dpi": 300,
+  "psm": 11,
+  "grayscale": true,
+  "page_index": 0,
+  "page_bbox": [
+    0,
+    0,
+    285.360016,
+    474
+  ],
+  "pixel_width": 1190,
+  "pixel_height": 1975,
+  "raster_png_sha256": "b006a356b45a20a87eece43a0591eaa7043ca16add614285b267c4eefd1de4b8",
+  "tsv_sha256": "57942c632ae23f56edbe7c31c2ead36611f57ee145c0bd807699a5cae9cea5c8",
+  "word_count": 96,
+  "character_bytes": 311,
+  "mean_confidence": 0.5980580480208334,
+  "statistics_correction": "Recounted saved TSV with literal quote characters; original capture used CSV quote handling. No OCR or rasterizer rerun.",
+  "elapsed_seconds": 2.291668292018585,
+  "qualification": "Reference provider acquisition only; no local parser build or test suite",
+  "capture_platform": "macOS arm64; ARM NEON (toolchain identity supplied by capture owner)",
+  "path_normalization": "Recorded command paths normalized for portability; original acquisition receipt is retained in task outputs. This file is not an executable toolchain qualification."
+}

@@ -183,20 +183,22 @@
     <h1>pdf-parser</h1>
     <p class="subtitle">Fast PDF text extraction in the browser via WebAssembly</p>
 
-    <div class="drop-zone" id="dropZone">
-        <input type="file" id="fileInput" accept=".pdf,application/pdf">
+    <div class="drop-zone" id="dropZone" aria-disabled="true">
+        <input type="file" id="fileInput" accept=".pdf,application/pdf" disabled>
         <div class="drop-zone-text">
             <strong>Click to upload</strong> or drag and drop<br>
-            <small>PDF files only</small>
+            <small>PDF files only · up to 32 MiB</small>
         </div>
     </div>
 
     <div class="loading" id="loading">
         <div class="spinner"></div>
         Extracting text...
+        <div><button class="copy-btn hidden" id="cancelBtn" type="button">Cancel</button></div>
     </div>
 
     <div class="error hidden" id="error"></div>
+    <p class="hidden" id="warnings" role="status"></p>
 
     <div class="stats hidden" id="stats">
         <div class="stat">
@@ -230,247 +232,6 @@
         Pure Zig PDF parser compiled to WebAssembly
     </footer>
 
-    <script>
-        // pdf-parser WebAssembly wrapper
-        class PDFParser {
-            constructor() {
-                this.wasm = null;
-                this.memory = null;
-            }
-
-            async init() {
-                const response = await fetch('pdf_parser.wasm');
-                const bytes = await response.arrayBuffer();
-
-                const imports = {
-                    env: {
-                        // Required by WASM allocator
-                    }
-                };
-
-                const result = await WebAssembly.instantiate(bytes, imports);
-                this.wasm = result.instance.exports;
-                this.memory = this.wasm.memory;
-            }
-
-            // Allocate memory in WASM
-            alloc(size) {
-                return this.wasm.wasm_alloc(size);
-            }
-
-            // Free memory in WASM
-            free(ptr, size) {
-                this.wasm.wasm_free(ptr, size);
-            }
-
-            // Copy data to WASM memory
-            copyToWasm(data) {
-                const ptr = this.alloc(data.length);
-                if (!ptr) throw new Error('Failed to allocate memory');
-
-                const view = new Uint8Array(this.memory.buffer, ptr, data.length);
-                view.set(data);
-                return { ptr, len: data.length };
-            }
-
-            // Read string from WASM memory
-            readString(ptr, len) {
-                const view = new Uint8Array(this.memory.buffer, ptr, len);
-                return new TextDecoder().decode(view);
-            }
-
-            // Open PDF from ArrayBuffer
-            openPDF(data) {
-                const { ptr, len } = this.copyToWasm(new Uint8Array(data));
-                const handle = this.wasm.zpdf_open_memory(ptr, len);
-
-                if (handle < 0) {
-                    this.free(ptr, len);
-                    throw new Error('Failed to open PDF');
-                }
-
-                return {
-                    handle,
-                    dataPtr: ptr,
-                    dataLen: len
-                };
-            }
-
-            // Close PDF
-            closePDF(doc) {
-                this.wasm.zpdf_close(doc.handle);
-                this.free(doc.dataPtr, doc.dataLen);
-            }
-
-            // Get page count
-            getPageCount(doc) {
-                return this.wasm.zpdf_page_count(doc.handle);
-            }
-
-            // Extract text from a page
-            extractPage(doc, pageNum) {
-                // Allocate space for output length
-                const lenPtr = this.alloc(4);
-                if (!lenPtr) throw new Error('Failed to allocate memory');
-
-                const textPtr = this.wasm.zpdf_extract_page(doc.handle, pageNum, lenPtr);
-
-                if (!textPtr) {
-                    this.free(lenPtr, 4);
-                    return '';
-                }
-
-                const lenView = new Uint32Array(this.memory.buffer, lenPtr, 1);
-                const textLen = lenView[0];
-
-                const text = this.readString(textPtr, textLen);
-
-                this.wasm.wasm_free(textPtr, textLen);
-                this.free(lenPtr, 4);
-
-                return text;
-            }
-
-            // Extract all text
-            extractAll(doc) {
-                // Allocate space for output length
-                const lenPtr = this.alloc(4);
-                if (!lenPtr) throw new Error('Failed to allocate memory');
-
-                const textPtr = this.wasm.zpdf_extract_all(doc.handle, lenPtr);
-
-                if (!textPtr) {
-                    this.free(lenPtr, 4);
-                    return '';
-                }
-
-                const lenView = new Uint32Array(this.memory.buffer, lenPtr, 1);
-                const textLen = lenView[0];
-
-                const text = this.readString(textPtr, textLen);
-
-                this.wasm.wasm_free(textPtr, textLen);
-                this.free(lenPtr, 4);
-
-                return text;
-            }
-        }
-
-        // UI handling
-        let zpdf = null;
-
-        async function init() {
-            zpdf = new PDFParser();
-            try {
-                await zpdf.init();
-                console.log('pdf-parser initialized');
-            } catch (e) {
-                showError('Failed to load WASM module: ' + e.message);
-            }
-        }
-
-        function showError(msg) {
-            const el = document.getElementById('error');
-            el.textContent = msg;
-            el.classList.remove('hidden');
-        }
-
-        function hideError() {
-            document.getElementById('error').classList.add('hidden');
-        }
-
-        function showLoading(show) {
-            document.getElementById('loading').classList.toggle('active', show);
-        }
-
-        async function processFile(file) {
-            if (!zpdf) {
-                showError('WASM not loaded yet');
-                return;
-            }
-
-            hideError();
-            showLoading(true);
-            document.getElementById('stats').classList.add('hidden');
-            document.getElementById('outputContainer').classList.add('hidden');
-
-            try {
-                const data = await file.arrayBuffer();
-
-                const startTime = performance.now();
-                const doc = zpdf.openPDF(data);
-                const pageCount = zpdf.getPageCount(doc);
-                const text = zpdf.extractAll(doc);
-                zpdf.closePDF(doc);
-                const endTime = performance.now();
-
-                const duration = endTime - startTime;
-                const pagesPerSec = (pageCount / (duration / 1000)).toFixed(1);
-
-                // Update stats
-                document.getElementById('pageCount').textContent = pageCount;
-                document.getElementById('charCount').textContent = text.length.toLocaleString();
-                document.getElementById('extractTime').textContent = duration.toFixed(1) + 'ms';
-                document.getElementById('speed').textContent = pagesPerSec + ' pages/s';
-                document.getElementById('stats').classList.remove('hidden');
-
-                // Show text
-                document.getElementById('output').textContent = text || '(No text extracted)';
-                document.getElementById('outputContainer').classList.remove('hidden');
-
-            } catch (e) {
-                showError('Error processing PDF: ' + e.message);
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // Event listeners
-        document.addEventListener('DOMContentLoaded', () => {
-            init();
-
-            const dropZone = document.getElementById('dropZone');
-            const fileInput = document.getElementById('fileInput');
-
-            dropZone.addEventListener('click', () => fileInput.click());
-
-            dropZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                dropZone.classList.add('dragover');
-            });
-
-            dropZone.addEventListener('dragleave', () => {
-                dropZone.classList.remove('dragover');
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                dropZone.classList.remove('dragover');
-
-                const file = e.dataTransfer.files[0];
-                if (file && file.type === 'application/pdf') {
-                    processFile(file);
-                } else {
-                    showError('Please drop a PDF file');
-                }
-            });
-
-            fileInput.addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    processFile(file);
-                }
-            });
-
-            document.getElementById('copyBtn').addEventListener('click', () => {
-                const text = document.getElementById('output').textContent;
-                navigator.clipboard.writeText(text).then(() => {
-                    const btn = document.getElementById('copyBtn');
-                    btn.textContent = 'Copied!';
-                    setTimeout(() => btn.textContent = 'Copy to Clipboard', 2000);
-                });
-            });
-        });
-    </script>
+    <script type="module" src="app.mjs"></script>
 </body>
 </html>
