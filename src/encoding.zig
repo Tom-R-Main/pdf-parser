@@ -129,6 +129,15 @@ pub const GlyphWidths = struct {
         return self.simple_widths[char_code];
     }
 
+    /// Width declared by the font for a character code, or 0 when the code is
+    /// outside /FirstChar../LastChar. Unlike getWidth this never substitutes
+    /// the default width, so callers can tell "unknown" from "one em". Subset
+    /// fonts commonly omit the space glyph because words are positioned.
+    pub fn knownWidth(self: *const GlyphWidths, char_code: u8) f64 {
+        if (char_code < self.first_char or char_code > self.last_char) return 0;
+        return self.simple_widths[char_code];
+    }
+
     /// Get width for a CID
     pub fn getCIDWidth(self: *const GlyphWidths, cid: u32) f64 {
         for (self.cid_widths) |entry| {
@@ -3244,4 +3253,16 @@ test "broken Identity CID without ToUnicode reports map error" {
     }{};
     try enc.decodeRecords(&[_]u8{ 0x00, 0x01 }, &sink);
     try std.testing.expect(sink.saw_map_error);
+}
+
+test "known width does not invent a one-em space for subset fonts" {
+    var widths = GlyphWidths.init(std.testing.allocator);
+    defer widths.deinit();
+    widths.first_char = 40;
+    widths.last_char = 120;
+    try std.testing.expectEqual(@as(f64, 0), widths.knownWidth(' '));
+    try std.testing.expectEqual(@as(f64, 1000), widths.getWidth(' '));
+    widths.simple_widths[' '] = 250;
+    widths.first_char = 32;
+    try std.testing.expectEqual(@as(f64, 250), widths.knownWidth(' '));
 }

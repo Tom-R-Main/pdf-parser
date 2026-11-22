@@ -39,6 +39,11 @@ pub const GlyphSpan = struct {
     source_byte_count: u8 = 0,
     text: []const u8 = "",
     advance: f64 = 0,
+    /// Portion of `advance` contributed by character and word spacing (Tc,
+    /// Tw) rather than glyph ink. Native layout measures ink-to-ink gaps on
+    /// lines whose tracking is cancelled by TJ kerns inside words, so the
+    /// tracking left between words still reads as a word gap.
+    spacing_advance: f64 = 0,
     font_space_advance: f64 = 0,
     content_scope: ?form_scope.Scope = null,
     raw_glyph_start: ?u32 = null,
@@ -684,6 +689,7 @@ pub const SpanCollector = struct {
             .source_byte_count = @intCast(source_len),
             .text = text,
             .advance = advance,
+            .spacing_advance = self.spacingAdvance(decoded),
             .font_space_advance = self.spaceAdvance(),
             .content_scope = self.current_scope,
             .raw_glyph_start = glyph_index,
@@ -891,6 +897,12 @@ pub const SpanCollector = struct {
         const last_axis_x = if (last.writing_mode == 1) -last.text_matrix[2] else last.text_matrix[0];
         const last_axis_y = if (last.writing_mode == 1) -last.text_matrix[3] else last.text_matrix[1];
         const norm_squared = axis_x * axis_x + axis_y * axis_y;
+        // Express the last glyph's character spacing along this run's axis,
+        // in the same units as `advance`.
+        result.spacing_advance = if (norm_squared > 0.00000001)
+            last.spacing_advance * (last_axis_x * axis_x + last_axis_y * axis_y) / norm_squared
+        else
+            0;
         result.advance = if (norm_squared > 0.00000001)
             ((last.text_matrix[4] + last_axis_x * last.advance - result.text_matrix[4]) * axis_x + (last.text_matrix[5] + last_axis_y * last.advance - result.text_matrix[5]) * axis_y) / norm_squared
         else
@@ -970,6 +982,12 @@ pub const SpanCollector = struct {
         advance += self.current_char_spacing;
         if (std.mem.eql(u8, decoded.utf8_text, " ")) advance += self.current_word_spacing;
         return advance * (self.current_horizontal_scale / 100.0);
+    }
+
+    fn spacingAdvance(self: *const SpanCollector, decoded: encoding_mod.FontEncoding.DecodedGlyph) f64 {
+        var spacing = self.current_char_spacing;
+        if (std.mem.eql(u8, decoded.utf8_text, " ")) spacing += self.current_word_spacing;
+        return spacing * (self.current_horizontal_scale / 100.0);
     }
 
     fn spaceAdvance(self: *const SpanCollector) f64 {
@@ -1870,8 +1888,10 @@ test "glyph and space advances scale spacing before the text matrix without inve
     try std.testing.expectEqual(@as(f64, 10), collector.glyphs.items[0].advance);
     try std.testing.expectEqual(@as(f64, 10), collector.glyphs.items[0].font_space_advance);
     try std.testing.expectEqual(@as(f64, 20), collector.current_x);
+    try std.testing.expectEqual(@as(f64, 6), collector.glyphs.items[0].spacing_advance);
     try collector.writeDecodedGlyph(.{ .source_code = 88, .source_bytes = "X", .bytes_consumed = 1, .utf8_text = "X", .glyph_width = 0 });
     try std.testing.expectEqual(@as(f64, 2), collector.glyphs.items[1].advance);
+    try std.testing.expectEqual(@as(f64, 2), collector.glyphs.items[1].spacing_advance);
 }
 
 fn spanCollectorAllocationProbe(allocator: std.mem.Allocator) !void {
