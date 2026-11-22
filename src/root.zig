@@ -4710,7 +4710,7 @@ fn extractContentStreamContext(
         collector.setFont(initial.font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
         collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
         collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
-        collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+        collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.knownWidth(' ') else 0) else 0;
         collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
     }
     // Track the font size of the last shown text for newline threshold.
@@ -4830,7 +4830,7 @@ fn extractContentStreamContext(
                     collector.setFont(saved.font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
                     collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
                     collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
-                    collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+                    collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.knownWidth(' ') else 0) else 0;
                     collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
                 }
             } else if (std.mem.eql(u8, op, "cm") and operand_count >= 6) {
@@ -5003,7 +5003,7 @@ fn extractContentStreamContext(
                             collector.setFont(current_font_name, font_size, if (current_font) |font| font.has_to_unicode else null);
                             collector.current_writing_mode = if (current_font) |font| font.wmode else 0;
                             collector.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
-                            collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+                            collector.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.knownWidth(' ') else 0) else 0;
                             collector.setTextState(.{ .char_spacing = char_spacing, .word_spacing = word_spacing, .horizontal_scale = horizontal_scale, .text_rise = text_rise });
                             collector.setTextMatrix(saved_matrix);
                             collector.setPosition(saved_x, saved_y);
@@ -5063,7 +5063,7 @@ fn extractContentStreamContext(
                         mode.bounds.setFont(font_name, font_size, has_to_unicode);
                         mode.bounds.current_writing_mode = if (current_font) |font| font.wmode else 0;
                         mode.bounds.current_font_is_type3 = if (current_font) |font| font.is_type3 else false;
-                        mode.bounds.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.getWidth(' ') else 0) else 0;
+                        mode.bounds.current_font_space_width = if (current_font) |font| (if (!font.is_cid) font.widths.knownWidth(' ') else 0) else 0;
                     }
                 },
                 'L' => if (in_text and operand_count >= 1) {
